@@ -88,8 +88,13 @@ class ILOClient:
             raise ILONotConfiguredError()
 
         def _sync_call() -> Any:
+            # IMPORTANT: use 127.0.0.1, NOT "localhost". python-hpilo treats the
+            # literal string "localhost" as a signal to switch to ILO_LOCAL mode
+            # (which shells out to the hponcfg utility on the local machine) and
+            # ignores host/port/credentials. We need remote RIBCL over our SSH
+            # tunnel, so bind to the loopback IP instead.
             ilo = hpilo.Ilo(
-                "localhost",
+                "127.0.0.1",
                 port=local_port,
                 login=ilo_cfg.user,
                 password=ilo_cfg.password,
