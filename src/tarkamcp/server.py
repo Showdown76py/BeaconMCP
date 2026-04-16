@@ -12,6 +12,7 @@ from .ssh.client import SSHClient
 from .ssh.tools import register_ssh_tools
 from .ilo.client import ILOClient
 from .ilo.tools import register_ilo_tools
+from .security.tools import register_security_tools
 
 config = Config.from_env()
 proxmox_client = ProxmoxClient(config)
@@ -110,3 +111,4 @@ if config.ssh:
     register_ssh_tools(mcp, ssh_client)
 if config.ilo:
     register_ilo_tools(mcp, ilo_client)
+register_security_tools(mcp)

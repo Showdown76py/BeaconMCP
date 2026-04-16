@@ -132,12 +132,16 @@ def _run_http(mcp, host: str, port: int):
 
     from urllib.parse import urlencode, urlparse
 
-    from .auth import ClientStore, CodeStore, TokenStore
+    from . import auth
+    from .auth import ClientStore, CodeStore, TokenStore, current_bearer_token
 
     clients_file = os.environ.get("TARKAMCP_CLIENTS_FILE")
     client_store = ClientStore(Path(clients_file) if clients_file else None)
     token_store = TokenStore()
     code_store = CodeStore()
+    # Share the TokenStore with MCP tools so security_end_session can revoke
+    # the caller's bearer without an import cycle.
+    auth.register_token_store(token_store)
 
     # In-memory TOTP bruteforce guard: per client_id, (failures, cooldown_until).
     # 5 failed attempts → 5-minute lockout. Reset on first success.
@@ -440,7 +444,8 @@ def _run_http(mcp, host: str, port: int):
                 },
             )
 
-        client_id = token_store.validate(authorization[7:])
+        bearer = authorization[7:]
+        client_id = token_store.validate(bearer)
         if not client_id:
             return JSONResponse(
                 {"error": "invalid_token"},
@@ -449,7 +454,14 @@ def _run_http(mcp, host: str, port: int):
                     "WWW-Authenticate": f'Bearer realm="tarkamcp", error="invalid_token", resource_metadata="{resource_meta}"',
                 },
             )
-        return await call_next(request)
+
+        # Expose the bearer to downstream MCP tools via ContextVar so
+        # security_end_session can revoke it after responding.
+        token_var = current_bearer_token.set(bearer)
+        try:
+            return await call_next(request)
+        finally:
+            current_bearer_token.reset(token_var)
 
     mcp_app = mcp.streamable_http_app()
 
