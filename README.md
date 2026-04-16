@@ -1,6 +1,34 @@
+<div align="center">
+
 # TarkaMCP
 
-Serveur MCP pour la gestion d'infrastructure Proxmox VE via Claude. Donne à Claude un accès direct à tes nœuds Proxmox, à l'iLO HP, et au SSH pour diagnostiquer, gérer les VMs/CTs, et résoudre les problèmes d'infrastructure.
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![MCP Protocol](https://img.shields.io/badge/MCP-Model_Context_Protocol-5A67D8)](https://modelcontextprotocol.io/)
+[![Proxmox VE](https://img.shields.io/badge/Proxmox-VE_8.x-E57000?logo=proxmox&logoColor=white)](https://www.proxmox.com/)
+[![HP iLO 4](https://img.shields.io/badge/HP-iLO_4-0096D6?logo=hp&logoColor=white)](https://www.hpe.com/us/en/servers/integrated-lights-out-ilo.html)
+[![License](https://img.shields.io/github/license/Showdown76py/TarkaMCP)](LICENSE)
+[![Claude Code](https://img.shields.io/badge/Built_with-Claude_Code-F97316)](https://claude.ai/code)
+
+**Serveur MCP pour la gestion d'infrastructure Proxmox VE via Claude.**
+
+Donne à Claude un accès direct à tes nœuds Proxmox, à l'iLO HP, et au SSH pour diagnostiquer, gérer les VMs/CTs, et résoudre les problèmes d'infrastructure.
+
+[Installation](#installation-côté-client) &bull; [Configuration](#configuration-côté-serveur-proxmox) &bull; [Outils](#outils-disponibles) &bull; [Tests](#tests)
+
+</div>
+
+---
+
+### Fonctionnalités
+
+- **29 outils MCP** répartis en 3 modules (Proxmox, SSH, iLO)
+- **Diagnostic automatisé** -- Claude identifie les crashs, vérifie le hardware, propose des résolutions
+- **Exécution de commandes** dans les VMs/CTs via QEMU Guest Agent ou SSH, avec support sync et async
+- **Gestion hardware à distance** -- power on/off/reset, températures, ventilateurs via iLO 4
+- **Architecture modulaire** -- chaque module se charge uniquement si ses credentials sont configurés
+- **Contexte infrastructure** -- fichier YAML exposé comme ressource MCP pour guider Claude
+
+---
 
 ## Table des matières
 
@@ -442,3 +470,37 @@ ssh root@pve1.example.com
 ### Certificats SSL
 
 Par défaut `PVE_VERIFY_SSL=false` car Proxmox utilise des certificats self-signed. Si tu as configuré des certificats valides (Let's Encrypt), mets `PVE_VERIFY_SSL=true`.
+
+---
+
+## Exemple d'utilisation
+
+Une fois configuré, tu peux demander à Claude des choses comme :
+
+> **"pve2 ne répond plus, qu'est-ce qui se passe ?"**
+>
+> Claude va automatiquement :
+> 1. Appeler `proxmox_list_nodes` -- voir que pve2 est offline
+> 2. Appeler `ilo_power_status` -- vérifier si le serveur est physiquement allumé
+> 3. Appeler `ilo_health_status` -- checker les températures, ventilateurs, disques
+> 4. Te proposer un diagnostic et une action (power cycle, vérifier les logs, etc.)
+
+> **"Combien de RAM utilise la VM 101 ?"**
+>
+> Claude appelle `proxmox_vm_status(node="pve1", vmid=101)` et te donne les détails.
+
+> **"Mets à jour les paquets sur tous les conteneurs"**
+>
+> Claude utilise `proxmox_list_vms` pour lister les CTs, puis `proxmox_exec_command_async` pour lancer `apt update && apt upgrade -y` dans chacun, et poll les résultats avec `proxmox_exec_get_result`.
+
+---
+
+## Licence
+
+Ce projet est sous licence [Apache 2.0](LICENSE).
+
+---
+
+<div align="center">
+<sub>Construit avec <a href="https://claude.ai/code">Claude Code</a></sub>
+</div>
