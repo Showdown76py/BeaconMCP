@@ -1,7 +1,10 @@
+import base64
 import os
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import Icon
 
 from .config import Config
 from .proxmox.client import ProxmoxClient
@@ -39,6 +42,27 @@ _allowed_origins = _csv_env(
     ["https://claude.ai", "https://chat.openai.com", "https://gemini.google.com"],
 )
 
+
+def _load_icons() -> list[Icon]:
+    """Load the bundled logo as a data-URL icon for MCP clients.
+
+    Shipped inline so clients get the icon without needing a public static
+    route, and so nothing breaks when the server is hidden behind a tunnel
+    that only forwards /mcp.
+    """
+    logo_path = Path(__file__).parent / "assets" / "logo.webp"
+    if not logo_path.is_file():
+        return []
+    data = base64.b64encode(logo_path.read_bytes()).decode("ascii")
+    return [
+        Icon(
+            src=f"data:image/webp;base64,{data}",
+            mimeType="image/webp",
+            sizes=["512x512"],
+        )
+    ]
+
+
 mcp = FastMCP(
     "tarkamcp",
     instructions=(
@@ -48,6 +72,8 @@ mcp = FastMCP(
         "and ssh_* tools for direct shell access as fallback. "
         "Start with proxmox_list_nodes to see cluster status."
     ),
+    website_url="https://github.com/Showdown76py/TarkaMCP",
+    icons=_load_icons(),
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=_allowed_hosts,
