@@ -40,6 +40,7 @@ Compatible **Claude** (web, mobile) &bull; **ChatGPT** &bull; **Gemini** (CLI, A
 - [Configuration iLO](#configuration-ilo)
 - [Configuration .env](#configuration-env)
 - [Connexion par plateforme](#connexion-par-plateforme)
+- [Dashboard web (chat Gemini)](#dashboard-web-chat-gemini)
 - [Tests](#tests)
 - [Outils disponibles](#outils-disponibles)
 - [Dépannage](#dépannage)
@@ -214,6 +215,56 @@ response = client.models.generate_content(
 ```
 
 > Stocker le secret TOTP dans le code va à l'encontre de l'intérêt du 2FA. Préfère un vault (1Password CLI, `pass`, secret manager) ou tape le code à la main.
+
+---
+
+## Dashboard web (chat Gemini)
+
+Un panel web optionnel est servi par TarkaMCP sur la même URL (`https://mcp.example.com/app/...`). Il offre :
+
+- `/app/login` — récupérer un bearer MCP via Client ID + Secret + TOTP, session persistée 90 jours dans un cookie HttpOnly. Plus de curl sur téléphone.
+- `/app/chat` — chat multi-conversations avec Gemini 3 Flash / 3.1 Pro et contrôle de l'effort de thinking (`minimal` / `low` / `medium` / `high`). Les outils TarkaMCP sont exposés à Gemini via MCP natif.
+
+### Activation
+
+1. Ajouter une clé Gemini au `.env` :
+   ```env
+   GEMINI_API_KEY=...
+   ```
+2. La clé de chiffrement de session (`TARKAMCP_SESSION_KEY`) est auto-générée par `install.sh` au premier run. Si tu déploies à la main :
+   ```bash
+   echo "TARKAMCP_SESSION_KEY=$(openssl rand -base64 32)" >> /opt/tarkamcp/.env
+   ```
+3. Redémarrer : `systemctl restart tarkamcp`.
+
+Au démarrage, le serveur affiche :
+```
+Dashboard: http://0.0.0.0:8420/app/login
+```
+(ou `disabled` si `GEMINI_API_KEY` manque).
+
+### Flow
+
+1. Tu ouvres `https://mcp.example.com/` sur ton téléphone → redirige vers `/app/login`.
+2. Tu tapes Client ID + Client Secret + code TOTP (une seule fois tous les 90 jours).
+3. Tu arrives sur `/app/chat` avec l'historique de tes conversations.
+4. Toutes les 24 h le bearer MCP expire — le dashboard redemande *juste* le code TOTP (client_id et secret stockés chiffrés côté serveur).
+
+### Données stockées
+
+SQLite à `/opt/tarkamcp/dashboard.db` (WAL). Trois tables :
+- `sessions` — cookie → client_id + client_secret chiffré AES-GCM + bearer courant.
+- `conversations` — titre, modèle, effort, client propriétaire.
+- `messages` — user/assistant, contenu, tool_calls JSON, thinking résumé.
+
+Tout est scopé par `client_id` ; tu peux avoir plusieurs sessions actives (téléphone + PC) pour un même client.
+
+### Désactiver
+
+```env
+TARKAMCP_DASHBOARD_ENABLED=false
+```
+Ou retire simplement `GEMINI_API_KEY`.
 
 ---
 

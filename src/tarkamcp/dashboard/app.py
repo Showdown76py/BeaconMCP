@@ -7,17 +7,34 @@ Builds the route list and dependencies. Mounted under ``/app/*`` from
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from starlette.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
 from . import csrf as csrf
+from .chat import (
+    ChatEngine,
+    ErrorEvent,
+    TextDelta,
+    ThinkingDelta,
+    ToolCallEnd,
+    ToolCallStart,
+    TurnInput,
+)
+from .conversations import VALID_EFFORTS, VALID_MODELS, ConversationStore
 from .db import Database
 from .session import SESSION_TTL_SECONDS, Session, SessionStore
 
@@ -43,6 +60,11 @@ class DashboardDeps:
     totp_locked: Callable[[str], bool]
     totp_record_failure: Callable[[str], None]
     totp_record_success: Callable[[str], None]
+    conversations: ConversationStore | None = None
+    engine: ChatEngine | None = None
+    # Public URL used by Gemini's backend to call this MCP server. Falls
+    # back to the request's Host header at call time when unset.
+    mcp_public_url: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -355,23 +377,214 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         return response
 
     async def chat_get(request: Request) -> Response:
-        # Placeholder until Stage 2/3 wire the chat shell.
         session = _load_session(request, deps)
         if not session:
             return RedirectResponse("/app/login", status_code=302)
         if not session.bearer_valid():
             return RedirectResponse("/app/refresh", status_code=302)
-        body = (
-            "<!doctype html><meta charset=utf-8><title>TarkaMCP</title>"
-            "<style>body{font-family:-apple-system,system-ui,sans-serif;"
-            "padding:2rem;color:#444}</style>"
-            "<h1>Dashboard chat</h1><p>Connecté en tant que "
-            f"<code>{session.client_id}</code>. UI à venir.</p>"
-            "<form method=POST action=/app/logout>"
-            f'<input type=hidden name=csrf_token value="{csrf.cookie_token(request)}">'
-            "<button>Déconnexion</button></form>"
+        return _render(
+            "chat.html",
+            request,
+            client_id=session.client_id,
+            client_name=(
+                deps.client_store.get_name(session.client_id)  # type: ignore[attr-defined]
+                or session.client_id
+            ),
+            default_model="gemini-3-flash",
+            default_effort="low",
+            valid_models=list(VALID_MODELS),
+            valid_efforts=list(VALID_EFFORTS),
         )
-        response = HTMLResponse(body)
+
+    # --- Conversations API ------------------------------------------------
+
+    def _require_conversations() -> ConversationStore:
+        if deps.conversations is None:
+            raise RuntimeError("ConversationStore not wired")
+        return deps.conversations
+
+    async def api_conv_list(request: Request) -> Response:
+        session = _require_active_session(request, deps)
+        if isinstance(session, Response):
+            return session
+        convs = _require_conversations().list_for_client(session.client_id)
+        return _json({"conversations": [c.to_json() for c in convs]})
+
+    async def api_conv_create(request: Request) -> Response:
+        session = _require_active_session(request, deps)
+        if isinstance(session, Response):
+            return session
+        if not await csrf.verify(request):
+            return _json({"error": "csrf"}, status=403)
+        body = await _read_json(request)
+        conv = _require_conversations().create(
+            client_id=session.client_id,
+            model=str(body.get("model") or "gemini-3-flash"),
+            effort=str(body.get("effort") or "low"),
+        )
+        return _json({"conversation": conv.to_json()}, status=201)
+
+    async def api_conv_detail(request: Request) -> Response:
+        session = _require_active_session(request, deps)
+        if isinstance(session, Response):
+            return session
+        conv_id = request.path_params["conv_id"]
+        store = _require_conversations()
+        conv = store.get(conv_id, client_id=session.client_id)
+        if conv is None:
+            return _json({"error": "not_found"}, status=404)
+        messages = store.list_messages(conv.id)
+        return _json({
+            "conversation": conv.to_json(),
+            "messages": [m.to_json() for m in messages],
+        })
+
+    async def api_conv_patch(request: Request) -> Response:
+        session = _require_active_session(request, deps)
+        if isinstance(session, Response):
+            return session
+        if not await csrf.verify(request):
+            return _json({"error": "csrf"}, status=403)
+        body = await _read_json(request)
+        conv_id = request.path_params["conv_id"]
+        store = _require_conversations()
+        title = body.get("title")
+        model = body.get("model")
+        effort = body.get("effort")
+        conv = store.patch(
+            conv_id, client_id=session.client_id,
+            title=title if isinstance(title, str) else None,
+            model=model if isinstance(model, str) else None,
+            effort=effort if isinstance(effort, str) else None,
+        )
+        if conv is None:
+            return _json({"error": "not_found"}, status=404)
+        return _json({"conversation": conv.to_json()})
+
+    async def api_conv_delete(request: Request) -> Response:
+        session = _require_active_session(request, deps)
+        if isinstance(session, Response):
+            return session
+        if not await csrf.verify(request):
+            return _json({"error": "csrf"}, status=403)
+        conv_id = request.path_params["conv_id"]
+        if not _require_conversations().delete(conv_id, client_id=session.client_id):
+            return _json({"error": "not_found"}, status=404)
+        return Response(status_code=204)
+
+    async def api_chat_stream(request: Request) -> Response:
+        session = _load_session(request, deps)
+        if not session:
+            return _json({"error": "unauthorized"}, status=401)
+        if not await csrf.verify(request):
+            return _json({"error": "csrf"}, status=403)
+
+        if deps.engine is None or deps.conversations is None:
+            return _json({"error": "chat_disabled"}, status=503)
+
+        body = await _read_json(request)
+        conv_id = str(body.get("conversation_id") or "").strip()
+        user_text = str(body.get("content") or "").strip()
+        override_model = body.get("model")
+        override_effort = body.get("effort")
+        if not conv_id or not user_text:
+            return _json({"error": "invalid_request"}, status=400)
+
+        store = deps.conversations
+        conv = store.get(conv_id, client_id=session.client_id)
+        if conv is None:
+            return _json({"error": "not_found"}, status=404)
+
+        model = override_model if override_model in VALID_MODELS else conv.model
+        effort = override_effort if override_effort in VALID_EFFORTS else conv.thinking_effort
+        if model != conv.model or effort != conv.thinking_effort:
+            store.patch(
+                conv.id, client_id=session.client_id,
+                model=model if isinstance(model, str) else None,
+                effort=effort if isinstance(effort, str) else None,
+            )
+
+        async def stream():
+            if not session.bearer_valid():
+                yield _sse("session_expired", {})
+                return
+
+            # History = everything prior to this turn. The engine appends
+            # the user message itself via TurnInput.user_text.
+            history = store.list_messages(conv.id)
+            is_first_turn = not any(m.role == "user" for m in history)
+            store.add_user_message(conv.id, user_text)
+
+            collected: list[Any] = []
+
+            turn = TurnInput(
+                history=history,
+                user_text=user_text,
+                model=model,
+                effort=effort,
+                bearer=session.mcp_bearer or "",
+                mcp_url=_resolve_mcp_url(request, deps),
+            )
+
+            try:
+                async for event in deps.engine.run(turn):  # type: ignore[union-attr]
+                    collected.append(event)
+                    if isinstance(event, TextDelta):
+                        yield _sse("text_delta", {"text": event.text})
+                    elif isinstance(event, ThinkingDelta):
+                        yield _sse("thinking_delta", {"summary": event.summary})
+                    elif isinstance(event, ToolCallStart):
+                        yield _sse("tool_call", {
+                            "id": event.id, "name": event.name, "args": event.args,
+                        })
+                    elif isinstance(event, ToolCallEnd):
+                        yield _sse("tool_result", {
+                            "id": event.id, "status": event.status,
+                            "preview": event.preview, "duration_ms": event.duration_ms,
+                        })
+                    elif isinstance(event, ErrorEvent):
+                        yield _sse("error", {
+                            "code": event.code, "message": event.message,
+                        })
+                        break
+
+                    if await request.is_disconnected():
+                        yield _sse("aborted", {})
+                        break
+            except Exception as exc:  # noqa: BLE001
+                yield _sse("error", {
+                    "code": "internal", "message": str(exc),
+                })
+
+            from .chat import assemble_assistant_message  # local to avoid cycle
+            content, tool_calls, thinking = assemble_assistant_message(collected)
+            msg = store.add_assistant_message(
+                conv.id,
+                content=content,
+                tool_calls=tool_calls,
+                thinking_summary=thinking,
+                model=model,
+                effort=effort,
+            )
+            yield _sse("done", {"message_id": msg.id})
+
+            if is_first_turn and deps.engine is not None:
+                title = await deps.engine.title(model=model, user_text=user_text)
+                if title:
+                    store.patch(conv.id, client_id=session.client_id, title=title)
+                    yield _sse("title_updated", {
+                        "conversation_id": conv.id, "title": title,
+                    })
+
+        response = StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
         _apply_security_headers(response)
         return response
 
@@ -382,6 +595,12 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         Route("/app/refresh", refresh_post, methods=["POST"]),
         Route("/app/logout", logout, methods=["POST"]),
         Route("/app/chat", chat_get, methods=["GET"]),
+        Route("/app/api/conversations", api_conv_list, methods=["GET"]),
+        Route("/app/api/conversations", api_conv_create, methods=["POST"]),
+        Route("/app/api/conversations/{conv_id}", api_conv_detail, methods=["GET"]),
+        Route("/app/api/conversations/{conv_id}", api_conv_patch, methods=["PATCH"]),
+        Route("/app/api/conversations/{conv_id}", api_conv_delete, methods=["DELETE"]),
+        Route("/app/api/chat/stream", api_chat_stream, methods=["POST"]),
         Route("/", index, methods=["GET"]),
         Mount(
             "/app/static",
@@ -389,3 +608,47 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             name="dashboard-static",
         ),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Helpers used by API routes
+# ---------------------------------------------------------------------------
+
+def _json(payload: Any, *, status: int = 200) -> Response:
+    response = JSONResponse(payload, status_code=status)
+    _apply_security_headers(response)
+    return response
+
+
+async def _read_json(request: Request) -> dict[str, Any]:
+    try:
+        data = await request.json()
+    except Exception:  # noqa: BLE001
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _require_active_session(
+    request: Request, deps: DashboardDeps,
+) -> Session | Response:
+    session = _load_session(request, deps)
+    if not session:
+        return _json({"error": "unauthorized"}, status=401)
+    if not session.bearer_valid():
+        return _json({"error": "bearer_expired"}, status=401)
+    return session
+
+
+def _resolve_mcp_url(request: Request, deps: DashboardDeps) -> str:
+    if deps.mcp_public_url:
+        return deps.mcp_public_url.rstrip("/") + "/mcp"
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get(
+        "x-forwarded-host", request.headers.get("host", "localhost"),
+    )
+    return f"{scheme}://{host}/mcp"
+
+
+def _sse(event: str, data: Any) -> bytes:
+    payload = json.dumps(data, ensure_ascii=False)
+    return f"event: {event}\ndata: {payload}\n\n".encode("utf-8")

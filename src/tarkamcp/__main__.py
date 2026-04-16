@@ -523,11 +523,18 @@ def _build_dashboard_routes(client_store, token_store, totp_locked,
     if not dashboard.is_enabled():
         return []
     from .dashboard.app import DashboardDeps, build_dashboard_routes
+    from .dashboard.chat import GeminiChatEngine
+    from .dashboard.conversations import ConversationStore
     from .dashboard.db import Database
     from .dashboard.session import SessionStore
 
     database = Database()
     session_store = SessionStore(database)
+    conversations = ConversationStore(database)
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    engine = GeminiChatEngine(api_key=api_key) if api_key else None
+    mcp_public_url = os.environ.get("TARKAMCP_DASHBOARD_PUBLIC_URL", "").strip() or None
+
     deps = DashboardDeps(
         database=database,
         session_store=session_store,
@@ -536,6 +543,9 @@ def _build_dashboard_routes(client_store, token_store, totp_locked,
         totp_locked=totp_locked,
         totp_record_failure=totp_record_failure,
         totp_record_success=totp_record_success,
+        conversations=conversations,
+        engine=engine,
+        mcp_public_url=mcp_public_url,
     )
     return build_dashboard_routes(deps)
 
