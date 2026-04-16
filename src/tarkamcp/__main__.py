@@ -112,33 +112,81 @@ def _run_http(mcp, host: str, port: int):
     from starlette.responses import JSONResponse, Response
     from starlette.routing import Mount, Route
 
-    from .auth import ClientStore, TokenStore
+    from urllib.parse import urlencode, urlparse
+
+    from .auth import ClientStore, CodeStore, TokenStore
 
     clients_file = os.environ.get("TARKAMCP_CLIENTS_FILE")
     client_store = ClientStore(Path(clients_file) if clients_file else None)
     token_store = TokenStore()
+    code_store = CodeStore()
 
     async def oauth_metadata(request: Request) -> Response:
         scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
         host_header = request.headers.get("x-forwarded-host", request.headers.get("host", "localhost"))
         issuer = f"{scheme}://{host_header}"
-        # Note: `response_types_supported` is omitted on purpose. It describes
-        # the authorization-code flow's response_type; it has no meaning for
-        # the client_credentials grant we advertise.
+        # registration_endpoint is intentionally omitted: dynamic client
+        # registration is disabled, clients must be provisioned via CLI.
         return JSONResponse({
             "issuer": issuer,
+            "authorization_endpoint": f"{issuer}/oauth/authorize",
             "token_endpoint": f"{issuer}/oauth/token",
-            "grant_types_supported": ["client_credentials"],
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code", "client_credentials"],
+            "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": ["client_secret_post"],
         })
+
+    async def oauth_authorize(request: Request) -> Response:
+        params = request.query_params
+        response_type = params.get("response_type", "")
+        client_id = params.get("client_id", "")
+        redirect_uri = params.get("redirect_uri", "")
+        state = params.get("state", "")
+        code_challenge = params.get("code_challenge", "")
+        code_challenge_method = params.get("code_challenge_method", "")
+
+        # Pre-redirect validation: until client_id + redirect_uri are trusted,
+        # errors must be rendered directly, never redirected (OAuth 2.1 §4.1.2.1).
+        if response_type != "code":
+            return JSONResponse({"error": "unsupported_response_type"}, status_code=400)
+        if not client_id or not client_store.exists(client_id):
+            return JSONResponse({"error": "unauthorized_client"}, status_code=400)
+        parsed = urlparse(redirect_uri)
+        if parsed.scheme not in ("https", "http") or not parsed.netloc:
+            return JSONResponse(
+                {"error": "invalid_request", "error_description": "redirect_uri must be an absolute URL"},
+                status_code=400,
+            )
+        # Only allow http for localhost (dev); everything else must be https.
+        if parsed.scheme == "http" and parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
+            return JSONResponse(
+                {"error": "invalid_request", "error_description": "redirect_uri must use https"},
+                status_code=400,
+            )
+        if not code_challenge or code_challenge_method != "S256":
+            return JSONResponse(
+                {"error": "invalid_request", "error_description": "PKCE with S256 is required"},
+                status_code=400,
+            )
+
+        code = code_store.issue(client_id, redirect_uri, code_challenge, code_challenge_method)
+
+        query = {"code": code}
+        if state:
+            query["state"] = state
+        sep = "&" if parsed.query else "?"
+        location = f"{redirect_uri}{sep}{urlencode(query)}"
+        return Response(status_code=302, headers={"Location": location})
 
     async def oauth_token(request: Request) -> Response:
         try:
             if request.headers.get("content-type", "").startswith("application/json"):
-                body = await request.json()
+                raw = await request.json()
+                body: dict[str, str] = {k: v for k, v in raw.items() if isinstance(v, str)}
             else:
                 form = await request.form()
-                body = dict(form)
+                body = {k: v for k, v in form.items() if isinstance(v, str)}
         except Exception:
             return JSONResponse({"error": "invalid_request"}, status_code=400)
 
@@ -146,30 +194,55 @@ def _run_http(mcp, host: str, port: int):
         client_id = body.get("client_id", "")
         client_secret = body.get("client_secret", "")
 
-        if grant_type != "client_credentials":
-            return JSONResponse(
-                {"error": "unsupported_grant_type"},
-                status_code=400,
-            )
         if not client_store.verify(client_id, client_secret):
-            return JSONResponse(
-                {"error": "invalid_client"},
-                status_code=401,
-            )
+            return JSONResponse({"error": "invalid_client"}, status_code=401)
 
-        token, expires_in = token_store.issue(client_id)
-        return JSONResponse({
-            "access_token": token,
-            "token_type": "bearer",
-            "expires_in": expires_in,
-        })
+        if grant_type == "client_credentials":
+            token, expires_in = token_store.issue(client_id)
+            return JSONResponse({
+                "access_token": token,
+                "token_type": "bearer",
+                "expires_in": expires_in,
+            })
+
+        if grant_type == "authorization_code":
+            code = body.get("code", "")
+            redirect_uri = body.get("redirect_uri", "")
+            code_verifier = body.get("code_verifier", "")
+            if not code_store.consume(code, client_id, redirect_uri, code_verifier):
+                return JSONResponse({"error": "invalid_grant"}, status_code=400)
+            token, expires_in = token_store.issue(client_id)
+            return JSONResponse({
+                "access_token": token,
+                "token_type": "bearer",
+                "expires_in": expires_in,
+            })
+
+        return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
+
+    async def oauth_register(_request: Request) -> Response:
+        # Dynamic client registration is disabled by design. Respond explicitly
+        # instead of letting the request fall through to a generic 404.
+        return JSONResponse(
+            {
+                "error": "registration_not_supported",
+                "error_description": "Dynamic client registration is disabled. Ask the administrator to provision a client via `tarkamcp auth create`.",
+            },
+            status_code=403,
+        )
 
     async def health(_request: Request) -> Response:
         return JSONResponse({"status": "ok", "server": "tarkamcp"})
 
     async def auth_middleware(request: Request, call_next):
         path = request.url.path
-        if path in ("/health", "/oauth/token", "/.well-known/oauth-authorization-server"):
+        if path in (
+            "/health",
+            "/oauth/token",
+            "/oauth/authorize",
+            "/oauth/register",
+            "/.well-known/oauth-authorization-server",
+        ):
             return await call_next(request)
 
         authorization = request.headers.get("authorization", "")
@@ -195,7 +268,9 @@ def _run_http(mcp, host: str, port: int):
         routes=[
             Route("/health", health),
             Route("/.well-known/oauth-authorization-server", oauth_metadata),
+            Route("/oauth/authorize", oauth_authorize, methods=["GET"]),
             Route("/oauth/token", oauth_token, methods=["POST"]),
+            Route("/oauth/register", oauth_register, methods=["POST"]),
             Mount("/", app=mcp_app),
         ],
         middleware=[Middleware(BaseHTTPMiddleware, dispatch=auth_middleware)],
@@ -204,9 +279,10 @@ def _run_http(mcp, host: str, port: int):
     n_clients = len(client_store.list_clients())
     print(f"TarkaMCP starting on {host}:{port}")
     print(f"Clients: {n_clients}")
-    print(f"MCP:     http://{host}:{port}/mcp")
-    print(f"OAuth:   http://{host}:{port}/oauth/token")
-    print(f"Health:  http://{host}:{port}/health")
+    print(f"MCP:       http://{host}:{port}/mcp")
+    print(f"Authorize: http://{host}:{port}/oauth/authorize")
+    print(f"Token:     http://{host}:{port}/oauth/token")
+    print(f"Health:    http://{host}:{port}/health")
     if n_clients == 0:
         print(f"\nAucun client ! Créer avec : tarkamcp auth create --name 'Mon Client'")
     uvicorn.run(app, host=host, port=port, log_level="info")

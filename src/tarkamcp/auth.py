@@ -1,7 +1,17 @@
-"""OAuth 2.1 client credentials management for TarkaMCP HTTP mode."""
+"""OAuth 2.1 client & token management for TarkaMCP HTTP mode.
+
+Supports two grants on top of a pre-provisioned client store:
+- ``client_credentials`` for non-interactive clients (scripts, server-to-server)
+- ``authorization_code`` with mandatory PKCE (S256) for browser-based clients
+  such as Claude Web / mobile connectors
+
+Dynamic client registration (RFC 7591) is intentionally NOT supported: clients
+must be created out-of-band via ``tarkamcp auth create``.
+"""
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -32,8 +42,32 @@ class AccessToken:
     expires_at: float
 
 
+@dataclass
+class AuthCode:
+    code: str
+    client_id: str
+    redirect_uri: str
+    code_challenge: str
+    code_challenge_method: str
+    expires_at: float
+
+
 def _hash_secret(secret: str) -> str:
     return hashlib.sha256(secret.encode()).hexdigest()
+
+
+def verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
+    """Verify a PKCE code_verifier against the stored code_challenge.
+
+    OAuth 2.1 forbids the ``plain`` method; only S256 is accepted.
+    """
+    if method != "S256":
+        return False
+    if not code_verifier or not code_challenge:
+        return False
+    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+    computed = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return hmac.compare_digest(computed, code_challenge)
 
 
 class ClientStore:
@@ -104,6 +138,9 @@ class ClientStore:
         # Constant-time comparison to avoid leaking the hash via timing.
         return hmac.compare_digest(client.client_secret_hash, _hash_secret(client_secret))
 
+    def exists(self, client_id: str) -> bool:
+        return client_id in self._clients
+
     def list_clients(self) -> list[dict[str, Any]]:
         """List all registered clients (without secrets)."""
         return [
@@ -158,3 +195,59 @@ class TokenStore:
         expired = [t for t, at in self._tokens.items() if now > at.expires_at]
         for t in expired:
             del self._tokens[t]
+
+
+class CodeStore:
+    """In-memory single-use authorization-code store with PKCE binding."""
+
+    CODE_TTL = 60  # OAuth 2.1 recommends very short codes (<= 60s).
+
+    def __init__(self) -> None:
+        self._codes: dict[str, AuthCode] = {}
+
+    def issue(
+        self,
+        client_id: str,
+        redirect_uri: str,
+        code_challenge: str,
+        code_challenge_method: str,
+    ) -> str:
+        code = secrets.token_urlsafe(32)
+        self._codes[code] = AuthCode(
+            code=code,
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            code_challenge=code_challenge,
+            code_challenge_method=code_challenge_method,
+            expires_at=time.time() + self.CODE_TTL,
+        )
+        self._cleanup()
+        return code
+
+    def consume(
+        self,
+        code: str,
+        client_id: str,
+        redirect_uri: str,
+        code_verifier: str,
+    ) -> bool:
+        """Validate and one-time consume a code.
+
+        The code is popped unconditionally so a replay attempt cannot retry.
+        """
+        auth_code = self._codes.pop(code, None)
+        if not auth_code:
+            return False
+        if time.time() > auth_code.expires_at:
+            return False
+        if auth_code.client_id != client_id:
+            return False
+        if auth_code.redirect_uri != redirect_uri:
+            return False
+        return verify_pkce(code_verifier, auth_code.code_challenge, auth_code.code_challenge_method)
+
+    def _cleanup(self) -> None:
+        now = time.time()
+        expired = [c for c, ac in self._codes.items() if now > ac.expires_at]
+        for c in expired:
+            del self._codes[c]
