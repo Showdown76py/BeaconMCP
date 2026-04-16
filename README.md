@@ -89,7 +89,7 @@ nano /opt/tarkamcp/.env
 
 Remplir au minimum `PVE1_HOST`, `PVE1_TOKEN_ID`, `PVE1_TOKEN_SECRET` (voir [Configuration .env](#configuration-env)).
 
-### 3. Créer un client OAuth
+### 3. Créer un client OAuth (avec 2FA)
 
 ```bash
 tarkamcp auth create --name "Claude Web"
@@ -98,9 +98,19 @@ tarkamcp auth create --name "Claude Web"
 ```
   Client ID:     tarkamcp_a1b2c3...
   Client Secret: sk_d4e5f6...
+
+  --- 2FA / Google Authenticator ---
+  Scanne ce QR code dans ton app (Google Authenticator, Authy, 1Password) :
+
+  █▀▀▀▀▀█ ▄▀ ▄█ █▀▀▀▀▀█
+  █ ███ █ ▀ ▄▄▄ █ ███ █
+  ...
+
+  Secret manuel : JBSWY3DPEHPK3PXP
+  URI otpauth   : otpauth://totp/TarkaMCP:tarkamcp_...?secret=...&issuer=TarkaMCP
 ```
 
-Conserver ces credentials -- le secret ne sera plus affiché.
+**Important** : le Client Secret ET le secret TOTP ne sont affichés qu'une seule fois. Scanne le QR tout de suite dans ton app d'authentification, sinon tu devras révoquer et recréer le client.
 
 ### 4. Démarrer le serveur
 
@@ -150,38 +160,46 @@ tarkamcp auth revoke tarkamcp_abc123...
    - **OAuth Client Secret** : `sk_d4e5f6...`
 3. **Add**
 
+À la connexion, une page TarkaMCP s'ouvre dans ton navigateur et demande le code 2FA à 6 chiffres depuis Google Authenticator. Saisis-le, tu es redirigé vers Claude automatiquement. Le token dure 24 h, après quoi Claude redemande le code.
+
 ### ChatGPT
 
 1. **Settings** > **Developer Mode** > **MCP Servers**
 2. URL : `https://mcp.tarkacore.dev/mcp`
-3. Obtenir un bearer token :
+3. Obtenir un bearer token (TOTP requis à chaque refresh, toutes les 24 h) :
    ```bash
+   TOTP=$(oathtool --totp -b "$TOTP_SECRET")   # ou tape-le depuis l'app
    curl -X POST https://mcp.tarkacore.dev/oauth/token \
-     -d "grant_type=client_credentials&client_id=ID&client_secret=SECRET"
+     -d "grant_type=client_credentials&client_id=ID&client_secret=SECRET&totp=$TOTP"
    ```
 4. Utiliser l'`access_token` retourné comme bearer token
 
 ### Gemini CLI
 
 ```bash
+TOTP=$(oathtool --totp -b "$TOTP_SECRET")
 TOKEN=$(curl -s -X POST https://mcp.tarkacore.dev/oauth/token \
-  -d "grant_type=client_credentials&client_id=ID&client_secret=SECRET" \
+  -d "grant_type=client_credentials&client_id=ID&client_secret=SECRET&totp=$TOTP" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
 gemini mcp add tarkamcp --url https://mcp.tarkacore.dev/mcp \
   --header "Authorization: Bearer $TOKEN"
 ```
 
+Le token étant valide 24 h, il faut relancer ce bloc (avec un nouveau code TOTP) une fois par jour.
+
 ### Gemini API
 
 ```python
-import requests
+import requests, pyotp
 from google import genai
 
+totp = pyotp.TOTP("JBSWY3DPEHPK3PXP").now()   # le secret affiché à la création
 token = requests.post("https://mcp.tarkacore.dev/oauth/token", data={
     "grant_type": "client_credentials",
     "client_id": "tarkamcp_...",
     "client_secret": "sk_...",
+    "totp": totp,
 }).json()["access_token"]
 
 client = genai.Client()
@@ -194,6 +212,8 @@ response = client.models.generate_content(
     }]}]},
 )
 ```
+
+> Stocker le secret TOTP dans le code va à l'encontre de l'intérêt du 2FA. Préfère un vault (1Password CLI, `pass`, secret manager) ou tape le code à la main.
 
 ---
 
@@ -392,6 +412,9 @@ python tests/test_integration.py --test-vmid 9999
 | `invalid_client` | Mauvais Client ID/Secret | `tarkamcp auth list` pour vérifier |
 | `421 Misdirected Request` | Hostname public absent de l'allowlist | Ajouter le domaine à `TARKAMCP_ALLOWED_HOSTS` dans `.env` puis redémarrer |
 | `{"error":"unauthorized"}` sur `/authorize` | Client ID inexistant côté serveur | Créer le client avec `tarkamcp auth create`, puis recoller l'ID dans le connecteur |
+| `invalid_grant` + `missing or invalid totp` | Code 2FA faux, expiré (>30 s), ou déjà utilisé | Générer un nouveau code dans l'app. Vérifier l'horloge du serveur vs celle du téléphone (`timedatectl`). |
+| Page 2FA affiche "Trop de tentatives" | 5 codes faux consécutifs → lockout 5 min | Attendre. Le compteur se réinitialise à la prochaine validation correcte. |
+| Clients silencieusement révoqués après update | Migration 2FA : les anciens clients sans TOTP sont rejetés au démarrage | Regarder `journalctl -u tarkamcp` pour la liste, recréer via `tarkamcp auth create` |
 
 ---
 
