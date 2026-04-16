@@ -223,7 +223,7 @@ response = client.models.generate_content(
 Un panel web optionnel est servi par TarkaMCP sur la même URL (`https://mcp.tarkacore.dev/app/...`). Il offre :
 
 - `/app/login` — récupérer un bearer MCP via Client ID + Secret + TOTP, session persistée 90 jours dans un cookie HttpOnly. Plus de curl sur téléphone.
-- `/app/chat` — chat multi-conversations avec Gemini 2.5 Flash/Pro (stable) ou Gemini 3 Flash / 3.1 Pro (preview, allowlist Google requise). Contrôle de l'effort de thinking (`minimal` / `low` / `medium` / `high`). Les outils TarkaMCP sont exposés à Gemini via une session MCP locale tenue côté dashboard, ce qui évite les limitations preview du mode "MCP remote" de l'API Gemini.
+- `/app/chat` — chat multi-conversations avec Gemini 2.5 Flash/Pro (stable, accessibles avec toute clé AI Studio) ou Gemini 3 Flash / 3.1 Pro (preview, allowlist Google requise — sinon 403 PERMISSION_DENIED). Le défaut est `gemini-2.5-flash`. Contrôle de l'effort de thinking (`minimal` / `low` / `medium` / `high`).
 
 ### Activation
 
@@ -258,6 +258,32 @@ SQLite à `/opt/tarkamcp/dashboard.db` (WAL). Trois tables :
 - `messages` — user/assistant, contenu, tool_calls JSON, thinking résumé.
 
 Tout est scopé par `client_id` ; tu peux avoir plusieurs sessions actives (téléphone + PC) pour un même client.
+
+### Mode MCP (local / remote)
+
+Le dashboard expose deux chemins pour que Gemini utilise les outils TarkaMCP :
+
+| Mode | Comment | Quand l'utiliser |
+|------|---------|------------------|
+| `local` (défaut) | Le dashboard tient une session MCP en process et la passe à Gemini comme "tool". Google ne voit que des function declarations. | Marche sur toutes les clés, indépendant du preview. |
+| `remote` | On passe un `McpServer(url, headers)` à Gemini, Google appelle `mcp.tarkacore.dev/mcp` directement. | Natif Gemini 3 — à activer si ta clé a l'allowlist. |
+
+Switch via :
+```env
+TARKAMCP_DASHBOARD_MCP_MODE=remote
+TARKAMCP_DASHBOARD_PUBLIC_URL=https://mcp.tarkacore.dev  # requis en mode remote si pas de X-Forwarded-Host
+```
+
+### Modèles & accès
+
+- **Gemini 2.5 Flash / Pro** : dispos sur toute clé AI Studio. **Utilise-les par défaut.**
+- **Gemini 3 Flash / 3.1 Pro (preview)** : gated par allowlist Google. Si ta clé n'y a pas accès, tu verras :
+  ```
+  Ta clé Gemini n'a pas accès à gemini-3-flash-preview (allowlist Google requise
+  pour les modèles preview). Bascule sur gemini-2.5-flash ou gemini-2.5-pro via
+  le dropdown en bas à gauche — ils sont dispos sur toutes les clés AI Studio.
+  ```
+  Demande l'accès sur [ai.google.dev](https://ai.google.dev) ou reste sur 2.5.
 
 ### Désactiver
 
