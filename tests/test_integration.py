@@ -388,9 +388,13 @@ def test_proxmox_exec_lxc(runner: TestRunner, tools: dict) -> None:
 
     result = call_tool(tools, "proxmox_exec_command", node="pve1", vmid=vmid,
                        command="echo LXC-test", timeout=30)
+    # The Proxmox API does not expose an exec endpoint for LXC containers; the
+    # tool must return an actionable error pointing to ssh_exec_command + pct exec.
     runner.record(
-        f"proxmox_exec_command 'echo' in CT {vmid}",
-        isinstance(result, dict) and ("LXC-test" in result.get("stdout", "") or "error" not in result),
+        f"proxmox_exec_command on CT {vmid} returns LXC-not-supported guidance",
+        isinstance(result, dict)
+        and "error" in result
+        and "pct exec" in result.get("error", ""),
         f"Result: {result}",
         result,
     )
