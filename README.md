@@ -1,18 +1,18 @@
 # TarkaMCP
 
-Serveur MCP pour la gestion d'infrastructure Proxmox VE via Claude. Donne a Claude un acces direct a tes noeuds Proxmox, a l'iLO HP, et au SSH pour diagnostiquer, gerer les VMs/CTs, et resoudre les problemes d'infrastructure.
+Serveur MCP pour la gestion d'infrastructure Proxmox VE via Claude. Donne à Claude un accès direct à tes nœuds Proxmox, à l'iLO HP, et au SSH pour diagnostiquer, gérer les VMs/CTs, et résoudre les problèmes d'infrastructure.
 
-## Table des matieres
+## Table des matières
 
 - [Architecture](#architecture)
-- [Installation cote client (ta machine)](#installation-cote-client)
-- [Configuration cote serveur (Proxmox)](#configuration-cote-serveur-proxmox)
-- [Configuration cote serveur (iLO)](#configuration-cote-serveur-ilo)
+- [Installation côté client (ta machine)](#installation-côté-client)
+- [Configuration côté serveur (Proxmox)](#configuration-côté-serveur-proxmox)
+- [Configuration côté serveur (iLO)](#configuration-côté-serveur-ilo)
 - [Configuration du .env](#configuration-du-env)
-- [Integration Claude Code](#integration-claude-code)
+- [Intégration Claude Code](#intégration-claude-code)
 - [Tests](#tests)
 - [Outils disponibles](#outils-disponibles)
-- [Depannage](#depannage)
+- [Dépannage](#dépannage)
 
 ---
 
@@ -30,18 +30,18 @@ Ta machine (Claude Code)              Infrastructure
 |                            |  |     +-----------------------------+
 +----------------------------+  |
                                 |     +-----------------------------+
-                                +---> |  iLO 4 (reseau local)      |
+                                +---> |  iLO 4 (réseau local)      |
                             tunnel    |    via pve1 SSH             |
                             SSH       +-----------------------------+
 ```
 
-## Installation cote client
+## Installation côté client
 
-### Prerequis
+### Prérequis
 
 - Python >= 3.11
 - pip
-- Acces reseau vers pve1.tarkacore.dev (port 8006 pour l'API, port 22 pour SSH)
+- Accès réseau vers pve1.tarkacore.dev (port 8006 pour l'API, port 22 pour SSH)
 
 ### Installation
 
@@ -50,41 +50,41 @@ cd TarkaMCP
 pip install -e .
 ```
 
-### Verification rapide
+### Vérification rapide
 
 ```bash
-# Avec les variables d'environnement configurees
+# Avec les variables d'environnement configurées
 python -c "
 from dotenv import load_dotenv; load_dotenv()
 from tarkamcp.server import mcp
-print(f'OK: {len(mcp._tool_manager._tools)} outils enregistres')
+print(f'OK: {len(mcp._tool_manager._tools)} outils enregistrés')
 "
 ```
 
 ---
 
-## Configuration cote serveur (Proxmox)
+## Configuration côté serveur (Proxmox)
 
-### 1. Creer un API token sur chaque noeud
+### 1. Créer un API token sur chaque nœud
 
-Se connecter a l'interface web Proxmox (`https://pve1.tarkacore.dev`).
+Se connecter à l'interface web Proxmox (`https://pve1.tarkacore.dev`).
 
 1. Aller dans **Datacenter** > **Permissions** > **API Tokens**
 2. Cliquer **Add**
 3. Remplir :
    - **User** : `root@pam`
    - **Token ID** : `tarkamcp`
-   - **Privilege Separation** : **decocher** (important, sinon le token n'a aucun privilege)
+   - **Privilege Separation** : **décocher** (important, sinon le token n'a aucun privilège)
 4. Cliquer **Add**
-5. **Copier le token secret** affiche (il ne sera plus visible apres)
+5. **Copier le token secret** affiché (il ne sera plus visible après)
 
 Le Token ID complet sera : `root@pam!tarkamcp`
 
-Repeter sur pve2 quand il sera de retour.
+Répéter sur pve2 quand il sera de retour.
 
 ### 2. Installer le QEMU Guest Agent dans les VMs
 
-Le Guest Agent est necessaire pour executer des commandes a l'interieur des VMs via l'API Proxmox.
+Le Guest Agent est nécessaire pour exécuter des commandes à l'intérieur des VMs via l'API Proxmox.
 
 **Debian/Ubuntu :**
 ```bash
@@ -98,7 +98,7 @@ dnf install -y qemu-guest-agent
 systemctl enable --now qemu-guest-agent
 ```
 
-**Verification :**
+**Vérification :**
 ```bash
 systemctl status qemu-guest-agent
 # Doit afficher "active (running)"
@@ -107,17 +107,17 @@ systemctl status qemu-guest-agent
 Puis dans Proxmox, activer le Guest Agent pour la VM :
 1. Aller dans la VM > **Options** > **QEMU Guest Agent**
 2. Cocher **Use QEMU Guest Agent**
-3. Redemarrer la VM
+3. Redémarrer la VM
 
-**Note :** Le Guest Agent n'est pas necessaire pour les conteneurs LXC -- Proxmox a un acces direct.
+**Note :** Le Guest Agent n'est pas nécessaire pour les conteneurs LXC -- Proxmox a un accès direct.
 
-### 3. Configurer l'acces SSH (optionnel mais recommande)
+### 3. Configurer l'accès SSH (optionnel mais recommandé)
 
-Le serveur MCP utilise SSH comme fallback quand l'API Proxmox ne suffit pas. L'acces SSH par mot de passe doit etre actif sur les noeuds Proxmox.
+Le serveur MCP utilise SSH comme fallback quand l'API Proxmox ne suffit pas. L'accès SSH par mot de passe doit être actif sur les nœuds Proxmox.
 
-Verifier que c'est le cas :
+Vérifier que c'est le cas :
 ```bash
-# Sur le noeud Proxmox
+# Sur le nœud Proxmox
 grep -E "^PasswordAuthentication" /etc/ssh/sshd_config
 # Doit afficher: PasswordAuthentication yes
 ```
@@ -128,40 +128,40 @@ sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_
 systemctl restart sshd
 ```
 
-### 4. Verifier les ports ouverts
+### 4. Vérifier les ports ouverts
 
-Le serveur MCP a besoin de ces acces reseau :
+Le serveur MCP a besoin de ces accès réseau :
 
 | Service | Port | Protocole | Depuis |
 |---------|------|-----------|--------|
 | Proxmox API | 8006 | HTTPS | Ta machine |
-| SSH (noeuds) | 22 | SSH | Ta machine |
-| iLO | 443 | HTTPS | pve1 (reseau local) |
+| SSH (nœuds) | 22 | SSH | Ta machine |
+| iLO | 443 | HTTPS | pve1 (réseau local) |
 
 ---
 
-## Configuration cote serveur (iLO)
+## Configuration côté serveur (iLO)
 
-L'iLO est sur le reseau local uniquement. TarkaMCP y accede via un tunnel SSH a travers pve1.
+L'iLO est sur le réseau local uniquement. TarkaMCP y accède via un tunnel SSH à travers pve1.
 
-### Prerequis
+### Prérequis
 
-- iLO 4 accessible depuis le reseau local de pve1
-- Credentials iLO (par defaut : `Administrator` / mot de passe configure)
+- iLO 4 accessible depuis le réseau local de pve1
+- Credentials iLO (par défaut : `Administrator` / mot de passe configuré)
 
 ### Trouver l'IP de l'iLO
 
 Depuis pve1 :
 ```bash
-# Scanner le reseau local pour trouver l'iLO
-# L'iLO repond generalement sur le port 443 et 17988
+# Scanner le réseau local pour trouver l'iLO
+# L'iLO répond généralement sur le port 443 et 17988
 nmap -sn 192.168.1.0/24 | grep -B2 "HP\|iLO\|Hewlett"
 
-# Ou si tu connais l'IP, verifier
+# Ou si tu connais l'IP, vérifier
 curl -sk https://192.168.1.X/xmldata?item=All | head -20
 ```
 
-### Tester l'acces iLO depuis pve1
+### Tester l'accès iLO depuis pve1
 
 ```bash
 # Depuis pve1
@@ -179,7 +179,7 @@ Copier le template et remplir :
 cp .env.example .env
 ```
 
-Editer `.env` :
+Éditer `.env` :
 
 ```env
 # OBLIGATOIRE -- PVE1
@@ -198,7 +198,7 @@ ILO_USER=Administrator
 ILO_PASSWORD=ton_mot_de_passe_ilo
 ILO_JUMP_HOST=pve1
 
-# OPTIONNEL -- SSH (recommande)
+# OPTIONNEL -- SSH (recommandé)
 SSH_USER=root
 SSH_PASSWORD=ton_mot_de_passe_root
 
@@ -206,14 +206,14 @@ SSH_PASSWORD=ton_mot_de_passe_root
 PVE_VERIFY_SSL=false
 ```
 
-Les modules sont charges conditionnellement :
+Les modules sont chargés conditionnellement :
 - **Sans SSH** : les 4 outils `ssh_*` ne sont pas disponibles
 - **Sans iLO** : les 7 outils `ilo_*` ne sont pas disponibles
-- **Sans PVE2** : les outils fonctionnent mais seul pve1 est interroge
+- **Sans PVE2** : les outils fonctionnent mais seul pve1 est interrogé
 
 ---
 
-## Integration Claude Code
+## Intégration Claude Code
 
 ### Option A : Settings globaux
 
@@ -231,7 +231,7 @@ Ajouter dans `~/.claude/settings.json` :
 }
 ```
 
-Avec cette option, le `.env` doit etre dans le dossier `TarkaMCP/`.
+Avec cette option, le `.env` doit être dans le dossier `TarkaMCP/`.
 
 ### Option B : Settings avec variables inline
 
@@ -259,20 +259,20 @@ Avec cette option, le `.env` doit etre dans le dossier `TarkaMCP/`.
 }
 ```
 
-### Verification dans Claude Code
+### Vérification dans Claude Code
 
-Une fois configure, relancer Claude Code et verifier :
+Une fois configuré, relancer Claude Code et vérifier :
 ```
-> Utilise proxmox_list_nodes pour voir l'etat du cluster
+> Utilise proxmox_list_nodes pour voir l'état du cluster
 ```
 
-Claude devrait appeler l'outil et afficher les noeuds.
+Claude devrait appeler l'outil et afficher les nœuds.
 
 ---
 
 ## Contexte infrastructure
 
-Editer `infrastructure.yaml` pour definir tes conventions. Ce fichier est expose comme ressource MCP (`tarkamcp://infrastructure`) et donne a Claude le contexte de ton infra.
+Éditer `infrastructure.yaml` pour définir tes conventions. Ce fichier est exposé comme ressource MCP (`tarkamcp://infrastructure`) et donne à Claude le contexte de ton infra.
 
 ```yaml
 conventions:
@@ -301,9 +301,9 @@ notes:
 
 ## Tests
 
-### Lancer les tests d'integration
+### Lancer les tests d'intégration
 
-Les tests se lancent contre la vraie infrastructure. Ils necessitent un `.env` rempli.
+Les tests se lancent contre la vraie infrastructure. Ils nécessitent un `.env` rempli.
 
 ```bash
 # Tous les tests (sauf lifecycle VM)
@@ -318,7 +318,7 @@ python tests/test_integration.py --section ilo
 python tests/test_integration.py --test-vmid 9999
 ```
 
-### Ce que les tests verifient
+### Ce que les tests vérifient
 
 | Section | Tests | Description |
 |---------|-------|-------------|
@@ -326,7 +326,7 @@ python tests/test_integration.py --test-vmid 9999
 | **Proxmox System** | 4 | storage_status, network_config |
 | **Proxmox Exec (QEMU)** | 5 | exec sync, exit codes, async+poll, invalid VMID |
 | **Proxmox Exec (LXC)** | 1 | exec dans un conteneur LXC |
-| **VM Lifecycle** | 7 | start, stop, restart, config read/write, clone (necessite --test-vmid) |
+| **VM Lifecycle** | 7 | start, stop, restart, config read/write, clone (nécessite --test-vmid) |
 | **SSH** | 8 | exec sur pve1, exit codes, host resolution, async+poll, sessions |
 | **iLO** | 6 | server_info, health, power_status, event_log |
 | **Resources** | 4 | infrastructure resource, prompt, config validation |
@@ -334,12 +334,12 @@ python tests/test_integration.py --test-vmid 9999
 
 Total : **~50 tests**
 
-### Creer une VM de test (optionnel)
+### Créer une VM de test (optionnel)
 
-Pour les tests de lifecycle (start/stop/clone), creer une VM legere :
+Pour les tests de lifecycle (start/stop/clone), créer une VM légère :
 
 ```bash
-# Sur pve1, creer une VM vide VMID 9999
+# Sur pve1, créer une VM vide VMID 9999
 qm create 9999 --name tarkamcp-test --memory 128 --cores 1 --net0 virtio,bridge=vmbr0
 ```
 
@@ -356,89 +356,89 @@ python tests/test_integration.py --test-vmid 9999
 
 | Outil | Description |
 |-------|-------------|
-| `proxmox_list_nodes` | Liste les noeuds du cluster avec leur statut |
-| `proxmox_node_status` | CPU, RAM, disque, uptime, version PVE d'un noeud |
+| `proxmox_list_nodes` | Liste les nœuds du cluster avec leur statut |
+| `proxmox_node_status` | CPU, RAM, disque, uptime, version PVE d'un nœud |
 | `proxmox_list_vms` | Liste toutes les VMs/CTs avec statut et ressources |
-| `proxmox_vm_status` | Etat detaille d'une VM/CT specifique |
-| `proxmox_get_logs` | Logs systeme (syslog) ou taches Proxmox |
-| `proxmox_get_tasks` | Taches recentes (migrations, backups, etc.) |
+| `proxmox_vm_status` | État détaillé d'une VM/CT spécifique |
+| `proxmox_get_logs` | Logs système (syslog) ou tâches Proxmox |
+| `proxmox_get_tasks` | Tâches récentes (migrations, backups, etc.) |
 
 ### Proxmox -- Gestion VMs (7 outils)
 
 | Outil | Description |
 |-------|-------------|
-| `proxmox_vm_start` | Demarrer une VM/CT |
-| `proxmox_vm_stop` | Arreter une VM/CT (clean ou force) |
-| `proxmox_vm_restart` | Redemarrer une VM/CT |
-| `proxmox_vm_create` | Creer une nouvelle VM/CT |
+| `proxmox_vm_start` | Démarrer une VM/CT |
+| `proxmox_vm_stop` | Arrêter une VM/CT (clean ou force) |
+| `proxmox_vm_restart` | Redémarrer une VM/CT |
+| `proxmox_vm_create` | Créer une nouvelle VM/CT |
 | `proxmox_vm_clone` | Cloner une VM/CT existante |
-| `proxmox_vm_migrate` | Migrer une VM/CT vers un autre noeud |
+| `proxmox_vm_migrate` | Migrer une VM/CT vers un autre nœud |
 | `proxmox_vm_config` | Lire ou modifier la config d'une VM/CT |
 
-### Proxmox -- Systeme (5 outils)
+### Proxmox -- Système (5 outils)
 
 | Outil | Description |
 |-------|-------------|
-| `proxmox_storage_status` | Etat du stockage (local, NFS, CEPH, etc.) |
-| `proxmox_network_config` | Configuration reseau du noeud |
-| `proxmox_exec_command` | Executer une commande dans une VM/CT (sync) |
+| `proxmox_storage_status` | État du stockage (local, NFS, CEPH, etc.) |
+| `proxmox_network_config` | Configuration réseau du nœud |
+| `proxmox_exec_command` | Exécuter une commande dans une VM/CT (sync) |
 | `proxmox_exec_command_async` | Lancer une commande longue (async) |
-| `proxmox_exec_get_result` | Recuperer le resultat d'une commande async |
+| `proxmox_exec_get_result` | Récupérer le résultat d'une commande async |
 
 ### SSH (4 outils)
 
 | Outil | Description |
 |-------|-------------|
-| `ssh_exec_command` | Commande SSH sur un hote (sync) |
+| `ssh_exec_command` | Commande SSH sur un hôte (sync) |
 | `ssh_exec_command_async` | Commande SSH longue (async) |
-| `ssh_exec_get_result` | Resultat d'une commande SSH async |
+| `ssh_exec_get_result` | Résultat d'une commande SSH async |
 | `ssh_list_sessions` | Lister les sessions SSH actives |
 
 ### iLO (7 outils)
 
 | Outil | Description |
 |-------|-------------|
-| `ilo_server_info` | Modele, serial, firmware du serveur |
-| `ilo_health_status` | Temperatures, ventilateurs, alims, disques, RAM |
-| `ilo_power_status` | Etat d'alimentation (ON/OFF) |
+| `ilo_server_info` | Modèle, serial, firmware du serveur |
+| `ilo_health_status` | Températures, ventilateurs, alims, disques, RAM |
+| `ilo_power_status` | État d'alimentation (ON/OFF) |
 | `ilo_power_on` | Allumer le serveur physique |
-| `ilo_power_off` | Eteindre le serveur (clean ou force) |
+| `ilo_power_off` | Éteindre le serveur (clean ou force) |
 | `ilo_power_reset` | Hard reset du serveur |
-| `ilo_get_event_log` | Journal d'evenements iLO |
+| `ilo_get_event_log` | Journal d'événements iLO |
 
 ---
 
-## Depannage
+## Dépannage
 
 ### "PVE1_HOST, PVE1_TOKEN_ID, and PVE1_TOKEN_SECRET are required"
 
-Le `.env` n'est pas charge ou les variables ne sont pas definies. Verifier :
+Le `.env` n'est pas chargé ou les variables ne sont pas définies. Vérifier :
 ```bash
 cat .env | grep PVE1
 ```
 
 ### "Node 'pveX' is unreachable"
 
-Le noeud Proxmox ne repond pas sur le port 8006. Verifier :
+Le nœud Proxmox ne répond pas sur le port 8006. Vérifier :
 ```bash
 curl -sk https://pve1.tarkacore.dev:8006/api2/json/version
 ```
 
 ### "QEMU Guest Agent may not be running"
 
-Le Guest Agent n'est pas installe ou pas actif dans la VM. Voir la section [Installer le QEMU Guest Agent](#2-installer-le-qemu-guest-agent-dans-les-vms).
+Le Guest Agent n'est pas installé ou pas actif dans la VM. Voir la section [Installer le QEMU Guest Agent](#2-installer-le-qemu-guest-agent-dans-les-vms).
 
 ### "iLO is accessible only through pve1 (SSH tunnel)"
 
-L'iLO est sur le reseau local. Si pve1 est down, l'iLO est inaccessible. Verifier pve1 d'abord.
+L'iLO est sur le réseau local. Si pve1 est down, l'iLO est inaccessible. Vérifier pve1 d'abord.
 
 ### "SSH connection to 'X' failed"
 
-Verifier que SSH par mot de passe est actif et que les credentials sont corrects :
+Vérifier que SSH par mot de passe est actif et que les credentials sont corrects :
 ```bash
 ssh root@pve1.tarkacore.dev
 ```
 
 ### Certificats SSL
 
-Par defaut `PVE_VERIFY_SSL=false` car Proxmox utilise des certificats self-signed. Si tu as configure des certificats valides (Let's Encrypt), mets `PVE_VERIFY_SSL=true`.
+Par défaut `PVE_VERIFY_SSL=false` car Proxmox utilise des certificats self-signed. Si tu as configuré des certificats valides (Let's Encrypt), mets `PVE_VERIFY_SSL=true`.
