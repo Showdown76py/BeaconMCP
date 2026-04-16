@@ -24,6 +24,7 @@ class SSHExecSession:
 
 
 _ssh_sessions: dict[str, SSHExecSession] = {}
+_ssh_tasks: set[asyncio.Task[None]] = set()
 _connection_cache: dict[str, tuple[asyncssh.SSHClientConnection, float]] = {}
 _CONNECTION_TTL = 300  # 5 minutes
 
@@ -132,7 +133,10 @@ class SSHClient:
                 session.status = "failed"
                 session.stderr = str(e)
 
-        asyncio.create_task(_run())
+        # Keep a reference to the task so it isn't garbage collected mid-run.
+        task = asyncio.create_task(_run())
+        _ssh_tasks.add(task)
+        task.add_done_callback(_ssh_tasks.discard)
         return exec_id
 
     @staticmethod
