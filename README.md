@@ -318,11 +318,14 @@ Ajouter dans `~/.claude/settings.json` :
 
 ### Claude (web & mobile)
 
-1. Aller dans **Settings** > **Integrations** > **Add MCP Server**
+1. Aller dans **Settings** > **Integrations** > **Add custom connector**
 2. Remplir :
-   - **URL** : `https://mcp.example.com/mcp`
-   - **Authentication** : Bearer Token
-   - **Token** : le token généré lors de l'installation
+   - **Name** : `TarkaMCP`
+   - **Remote MCP server URL** : `https://mcp.example.com/mcp`
+   - **OAuth Client ID / Secret** : laisser vide (l'auth est gérée par Cloudflare Zero Trust)
+3. Cliquer **Add**
+
+> **Note :** Claude web ne supporte pas les bearer tokens, uniquement OAuth (optionnel). La sécurité repose sur Cloudflare Zero Trust qui protège le tunnel. Ne pas définir `TARKAMCP_AUTH_TOKEN` dans le `.env` du serveur si tu veux que Claude web puisse se connecter.
 
 ### ChatGPT
 
