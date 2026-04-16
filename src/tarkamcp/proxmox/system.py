@@ -27,6 +27,20 @@ class ExecSession:
 
 
 _exec_sessions: dict[str, ExecSession] = {}
+# Drop finished sessions older than this (seconds) on each new insertion so the
+# store can't grow unboundedly in a long-running server.
+_EXEC_SESSION_TTL = 3600
+
+
+def _prune_exec_sessions() -> None:
+    now = time.time()
+    stale = [
+        eid
+        for eid, s in _exec_sessions.items()
+        if s.status != "running" and now - s.started_at > _EXEC_SESSION_TTL
+    ]
+    for eid in stale:
+        del _exec_sessions[eid]
 
 
 def _detect_vm_type(client: ProxmoxClient, node: str, vmid: int) -> str | None:
@@ -213,6 +227,7 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
             # LXC has no API exec endpoint; surface the actionable error up-front.
             return _exec_lxc_unsupported(vmid)
 
+        _prune_exec_sessions()
         exec_id = str(uuid.uuid4())[:8]
         session = ExecSession(
             exec_id=exec_id,

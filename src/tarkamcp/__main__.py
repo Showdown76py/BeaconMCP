@@ -122,12 +122,14 @@ def _run_http(mcp, host: str, port: int):
         scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
         host_header = request.headers.get("x-forwarded-host", request.headers.get("host", "localhost"))
         issuer = f"{scheme}://{host_header}"
+        # Note: `response_types_supported` is omitted on purpose. It describes
+        # the authorization-code flow's response_type; it has no meaning for
+        # the client_credentials grant we advertise.
         return JSONResponse({
             "issuer": issuer,
             "token_endpoint": f"{issuer}/oauth/token",
             "grant_types_supported": ["client_credentials"],
             "token_endpoint_auth_methods_supported": ["client_secret_post"],
-            "response_types_supported": ["token"],
         })
 
     async def oauth_token(request: Request) -> Response:
