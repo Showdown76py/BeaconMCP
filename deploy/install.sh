@@ -28,20 +28,8 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     echo "[*] Création du fichier .env..."
     cp .env.example .env
 
-    # Générer un secret URL automatiquement
-    SECRET=$(openssl rand -hex 32)
-    echo "" >> .env
-    echo "TARKAMCP_SECRET=$SECRET" >> .env
-
     echo ""
-    echo "============================================="
-    echo "  Secret URL généré."
-    echo ""
-    echo "  Ton endpoint MCP sera :"
-    echo "  https://<ton-domaine>/s/$SECRET/mcp"
-    echo ""
-    echo "  Traite cette URL comme un mot de passe."
-    echo "============================================="
+    echo "  .env créé. Remplis-le avec tes credentials Proxmox."
     echo ""
     echo "[!] Édite /opt/tarkamcp/.env pour ajouter tes credentials Proxmox."
 else
@@ -58,8 +46,9 @@ echo ""
 echo "=== Installation terminée ==="
 echo ""
 echo "Prochaines étapes :"
-echo "  1. Éditer /opt/tarkamcp/.env avec tes credentials"
-echo "  2. Démarrer le service : systemctl start tarkamcp"
-echo "  3. Vérifier : curl http://localhost:8420/health"
-echo "  4. Configurer ton tunnel Cloudflare vers localhost:8420"
+echo "  1. Éditer /opt/tarkamcp/.env avec tes credentials Proxmox"
+echo "  2. Créer un client : tarkamcp auth create --name 'Claude Web'"
+echo "  3. Démarrer le service : systemctl start tarkamcp"
+echo "  4. Vérifier : curl http://localhost:8420/health"
+echo "  5. Configurer ton tunnel Cloudflare vers localhost:8420"
 echo ""

@@ -268,21 +268,39 @@ cd /opt/tarkamcp
 sudo bash deploy/install.sh
 ```
 
-Le script va :
-1. Installer les dépendances Python
-2. Créer un `.env` avec un token d'auth généré automatiquement
-3. Installer le service systemd
+Le script installe les dépendances, crée le `.env`, et configure le service systemd.
 
 Ensuite :
 ```bash
-# Éditer le .env avec tes vrais credentials Proxmox
+# 1. Éditer le .env avec tes vrais credentials Proxmox
 nano /opt/tarkamcp/.env
 
-# Démarrer le serveur
+# 2. Créer un client OAuth (pour se connecter depuis Claude/ChatGPT/Gemini)
+tarkamcp auth create --name "Mon iPhone"
+#   → Client ID:     tarkamcp_abc123...
+#   → Client Secret: sk_def456...
+#   Note-les, le secret ne sera plus affiché.
+
+# 3. Démarrer le serveur
 sudo systemctl start tarkamcp
 
-# Vérifier
+# 4. Vérifier
 curl http://localhost:8420/health
+```
+
+### Gérer les clients
+
+```bash
+# Créer un client par appareil / plateforme
+tarkamcp auth create --name "Claude Web"
+tarkamcp auth create --name "ChatGPT"
+tarkamcp auth create --name "Gemini"
+
+# Lister les clients existants
+tarkamcp auth list
+
+# Révoquer un accès
+tarkamcp auth revoke tarkamcp_abc123...
 ```
 
 ### Exposer via Cloudflare Tunnel
@@ -316,40 +334,58 @@ Ajouter dans `~/.claude/settings.json` :
 }
 ```
 
-L'authentification est intégrée dans l'URL elle-même (comme un webhook). Le secret généré à l'installation fait partie du chemin :
-
-```
-https://mcp.tarkacore.dev/s/<SECRET>/mcp
-```
-
-Traite cette URL comme un mot de passe. Quiconque la possède a accès au serveur.
+L'authentification utilise **OAuth 2.1 client credentials**. Tu crées un client sur le serveur (`tarkamcp auth create`), et tu utilises le Client ID + Secret pour te connecter depuis n'importe quelle plateforme.
 
 ### Claude (web & mobile)
 
 1. Aller dans **Settings** > **Integrations** > **Add custom connector**
 2. Remplir :
    - **Name** : `TarkaMCP`
-   - **Remote MCP server URL** : `https://mcp.tarkacore.dev/s/<SECRET>/mcp`
-   - **OAuth Client ID / Secret** : laisser vide
+   - **Remote MCP server URL** : `https://mcp.tarkacore.dev/mcp`
+   - **OAuth Client ID** : `tarkamcp_abc123...` (obtenu via `tarkamcp auth create`)
+   - **OAuth Client Secret** : `sk_def456...`
 3. Cliquer **Add**
 
 ### ChatGPT
 
 1. Aller dans **Settings** > **Developer Mode** > **MCP Servers**
-2. Ajouter un serveur :
-   - **URL** : `https://mcp.tarkacore.dev/s/<SECRET>/mcp`
+2. Ajouter un serveur avec l'URL : `https://mcp.tarkacore.dev/mcp`
+3. Pour l'auth, obtenir un bearer token :
+   ```bash
+   curl -X POST https://mcp.tarkacore.dev/oauth/token \
+     -d "grant_type=client_credentials&client_id=tarkamcp_abc123&client_secret=sk_def456"
+   # → {"access_token": "xxxx", "token_type": "bearer", ...}
+   ```
+4. Utiliser l'`access_token` comme bearer token
 
 ### Gemini CLI
 
 ```bash
-gemini mcp add tarkamcp --url https://mcp.tarkacore.dev/s/<SECRET>/mcp
+# Obtenir un token
+TOKEN=$(curl -s -X POST https://mcp.tarkacore.dev/oauth/token \
+  -d "grant_type=client_credentials&client_id=tarkamcp_abc123&client_secret=sk_def456" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+# Ajouter le serveur MCP
+gemini mcp add tarkamcp --url https://mcp.tarkacore.dev/mcp \
+  --header "Authorization: Bearer $TOKEN"
 ```
 
 ### Gemini API (programmatique)
 
 ```python
+import requests
 from google import genai
 
+# 1. Obtenir un token
+resp = requests.post("https://mcp.tarkacore.dev/oauth/token", data={
+    "grant_type": "client_credentials",
+    "client_id": "tarkamcp_abc123",
+    "client_secret": "sk_def456",
+})
+token = resp.json()["access_token"]
+
+# 2. Utiliser avec Gemini
 client = genai.Client()
 response = client.models.generate_content(
     model="gemini-2.0-flash",
@@ -357,7 +393,8 @@ response = client.models.generate_content(
     config={
         "tools": [{
             "mcp_servers": [{
-                "url": "https://mcp.tarkacore.dev/s/<SECRET>/mcp",
+                "url": "https://mcp.tarkacore.dev/mcp",
+                "headers": {"Authorization": f"Bearer {token}"},
             }]
         }]
     },
