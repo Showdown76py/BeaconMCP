@@ -28,17 +28,19 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     echo "[*] Création du fichier .env..."
     cp .env.example .env
 
-    # Générer un token auth automatiquement
-    TOKEN=$(openssl rand -hex 32)
+    # Générer un secret URL automatiquement
+    SECRET=$(openssl rand -hex 32)
     echo "" >> .env
-    echo "TARKAMCP_AUTH_TOKEN=$TOKEN" >> .env
+    echo "TARKAMCP_SECRET=$SECRET" >> .env
 
     echo ""
     echo "============================================="
-    echo "  Token d'authentification généré :"
-    echo "  $TOKEN"
+    echo "  Secret URL généré."
     echo ""
-    echo "  Conserve-le pour configurer tes clients."
+    echo "  Ton endpoint MCP sera :"
+    echo "  https://<ton-domaine>/s/$SECRET/mcp"
+    echo ""
+    echo "  Traite cette URL comme un mot de passe."
     echo "============================================="
     echo ""
     echo "[!] Édite /opt/tarkamcp/.env pour ajouter tes credentials Proxmox."

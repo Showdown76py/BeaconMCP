@@ -27,57 +27,54 @@ def main():
     args = parser.parse_args()
 
     if args.http:
-        # Streamable HTTP mode for remote clients
         _run_http(args.host, args.port)
     else:
-        # stdio mode for Claude Code / Gemini CLI
         mcp.run(transport="stdio")
 
 
 def _run_http(host: str, port: int):
-    """Run the MCP server over Streamable HTTP with bearer token auth."""
+    """Run the MCP server over Streamable HTTP with URL-based secret auth."""
+    import sys
+
     import uvicorn
     from starlette.applications import Starlette
-    from starlette.middleware import Middleware
     from starlette.requests import Request
-    from starlette.responses import JSONResponse
-    from starlette.routing import Mount
+    from starlette.responses import JSONResponse, Response
+    from starlette.routing import Mount, Route
 
-    auth_token = os.environ.get("TARKAMCP_AUTH_TOKEN", "")
+    secret = os.environ.get("TARKAMCP_SECRET", "")
+    if not secret:
+        print(
+            "ERROR: TARKAMCP_SECRET is required for HTTP mode.\n"
+            "This secret is embedded in the URL to authenticate requests.\n"
+            "Generate one with: openssl rand -hex 32",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
-    # Get the ASGI app from FastMCP
+    # The MCP app from FastMCP
     mcp_app = mcp.streamable_http_app()
 
-    async def auth_middleware(request: Request, call_next):
-        # Health check endpoint -- no auth needed
-        if request.url.path == "/health":
-            return JSONResponse({"status": "ok", "server": "tarkamcp"})
+    # Health check
+    async def health(request: Request) -> Response:
+        return JSONResponse({"status": "ok", "server": "tarkamcp"})
 
-        # If a token is configured, enforce bearer auth.
-        # If no token is set, accept all connections (rely on Cloudflare
-        # Zero Trust or other external auth for security).
-        if auth_token:
-            authorization = request.headers.get("authorization", "")
-            if not authorization.startswith("Bearer ") or authorization[7:] != auth_token:
-                return JSONResponse(
-                    {"error": "Invalid or missing bearer token"},
-                    status_code=401,
-                )
-        return await call_next(request)
-
-    # Wrap MCP app with auth
-    from starlette.middleware.base import BaseHTTPMiddleware
-
+    # The MCP endpoint lives under /s/<secret>/
+    # Anyone without the secret gets a 404 -- the URL IS the key.
+    # Example: https://mcp.example.com/s/a1b2c3d4.../mcp
     app = Starlette(
-        routes=[Mount("/", app=mcp_app)],
-        middleware=[Middleware(BaseHTTPMiddleware, dispatch=auth_middleware)],
+        routes=[
+            Route("/health", health),
+            Mount(f"/s/{secret}", app=mcp_app),
+        ],
     )
 
-    auth_mode = "bearer token" if auth_token else "open (use Cloudflare Zero Trust)"
+    public_path = f"/s/{secret}/mcp"
     print(f"TarkaMCP HTTP server starting on {host}:{port}")
-    print(f"Auth: {auth_mode}")
-    print(f"MCP endpoint: http://{host}:{port}/mcp")
+    print(f"MCP endpoint: http://{host}:{port}{public_path}")
     print(f"Health check: http://{host}:{port}/health")
+    print(f"\nClients should use the full URL including the secret path.")
+    print(f"Treat this URL like a password -- anyone with it has access.")
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 

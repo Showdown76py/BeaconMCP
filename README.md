@@ -316,30 +316,33 @@ Ajouter dans `~/.claude/settings.json` :
 }
 ```
 
+L'authentification est intégrée dans l'URL elle-même (comme un webhook). Le secret généré à l'installation fait partie du chemin :
+
+```
+https://mcp.example.com/s/<SECRET>/mcp
+```
+
+Traite cette URL comme un mot de passe. Quiconque la possède a accès au serveur.
+
 ### Claude (web & mobile)
 
 1. Aller dans **Settings** > **Integrations** > **Add custom connector**
 2. Remplir :
    - **Name** : `TarkaMCP`
-   - **Remote MCP server URL** : `https://mcp.example.com/mcp`
-   - **OAuth Client ID / Secret** : laisser vide (l'auth est gérée par Cloudflare Zero Trust)
+   - **Remote MCP server URL** : `https://mcp.example.com/s/<SECRET>/mcp`
+   - **OAuth Client ID / Secret** : laisser vide
 3. Cliquer **Add**
-
-> **Note :** Claude web ne supporte pas les bearer tokens, uniquement OAuth (optionnel). La sécurité repose sur Cloudflare Zero Trust qui protège le tunnel. Ne pas définir `TARKAMCP_AUTH_TOKEN` dans le `.env` du serveur si tu veux que Claude web puisse se connecter.
 
 ### ChatGPT
 
 1. Aller dans **Settings** > **Developer Mode** > **MCP Servers**
 2. Ajouter un serveur :
-   - **URL** : `https://mcp.example.com/mcp`
-   - **Auth Header** : `Bearer <ton-token>`
+   - **URL** : `https://mcp.example.com/s/<SECRET>/mcp`
 
 ### Gemini CLI
 
 ```bash
-# Dans la config Gemini CLI, ajouter le serveur MCP
-gemini mcp add tarkamcp --url https://mcp.example.com/mcp \
-  --header "Authorization: Bearer <ton-token>"
+gemini mcp add tarkamcp --url https://mcp.example.com/s/<SECRET>/mcp
 ```
 
 ### Gemini API (programmatique)
@@ -354,8 +357,7 @@ response = client.models.generate_content(
     config={
         "tools": [{
             "mcp_servers": [{
-                "url": "https://mcp.example.com/mcp",
-                "headers": {"Authorization": "Bearer <ton-token>"},
+                "url": "https://mcp.example.com/s/<SECRET>/mcp",
             }]
         }]
     },
