@@ -273,7 +273,7 @@ class TokenStore:
     # Seconds to keep a revoked token alive so the current MCP response /
     # SSE stream has time to reach the client before the middleware starts
     # rejecting follow-up requests.
-    REVOKE_GRACE_SECONDS = 30.0
+    REVOKE_GRACE_SECONDS = 8.0
 
     def revoke(self, token: str) -> bool:
         """Schedule a token for revocation after a short grace period.
