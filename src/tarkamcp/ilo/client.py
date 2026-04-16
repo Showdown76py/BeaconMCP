@@ -89,7 +89,7 @@ class ILOClient:
 
         def _sync_call() -> Any:
             ilo = hpilo.Ilo(
-                f"localhost",
+                "localhost",
                 port=local_port,
                 login=ilo_cfg.user,
                 password=ilo_cfg.password,
@@ -97,7 +97,7 @@ class ILOClient:
             )
             return getattr(ilo, method)(**kwargs)
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, _sync_call)
 
     async def get_server_info(self) -> dict[str, Any]:

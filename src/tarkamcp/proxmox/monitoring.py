@@ -19,24 +19,40 @@ def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         If a node appears offline, use ilo_health_status to check if it's a hardware issue,
         or ssh_exec_command to try reaching it directly.
         """
-        results = []
+        # GET /nodes returns the full cluster view from whichever member answers,
+        # so we stop at the first reachable configured node. Nodes we can't reach
+        # via their API are still reported as "unreachable" so the caller knows
+        # which credentials are stale.
+        results: dict[str, dict[str, Any]] = {}
+        unreachable: list[dict[str, Any]] = []
+
         for node_name in client.configured_nodes:
             data = client.get(node_name, "nodes")
             if isinstance(data, dict) and "error" in data:
-                results.append({"name": node_name, "status": "unreachable", "error": data["error"]})
-            elif isinstance(data, list):
+                unreachable.append({"name": node_name, "status": "unreachable", "error": data["error"]})
+                continue
+            if isinstance(data, list):
                 for node in data:
-                    results.append({
-                        "name": node.get("node"),
+                    name = node.get("node")
+                    if not name or name in results:
+                        continue
+                    results[name] = {
+                        "name": name,
                         "status": node.get("status", "unknown"),
                         "cpu": round(node.get("cpu", 0) * 100, 1),
                         "memory_used_gb": round(node.get("mem", 0) / 1073741824, 1),
                         "memory_total_gb": round(node.get("maxmem", 0) / 1073741824, 1),
                         "uptime_hours": round(node.get("uptime", 0) / 3600, 1),
-                    })
-            else:
-                results.append({"name": node_name, "status": "unknown", "raw": str(data)})
-        return {"nodes": results}
+                    }
+                break
+            unreachable.append({"name": node_name, "status": "unknown", "raw": str(data)})
+
+        # Surface any configured-but-unreachable node that didn't appear in the
+        # cluster view (e.g., single-node setup where pve2 is down).
+        for entry in unreachable:
+            results.setdefault(entry["name"], entry)
+
+        return {"nodes": list(results.values())}
 
     @mcp.tool()
     def proxmox_node_status(node: str) -> dict[str, Any]:

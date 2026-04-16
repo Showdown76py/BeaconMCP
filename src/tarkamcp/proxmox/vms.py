@@ -68,10 +68,8 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         if not vm_type:
             return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
 
-        # Use reboot for qemu, restart for lxc
-        endpoint = "reboot" if vm_type == "qemu" else "restart"
-        # Proxmox may not have a direct restart for lxc in older versions, try reboot
-        result = client.post(node, f"nodes/{node}/{vm_type}/{vmid}/status/{endpoint}")
+        # Both QEMU and LXC use /status/reboot (PVE 7+). LXC does not expose /status/restart.
+        result = client.post(node, f"nodes/{node}/{vm_type}/{vmid}/status/reboot")
         if isinstance(result, dict) and "error" in result:
             return result
         return {"vmid": vmid, "node": node, "action": "restart", "upid": result}
@@ -107,7 +105,8 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
 
         kwargs: dict[str, Any] = {"newid": newid}
         if name:
-            kwargs["name"] = name
+            # PVE uses `name` for QEMU VMs and `hostname` for LXC containers.
+            kwargs["name" if vm_type == "qemu" else "hostname"] = name
 
         result = client.post(node, f"nodes/{node}/{vm_type}/{vmid}/clone", **kwargs)
         if isinstance(result, dict) and "error" in result:

@@ -236,7 +236,10 @@ grep "^PasswordAuthentication" /etc/ssh/sshd_config
 
 ## Configuration iLO
 
-L'iLO est sur le réseau local. Comme TarkaMCP tourne sur pve1, il y accède directement.
+L'iLO est sur le réseau local. TarkaMCP y accède via un tunnel SSH ouvert sur
+`ILO_JUMP_HOST` (par défaut `pve1`) ; les credentials SSH doivent donc être
+configurés. Quand TarkaMCP tourne lui-même sur pve1, le tunnel est trivial
+(localhost → iLO) mais reste nécessaire vu que python-hpilo est synchrone.
 
 ```bash
 # Trouver l'IP de l'iLO depuis pve1
@@ -390,7 +393,10 @@ python tests/test_integration.py --test-vmid 9999
 
 > **"Mets à jour les paquets sur tous les conteneurs"**
 >
-> L'IA utilise `proxmox_list_vms` → liste les CTs → `proxmox_exec_command_async` → lance `apt update && apt upgrade -y` dans chacun → poll les résultats
+> L'API Proxmox n'expose pas d'endpoint `exec` pour les LXC. L'IA utilise
+> donc `proxmox_list_vms` → liste les CTs → `ssh_exec_command_async` sur le
+> nœud hôte avec `pct exec <vmid> -- sh -c 'apt update && apt upgrade -y'`
+> pour chacun → poll les résultats.
 
 ---
 
