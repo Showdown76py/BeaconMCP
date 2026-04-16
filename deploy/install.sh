@@ -11,15 +11,13 @@ VENV_DIR="$INSTALL_DIR/.venv"
 echo "=== TarkaMCP - Installation ==="
 
 # 1. Dépendances système
-if ! command -v python3 >/dev/null 2>&1; then
-    echo "[*] Installation de python3..."
-    apt-get install -y python3 python3-venv python3-pip git
-fi
+echo "[*] Vérification des dépendances système..."
+apt-get update -qq
+apt-get install -y python3 python3-pip python3-venv git
 
-if ! python3 -c "import venv" 2>/dev/null; then
-    echo "[*] Installation de python3-venv..."
-    apt-get install -y python3-venv
-fi
+# Paquet venv versionné (ex: python3.11-venv sur Debian 12)
+PY_VER=$(python3 -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}")')
+apt-get install -y "${PY_VER}-venv" 2>/dev/null || true
 
 # 2. Cloner ou mettre à jour
 if [ -d "$INSTALL_DIR/.git" ]; then
@@ -32,8 +30,9 @@ else
 fi
 
 # 3. Environnement virtuel Python
-if [ ! -d "$VENV_DIR" ]; then
-    echo "[*] Création du virtual env Python..."
+if [ ! -x "$VENV_DIR/bin/pip" ]; then
+    echo "[*] (Re)création du virtual env Python..."
+    rm -rf "$VENV_DIR"
     python3 -m venv "$VENV_DIR"
 fi
 
