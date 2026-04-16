@@ -253,6 +253,52 @@ def test_unwrap_exception_prefers_leaf_over_group():
     assert _unwrap_exception(outer) is leaf
 
 
+def test_classify_error_preview_model_permission_denied():
+    from tarkamcp.dashboard.chat import _classify_error
+
+    err = Exception(
+        "403 PERMISSION_DENIED. The caller does not have permission"
+    )
+    code, msg = _classify_error(err, "gemini-3-flash-preview")
+    assert code == "model_access_denied"
+    assert "gemini-2.5" in msg
+    assert "gemini-3-flash-preview" in msg
+
+
+def test_classify_error_stable_model_permission_denied():
+    from tarkamcp.dashboard.chat import _classify_error
+
+    err = Exception("403 PERMISSION_DENIED. caller issue")
+    code, msg = _classify_error(err, "gemini-2.5-flash")
+    assert code == "permission_denied"
+    assert "gemini-2.5-flash" in msg
+
+
+def test_classify_error_model_not_found():
+    from tarkamcp.dashboard.chat import _classify_error
+
+    err = Exception("404 NOT_FOUND. models/foo is not found")
+    code, msg = _classify_error(err, "foo")
+    assert code == "model_not_found"
+
+
+def test_classify_error_rate_limit():
+    from tarkamcp.dashboard.chat import _classify_error
+
+    err = Exception("429 RESOURCE_EXHAUSTED. Quota exceeded")
+    code, _msg = _classify_error(err, "gemini-2.5-flash")
+    assert code == "rate_limited"
+
+
+def test_classify_error_generic():
+    from tarkamcp.dashboard.chat import _classify_error
+
+    err = RuntimeError("boom")
+    code, msg = _classify_error(err, "gemini-2.5-flash")
+    assert code == "gemini_error"
+    assert "RuntimeError" in msg
+
+
 def test_thinking_config_for_gemini_3():
     from tarkamcp.dashboard.chat import GeminiChatEngine
 

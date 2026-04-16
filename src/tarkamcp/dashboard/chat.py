@@ -293,10 +293,8 @@ class GeminiChatEngine:
             # real cause; the client only gets a short message.
             traceback.print_exception(e, file=sys.stderr)
             _logger.error("gemini chat turn failed: %s", leaf, exc_info=False)
-            yield ErrorEvent(
-                code="gemini_error",
-                message=f"{type(leaf).__name__}: {leaf}",
-            )
+            code, message = _classify_error(leaf, turn.model)
+            yield ErrorEvent(code=code, message=message)
 
     async def _run(self, turn: TurnInput) -> AsyncIterator[ChatEvent]:
         try:
@@ -464,6 +462,56 @@ def _emit_chunk(
                     duration_ms=duration,
                 ))
     return out
+
+
+def _classify_error(exc: BaseException, model: str) -> tuple[str, str]:
+    """Map a leaf exception to a short user-facing (code, message).
+
+    The dashboard UI renders the message verbatim, so it must be concise
+    and actionable in French. Full technical detail lands in journalctl
+    via the stderr traceback dump.
+    """
+    name = type(exc).__name__
+    msg = str(exc)
+
+    # Google API 403 usually means "this API key cannot access this
+    # model or feature" -- preview models require allowlist access.
+    if "PERMISSION_DENIED" in msg or "403" in msg and "caller" in msg.lower():
+        is_preview = "preview" in model
+        if is_preview:
+            return (
+                "model_access_denied",
+                (
+                    f"Ta clé Gemini n'a pas accès à {model} (allowlist Google "
+                    "requise pour les modèles preview). Bascule sur "
+                    "gemini-2.5-flash ou gemini-2.5-pro via le dropdown en bas "
+                    "à gauche — ils sont dispos sur toutes les clés AI Studio."
+                ),
+            )
+        return (
+            "permission_denied",
+            (
+                f"Gemini a refusé la requête sur {model} (403 PERMISSION_DENIED). "
+                "Vérifie que ta clé API peut utiliser ce modèle."
+            ),
+        )
+
+    # 404 on the model -> invalid model ID for the API version.
+    if "NOT_FOUND" in msg or "404" in msg and "model" in msg.lower():
+        return (
+            "model_not_found",
+            f"Modèle {model} introuvable côté Gemini. Essaie un autre modèle.",
+        )
+
+    # 429 rate limit / quota.
+    if "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower():
+        return (
+            "rate_limited",
+            "Quota Gemini dépassé. Réessaie dans quelques secondes.",
+        )
+
+    # Default: include the exception name to help future triage.
+    return ("gemini_error", f"{name}: {msg}")
 
 
 def _short_preview(payload: Any, *, limit: int = 500) -> str:
