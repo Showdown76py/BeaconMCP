@@ -15,11 +15,7 @@ def main():
     sub = parser.add_subparsers(dest="command")
 
     # --- serve (default) ---
-    serve_parser = sub.add_parser("serve", help="Start the MCP server")
-    serve_parser.add_argument(
-        "--http", action="store_true",
-        help="Run as Streamable HTTP server (for Claude mobile, ChatGPT, Gemini)",
-    )
+    serve_parser = sub.add_parser("serve", help="Start the MCP HTTP server")
     serve_parser.add_argument(
         "--port", type=int, default=int(os.environ.get("TARKAMCP_PORT", "8420")),
         help="HTTP port (default: 8420)",
@@ -29,7 +25,7 @@ def main():
         help="HTTP bind address (default: 0.0.0.0)",
     )
 
-    # --- auth create ---
+    # --- auth ---
     auth_parser = sub.add_parser("auth", help="Manage OAuth client credentials")
     auth_sub = auth_parser.add_subparsers(dest="auth_command")
 
@@ -46,14 +42,7 @@ def main():
 
     args = parser.parse_args()
 
-    # Default to 'serve' if no subcommand
-    if args.command is None:
-        # Backward compat: bare `python -m tarkamcp` = stdio serve
-        from .server import mcp
-        mcp.run(transport="stdio")
-        return
-
-    if args.command == "serve":
+    if args.command is None or args.command == "serve":
         _cmd_serve(args)
     elif args.command == "auth":
         _cmd_auth(args)
@@ -62,16 +51,15 @@ def main():
 def _cmd_serve(args):
     from .server import mcp
 
-    if args.http:
-        _run_http(mcp, args.host, args.port)
-    else:
-        mcp.run(transport="stdio")
+    host = getattr(args, "host", os.environ.get("TARKAMCP_HOST", "0.0.0.0"))
+    port = getattr(args, "port", int(os.environ.get("TARKAMCP_PORT", "8420")))
+    _run_http(mcp, host, port)
 
 
 def _cmd_auth(args):
     from .auth import ClientStore
 
-    store = ClientStore(args.clients_file)
+    store = ClientStore(getattr(args, "clients_file", None))
 
     if args.auth_command == "create":
         client_id, client_secret = store.create(args.name)
@@ -84,8 +72,7 @@ def _cmd_auth(args):
         print()
         print("  Utilise ces credentials dans :")
         print("  - Claude web/mobile : champs OAuth Client ID / Client Secret")
-        print("  - ChatGPT / Gemini  : en-tête Authorization: Bearer <token>")
-        print("    (obtenir un token : POST /oauth/token avec les credentials)")
+        print("  - ChatGPT / Gemini  : POST /oauth/token pour obtenir un bearer token")
         print()
         print("  Le Client Secret ne sera plus affiché. Conserve-le maintenant.")
         print()
@@ -131,15 +118,10 @@ def _run_http(mcp, host: str, port: int):
     client_store = ClientStore(Path(clients_file) if clients_file else None)
     token_store = TokenStore()
 
-    # --- OAuth endpoints ---
-
     async def oauth_metadata(request: Request) -> Response:
-        """RFC 8414 -- OAuth Authorization Server Metadata."""
-        # Build issuer from request
         scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
         host_header = request.headers.get("x-forwarded-host", request.headers.get("host", "localhost"))
         issuer = f"{scheme}://{host_header}"
-
         return JSONResponse({
             "issuer": issuer,
             "token_endpoint": f"{issuer}/oauth/token",
@@ -149,7 +131,6 @@ def _run_http(mcp, host: str, port: int):
         })
 
     async def oauth_token(request: Request) -> Response:
-        """OAuth 2.1 token endpoint -- client_credentials grant."""
         try:
             if request.headers.get("content-type", "").startswith("application/json"):
                 body = await request.json()
@@ -165,13 +146,12 @@ def _run_http(mcp, host: str, port: int):
 
         if grant_type != "client_credentials":
             return JSONResponse(
-                {"error": "unsupported_grant_type", "error_description": "Only client_credentials is supported"},
+                {"error": "unsupported_grant_type"},
                 status_code=400,
             )
-
         if not client_store.verify(client_id, client_secret):
             return JSONResponse(
-                {"error": "invalid_client", "error_description": "Invalid client_id or client_secret"},
+                {"error": "invalid_client"},
                 status_code=401,
             )
 
@@ -182,39 +162,30 @@ def _run_http(mcp, host: str, port: int):
             "expires_in": expires_in,
         })
 
-    async def health(request: Request) -> Response:
+    async def health(_request: Request) -> Response:
         return JSONResponse({"status": "ok", "server": "tarkamcp"})
-
-    # --- Auth middleware ---
 
     async def auth_middleware(request: Request, call_next):
         path = request.url.path
-
-        # Public endpoints -- no auth
         if path in ("/health", "/oauth/token", "/.well-known/oauth-authorization-server"):
             return await call_next(request)
 
-        # Check bearer token
         authorization = request.headers.get("authorization", "")
         if not authorization.startswith("Bearer "):
             return JSONResponse(
-                {"error": "unauthorized", "error_description": "Bearer token required"},
+                {"error": "unauthorized"},
                 status_code=401,
                 headers={"WWW-Authenticate": 'Bearer realm="tarkamcp"'},
             )
 
-        token = authorization[7:]
-        client_id = token_store.validate(token)
+        client_id = token_store.validate(authorization[7:])
         if not client_id:
             return JSONResponse(
-                {"error": "invalid_token", "error_description": "Token is invalid or expired"},
+                {"error": "invalid_token"},
                 status_code=401,
                 headers={"WWW-Authenticate": 'Bearer realm="tarkamcp", error="invalid_token"'},
             )
-
         return await call_next(request)
-
-    # --- App assembly ---
 
     mcp_app = mcp.streamable_http_app()
 
@@ -229,13 +200,13 @@ def _run_http(mcp, host: str, port: int):
     )
 
     n_clients = len(client_store.list_clients())
-    print(f"TarkaMCP HTTP server starting on {host}:{port}")
-    print(f"Registered clients: {n_clients}")
-    print(f"MCP endpoint:   http://{host}:{port}/mcp")
-    print(f"Token endpoint: http://{host}:{port}/oauth/token")
-    print(f"Health check:   http://{host}:{port}/health")
+    print(f"TarkaMCP starting on {host}:{port}")
+    print(f"Clients: {n_clients}")
+    print(f"MCP:     http://{host}:{port}/mcp")
+    print(f"OAuth:   http://{host}:{port}/oauth/token")
+    print(f"Health:  http://{host}:{port}/health")
     if n_clients == 0:
-        print(f"\nNo clients registered! Run: tarkamcp auth create --name 'My Client'")
+        print(f"\nAucun client ! Créer avec : tarkamcp auth create --name 'Mon Client'")
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 
