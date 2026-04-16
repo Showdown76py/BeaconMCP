@@ -44,14 +44,6 @@ def _run_http(host: str, port: int):
     from starlette.routing import Mount
 
     auth_token = os.environ.get("TARKAMCP_AUTH_TOKEN", "")
-    if not auth_token:
-        import sys
-        print(
-            "ERROR: TARKAMCP_AUTH_TOKEN is required for HTTP mode.\n"
-            "Generate one with: openssl rand -hex 32",
-            file=sys.stderr,
-        )
-        sys.exit(1)
 
     # Get the ASGI app from FastMCP
     mcp_app = mcp.streamable_http_app()
@@ -61,13 +53,16 @@ def _run_http(host: str, port: int):
         if request.url.path == "/health":
             return JSONResponse({"status": "ok", "server": "tarkamcp"})
 
-        # Check bearer token
-        authorization = request.headers.get("authorization", "")
-        if not authorization.startswith("Bearer ") or authorization[7:] != auth_token:
-            return JSONResponse(
-                {"error": "Invalid or missing bearer token"},
-                status_code=401,
-            )
+        # If a token is configured, enforce bearer auth.
+        # If no token is set, accept all connections (rely on Cloudflare
+        # Zero Trust or other external auth for security).
+        if auth_token:
+            authorization = request.headers.get("authorization", "")
+            if not authorization.startswith("Bearer ") or authorization[7:] != auth_token:
+                return JSONResponse(
+                    {"error": "Invalid or missing bearer token"},
+                    status_code=401,
+                )
         return await call_next(request)
 
     # Wrap MCP app with auth
@@ -78,7 +73,9 @@ def _run_http(host: str, port: int):
         middleware=[Middleware(BaseHTTPMiddleware, dispatch=auth_middleware)],
     )
 
+    auth_mode = "bearer token" if auth_token else "open (use Cloudflare Zero Trust)"
     print(f"TarkaMCP HTTP server starting on {host}:{port}")
+    print(f"Auth: {auth_mode}")
     print(f"MCP endpoint: http://{host}:{port}/mcp")
     print(f"Health check: http://{host}:{port}/health")
     uvicorn.run(app, host=host, port=port, log_level="info")
