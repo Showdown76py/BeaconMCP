@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tarkamcp"
+version = "0.1.0"
+description = "MCP server for Proxmox VE infrastructure management"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=1.0",
+    "proxmoxer",
+    "requests",
+    "python-hpilo",
+    "asyncssh",
+    "python-dotenv",
+    "pyyaml",
+]
+
+[project.scripts]
+tarkamcp = "tarkamcp.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tarkamcp"]
