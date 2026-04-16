@@ -119,6 +119,9 @@ Dans le dashboard Cloudflare Zero Trust, ajouter un tunnel :
 | **Hostname** | `mcp.example.com` |
 | **Service** | `http://localhost:8420` |
 
+Puis déclarer ce hostname dans `.env` via `TARKAMCP_ALLOWED_HOSTS`, sinon le
+SDK MCP renverra `421 Misdirected Request` (protection DNS-rebinding).
+
 ### Gérer les clients
 
 ```bash
@@ -281,6 +284,11 @@ SSH_PASSWORD=xxxxx
 # OPTIONS
 PVE_VERIFY_SSL=false
 # TARKAMCP_PORT=8420
+
+# OBLIGATOIRE en prod -- hostnames publics autorisés par la protection
+# DNS-rebinding du SDK MCP (sinon 421 Misdirected Request). Virgules.
+TARKAMCP_ALLOWED_HOSTS=mcp.example.com,127.0.0.1:*,localhost:*,[::1]:*
+# TARKAMCP_ALLOWED_ORIGINS=https://claude.ai,https://chat.openai.com,https://gemini.google.com
 ```
 
 Modules chargés conditionnellement : sans SSH → pas de `ssh_*`, sans iLO → pas de `ilo_*`.
@@ -382,6 +390,8 @@ python tests/test_integration.py --test-vmid 9999
 | `iLO ... unreachable` | pve1 down ou iLO injoignable | Vérifier pve1 d'abord |
 | `SSH connection failed` | Auth SSH désactivée | `grep PasswordAuthentication /etc/ssh/sshd_config` |
 | `invalid_client` | Mauvais Client ID/Secret | `tarkamcp auth list` pour vérifier |
+| `421 Misdirected Request` | Hostname public absent de l'allowlist | Ajouter le domaine à `TARKAMCP_ALLOWED_HOSTS` dans `.env` puis redémarrer |
+| `{"error":"unauthorized"}` sur `/authorize` | Client ID inexistant côté serveur | Créer le client avec `tarkamcp auth create`, puis recoller l'ID dans le connecteur |
 
 ---
 
