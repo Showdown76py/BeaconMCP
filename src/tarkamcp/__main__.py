@@ -105,6 +105,7 @@ def _cmd_auth(args):
 def _run_http(mcp, host: str, port: int):
     """Run the MCP server over Streamable HTTP with OAuth client credentials."""
     import uvicorn
+    from contextlib import asynccontextmanager
     from starlette.applications import Starlette
     from starlette.middleware import Middleware
     from starlette.middleware.base import BaseHTTPMiddleware
@@ -264,6 +265,15 @@ def _run_http(mcp, host: str, port: int):
 
     mcp_app = mcp.streamable_http_app()
 
+    # The MCP streamable-HTTP app starts its session manager task group in its
+    # own lifespan. When we Mount it under a parent Starlette, only the parent
+    # app's lifespan runs — so we forward the child's lifespan explicitly,
+    # otherwise requests fail with "Task group is not initialized".
+    @asynccontextmanager
+    async def lifespan(_app):
+        async with mcp_app.router.lifespan_context(_app):
+            yield
+
     app = Starlette(
         routes=[
             Route("/health", health),
@@ -274,6 +284,7 @@ def _run_http(mcp, host: str, port: int):
             Mount("/", app=mcp_app),
         ],
         middleware=[Middleware(BaseHTTPMiddleware, dispatch=auth_middleware)],
+        lifespan=lifespan,
     )
 
     n_clients = len(client_store.list_clients())
