@@ -165,10 +165,15 @@ def _run_http(mcp, host: str, port: int):
     def totp_record_success(client_id: str) -> None:
         totp_failures.pop(client_id, None)
 
-    async def oauth_metadata(request: Request) -> Response:
+    def _issuer(request: Request) -> str:
         scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
-        host_header = request.headers.get("x-forwarded-host", request.headers.get("host", "localhost"))
-        issuer = f"{scheme}://{host_header}"
+        host_header = request.headers.get(
+            "x-forwarded-host", request.headers.get("host", "localhost")
+        )
+        return f"{scheme}://{host_header}"
+
+    async def oauth_metadata(request: Request) -> Response:
+        issuer = _issuer(request)
         # registration_endpoint is intentionally omitted: dynamic client
         # registration is disabled, clients must be provisioned via CLI.
         return JSONResponse({
@@ -179,6 +184,17 @@ def _run_http(mcp, host: str, port: int):
             "grant_types_supported": ["authorization_code", "client_credentials"],
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": ["client_secret_post"],
+        })
+
+    async def protected_resource_metadata(request: Request) -> Response:
+        # RFC 9728 - required by the MCP 2025-06-18 spec so that clients
+        # (Claude Web in particular) can discover which authorization server
+        # protects the /mcp resource. We act as our own authorization server.
+        issuer = _issuer(request)
+        return JSONResponse({
+            "resource": issuer,
+            "authorization_servers": [issuer],
+            "bearer_methods_supported": ["header"],
         })
 
     def _validate_authorize_params(
@@ -404,15 +420,24 @@ def _run_http(mcp, host: str, port: int):
             "/oauth/authorize",
             "/oauth/register",
             "/.well-known/oauth-authorization-server",
+            "/.well-known/oauth-protected-resource",
+            "/.well-known/oauth-protected-resource/mcp",
         ):
             return await call_next(request)
+
+        # MCP 2025-06-18 + RFC 9728: point unauth'd clients at the resource
+        # metadata so they can discover the authorization server.
+        issuer = _issuer(request)
+        resource_meta = f"{issuer}/.well-known/oauth-protected-resource"
 
         authorization = request.headers.get("authorization", "")
         if not authorization.startswith("Bearer "):
             return JSONResponse(
                 {"error": "unauthorized"},
                 status_code=401,
-                headers={"WWW-Authenticate": 'Bearer realm="tarkamcp"'},
+                headers={
+                    "WWW-Authenticate": f'Bearer realm="tarkamcp", resource_metadata="{resource_meta}"',
+                },
             )
 
         client_id = token_store.validate(authorization[7:])
@@ -420,7 +445,9 @@ def _run_http(mcp, host: str, port: int):
             return JSONResponse(
                 {"error": "invalid_token"},
                 status_code=401,
-                headers={"WWW-Authenticate": 'Bearer realm="tarkamcp", error="invalid_token"'},
+                headers={
+                    "WWW-Authenticate": f'Bearer realm="tarkamcp", error="invalid_token", resource_metadata="{resource_meta}"',
+                },
             )
         return await call_next(request)
 
@@ -439,6 +466,8 @@ def _run_http(mcp, host: str, port: int):
         routes=[
             Route("/health", health),
             Route("/.well-known/oauth-authorization-server", oauth_metadata),
+            Route("/.well-known/oauth-protected-resource", protected_resource_metadata),
+            Route("/.well-known/oauth-protected-resource/mcp", protected_resource_metadata),
             Route("/oauth/authorize", oauth_authorize_get, methods=["GET"]),
             Route("/oauth/authorize", oauth_authorize_post, methods=["POST"]),
             Route("/oauth/token", oauth_token, methods=["POST"]),
