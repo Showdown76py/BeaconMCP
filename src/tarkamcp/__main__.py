@@ -534,6 +534,9 @@ def _build_dashboard_routes(client_store, token_store, totp_locked,
     api_key = os.environ.get("GEMINI_API_KEY", "")
     engine = GeminiChatEngine(api_key=api_key) if api_key else None
     mcp_public_url = os.environ.get("TARKAMCP_DASHBOARD_PUBLIC_URL", "").strip() or None
+    mcp_mode = os.environ.get("TARKAMCP_DASHBOARD_MCP_MODE", "local").strip().lower()
+    if mcp_mode not in ("local", "remote"):
+        mcp_mode = "local"
 
     deps = DashboardDeps(
         database=database,
@@ -546,6 +549,7 @@ def _build_dashboard_routes(client_store, token_store, totp_locked,
         conversations=conversations,
         engine=engine,
         mcp_public_url=mcp_public_url,
+        mcp_mode=mcp_mode,
     )
     return build_dashboard_routes(deps)
 

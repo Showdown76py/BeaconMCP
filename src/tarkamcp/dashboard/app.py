@@ -68,9 +68,14 @@ class DashboardDeps:
     totp_record_success: Callable[[str], None]
     conversations: ConversationStore | None = None
     engine: ChatEngine | None = None
-    # Public URL used by Gemini's backend to call this MCP server. Falls
-    # back to the request's Host header at call time when unset.
+    # Public URL used by Gemini's backend to call this MCP server in
+    # "remote" mode. Falls back to the request's Host header at call time
+    # when unset. Ignored in "local" mode.
     mcp_public_url: str | None = None
+    # "local": dashboard holds an MCP ClientSession (default; works on
+    # any API key). "remote": pass an McpServer to Gemini with a public
+    # URL so Google's backend calls MCP directly (Gemini 3 native).
+    mcp_mode: str = "local"
 
 
 # ---------------------------------------------------------------------------
@@ -530,6 +535,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                 effort=effort,
                 bearer=session.mcp_bearer or "",
                 mcp_url=_resolve_mcp_url(request, deps),
+                mcp_mode=deps.mcp_mode,
             )
 
             try:
@@ -646,17 +652,24 @@ def _require_active_session(
 
 
 def _resolve_mcp_url(request: Request, deps: DashboardDeps) -> str:
-    """Return the URL the engine should connect to for MCP.
+    """Return the URL the chat engine should use for MCP.
 
-    Since the chat engine opens an MCP client session *from the dashboard
-    process*, the fastest and most reliable target is the local
-    127.0.0.1:<port> endpoint served by the same Uvicorn instance. That
-    avoids a round-trip through Cloudflare and keeps working when the
-    public hostname is unreachable. Callers can override via
-    ``TARKAMCP_DASHBOARD_PUBLIC_URL`` if they need a different target.
+    - In **local** mode the dashboard opens the session itself, so a
+      loopback target (``http://127.0.0.1:<port>/mcp``) is ideal: no
+      Cloudflare round-trip and no dependency on the public hostname.
+    - In **remote** mode Google's backend calls the URL directly, so we
+      must return a publicly reachable address. Users can override via
+      ``TARKAMCP_DASHBOARD_PUBLIC_URL``; otherwise we fall back to the
+      reverse-proxy Host header.
     """
     if deps.mcp_public_url:
         return deps.mcp_public_url.rstrip("/") + "/mcp"
+    if deps.mcp_mode == "remote":
+        scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+        host = request.headers.get(
+            "x-forwarded-host", request.headers.get("host", "localhost"),
+        )
+        return f"{scheme}://{host}/mcp"
     import os as _os
     port = _os.environ.get("TARKAMCP_PORT", "8420")
     return f"http://127.0.0.1:{port}/mcp"
