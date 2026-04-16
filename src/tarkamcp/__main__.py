@@ -419,6 +419,7 @@ def _run_http(mcp, host: str, port: int):
     async def auth_middleware(request: Request, call_next):
         path = request.url.path
         if path in (
+            "/",
             "/health",
             "/oauth/token",
             "/oauth/authorize",
@@ -427,6 +428,10 @@ def _run_http(mcp, host: str, port: int):
             "/.well-known/oauth-protected-resource",
             "/.well-known/oauth-protected-resource/mcp",
         ):
+            return await call_next(request)
+
+        # Dashboard routes have their own session-based auth.
+        if path.startswith("/app/"):
             return await call_next(request)
 
         # MCP 2025-06-18 + RFC 9728: point unauth'd clients at the resource
@@ -474,6 +479,10 @@ def _run_http(mcp, host: str, port: int):
         async with mcp_app.router.lifespan_context(_app):
             yield
 
+    # Optional dashboard routes (login + chat panels at /app/*).
+    dashboard_routes = _build_dashboard_routes(client_store, token_store, totp_locked,
+                                               totp_record_failure, totp_record_success)
+
     app = Starlette(
         routes=[
             Route("/health", health),
@@ -484,6 +493,7 @@ def _run_http(mcp, host: str, port: int):
             Route("/oauth/authorize", oauth_authorize_post, methods=["POST"]),
             Route("/oauth/token", oauth_token, methods=["POST"]),
             Route("/oauth/register", oauth_register, methods=["POST"]),
+            *dashboard_routes,
             Mount("/", app=mcp_app),
         ],
         middleware=[Middleware(BaseHTTPMiddleware, dispatch=auth_middleware)],
@@ -497,9 +507,37 @@ def _run_http(mcp, host: str, port: int):
     print(f"Authorize: http://{host}:{port}/oauth/authorize")
     print(f"Token:     http://{host}:{port}/oauth/token")
     print(f"Health:    http://{host}:{port}/health")
+    if dashboard_routes:
+        print(f"Dashboard: http://{host}:{port}/app/login")
+    else:
+        print("Dashboard: disabled (set GEMINI_API_KEY to enable)")
     if n_clients == 0:
         print(f"\nAucun client ! Créer avec : tarkamcp auth create --name 'Mon Client'")
     uvicorn.run(app, host=host, port=port, log_level="info")
+
+
+def _build_dashboard_routes(client_store, token_store, totp_locked,
+                             totp_record_failure, totp_record_success):
+    """Build dashboard routes if enabled. Returns [] when disabled."""
+    from . import dashboard
+    if not dashboard.is_enabled():
+        return []
+    from .dashboard.app import DashboardDeps, build_dashboard_routes
+    from .dashboard.db import Database
+    from .dashboard.session import SessionStore
+
+    database = Database()
+    session_store = SessionStore(database)
+    deps = DashboardDeps(
+        database=database,
+        session_store=session_store,
+        client_store=client_store,
+        token_store=token_store,
+        totp_locked=totp_locked,
+        totp_record_failure=totp_record_failure,
+        totp_record_success=totp_record_success,
+    )
+    return build_dashboard_routes(deps)
 
 
 if __name__ == "__main__":

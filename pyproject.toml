@@ -17,6 +17,9 @@ dependencies = [
     "pyyaml",
     "pyotp",
     "qrcode",
+    "cryptography>=42",
+    "jinja2>=3",
+    "google-genai>=1.0",
 ]
 
 [project.scripts]
@@ -27,3 +30,5 @@ packages = ["src/tarkamcp"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/tarkamcp/assets/logo.webp" = "tarkamcp/assets/logo.webp"
+"src/tarkamcp/dashboard/templates" = "tarkamcp/dashboard/templates"
+"src/tarkamcp/dashboard/static" = "tarkamcp/dashboard/static"
