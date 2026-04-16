@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pyotp
+
 
 CLIENTS_FILE = Path("/opt/tarkamcp/clients.json")
 
@@ -33,6 +35,7 @@ class Client:
     client_secret_hash: str
     name: str
     created_at: float
+    totp_secret: str  # base32-encoded TOTP seed; plaintext on purpose
 
 
 @dataclass
@@ -90,8 +93,29 @@ class ClientStore:
                 file=sys.stderr,
             )
             raise
+
+        # Clients missing totp_secret predate the 2FA migration and are
+        # implicitly revoked. We log them, skip them, and rewrite the file
+        # below so they can't be re-loaded next boot.
+        revoked: list[str] = []
         for c in data.get("clients", []):
-            self._clients[c["client_id"]] = Client(**c)
+            if not c.get("totp_secret"):
+                revoked.append(f"{c.get('client_id', '?')} ({c.get('name', '?')})")
+                continue
+            try:
+                self._clients[c["client_id"]] = Client(**c)
+            except TypeError:
+                # Unknown fields or missing required fields: treat as revoked.
+                revoked.append(f"{c.get('client_id', '?')} ({c.get('name', '?')})")
+
+        if revoked:
+            print(
+                "WARNING: the following clients were revoked because they "
+                "predate the 2FA migration (no TOTP secret). Recreate them "
+                "with `tarkamcp auth create`: " + ", ".join(revoked),
+                file=sys.stderr,
+            )
+            self._save()
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -102,6 +126,7 @@ class ClientStore:
                     "client_secret_hash": c.client_secret_hash,
                     "name": c.name,
                     "created_at": c.created_at,
+                    "totp_secret": c.totp_secret,
                 }
                 for c in self._clients.values()
             ]
@@ -116,19 +141,26 @@ class ClientStore:
             pass
         os.replace(tmp, self._path)
 
-    def create(self, name: str) -> tuple[str, str]:
-        """Create a new client. Returns (client_id, client_secret)."""
+    def create(self, name: str) -> tuple[str, str, str]:
+        """Create a new client.
+
+        Returns ``(client_id, client_secret, totp_secret)``. The TOTP secret is
+        base32-encoded and meant to be displayed once so the operator can
+        register it in Google Authenticator / Authy / 1Password.
+        """
         client_id = "tarkamcp_" + secrets.token_hex(8)
         client_secret = "sk_" + secrets.token_hex(32)
+        totp_secret = pyotp.random_base32()
 
         self._clients[client_id] = Client(
             client_id=client_id,
             client_secret_hash=_hash_secret(client_secret),
             name=name,
             created_at=time.time(),
+            totp_secret=totp_secret,
         )
         self._save()
-        return client_id, client_secret
+        return client_id, client_secret, totp_secret
 
     def verify(self, client_id: str, client_secret: str) -> bool:
         """Verify client credentials."""
@@ -140,6 +172,23 @@ class ClientStore:
 
     def exists(self, client_id: str) -> bool:
         return client_id in self._clients
+
+    def get_name(self, client_id: str) -> str | None:
+        client = self._clients.get(client_id)
+        return client.name if client else None
+
+    def verify_totp(self, client_id: str, code: str) -> bool:
+        """Validate a TOTP code for a given client.
+
+        Uses ``valid_window=1`` so a ±30 s clock drift between the server and
+        the authenticator app is tolerated.
+        """
+        client = self._clients.get(client_id)
+        if not client:
+            return False
+        if not code or not code.isdigit() or len(code) != 6:
+            return False
+        return pyotp.TOTP(client.totp_secret).verify(code, valid_window=1)
 
     def list_clients(self) -> list[dict[str, Any]]:
         """List all registered clients (without secrets)."""
