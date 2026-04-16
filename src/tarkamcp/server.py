@@ -1,4 +1,7 @@
+import os
+
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from .config import Config
 from .proxmox.client import ProxmoxClient
@@ -15,6 +18,26 @@ proxmox_client = ProxmoxClient(config)
 ssh_client = SSHClient(config)
 ilo_client = ILOClient(config)
 
+
+def _csv_env(name: str, default: list[str]) -> list[str]:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    return [v.strip() for v in raw.split(",") if v.strip()]
+
+
+# DNS-rebinding protection: the MCP SDK rejects any Host header that is not
+# explicitly allowlisted. The public hostname this server is reverse-proxied
+# behind (e.g. mcp.example.com) MUST be set via TARKAMCP_ALLOWED_HOSTS.
+_allowed_hosts = _csv_env(
+    "TARKAMCP_ALLOWED_HOSTS",
+    ["127.0.0.1:*", "localhost:*", "[::1]:*"],
+)
+_allowed_origins = _csv_env(
+    "TARKAMCP_ALLOWED_ORIGINS",
+    ["https://claude.ai", "https://chat.openai.com", "https://gemini.google.com"],
+)
+
 mcp = FastMCP(
     "tarkamcp",
     instructions=(
@@ -23,6 +46,11 @@ mcp = FastMCP(
         "ilo_* tools for hardware management (power, health), "
         "and ssh_* tools for direct shell access as fallback. "
         "Start with proxmox_list_nodes to see cluster status."
+    ),
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=_allowed_hosts,
+        allowed_origins=_allowed_origins,
     ),
 )
 
