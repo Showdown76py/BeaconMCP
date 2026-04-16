@@ -34,7 +34,13 @@ from .chat import (
     ToolCallStart,
     TurnInput,
 )
-from .conversations import VALID_EFFORTS, VALID_MODELS, ConversationStore
+from .conversations import (
+    DEFAULT_EFFORT,
+    DEFAULT_MODEL,
+    VALID_EFFORTS,
+    VALID_MODELS,
+    ConversationStore,
+)
 from .db import Database
 from .session import SESSION_TTL_SECONDS, Session, SessionStore
 
@@ -390,8 +396,8 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                 deps.client_store.get_name(session.client_id)  # type: ignore[attr-defined]
                 or session.client_id
             ),
-            default_model="gemini-3-flash",
-            default_effort="low",
+            default_model=DEFAULT_MODEL,
+            default_effort=DEFAULT_EFFORT,
             valid_models=list(VALID_MODELS),
             valid_efforts=list(VALID_EFFORTS),
         )

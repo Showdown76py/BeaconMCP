@@ -220,6 +220,51 @@ def test_cleanup_expired(store):
     assert store.load(s_new.session_id) is not None
 
 
+def test_migration_v1_to_v2_renames_gemini_models(tmp_path):
+    """A DB created under schema v1 with bare model names must be upgraded."""
+    import sqlite3
+
+    path = tmp_path / "legacy.db"
+    # Hand-build a v1 database that predates the migration.
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE conversations (
+          id TEXT PRIMARY KEY, client_id TEXT NOT NULL, title TEXT,
+          model TEXT NOT NULL DEFAULT 'gemini-3-flash',
+          thinking_effort TEXT NOT NULL DEFAULT 'low',
+          created_at REAL NOT NULL, updated_at REAL NOT NULL
+        );
+        CREATE TABLE messages (
+          id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL,
+          role TEXT NOT NULL, content TEXT, tool_calls TEXT,
+          thinking_summary TEXT, model TEXT, effort TEXT,
+          created_at REAL NOT NULL
+        );
+        """
+    )
+    conn.execute("INSERT INTO conversations VALUES ('c1', 'cli', NULL, 'gemini-3-flash', 'low', 0, 0)")
+    conn.execute("INSERT INTO conversations VALUES ('c2', 'cli', NULL, 'gemini-3.1-pro', 'medium', 0, 0)")
+    conn.execute("INSERT INTO messages VALUES ('m1', 'c1', 'assistant', 'hi', NULL, NULL, 'gemini-3-flash', 'low', 0)")
+    conn.execute("PRAGMA user_version = 1")
+    conn.commit()
+    conn.close()
+
+    # Opening via Database() should run migration v2.
+    db = Database(path)
+    rows = db.conn().execute(
+        "SELECT id, model FROM conversations ORDER BY id"
+    ).fetchall()
+    assert dict(rows[0]) == {"id": "c1", "model": "gemini-3-flash-preview"}
+    assert dict(rows[1]) == {"id": "c2", "model": "gemini-3.1-pro-preview"}
+    msg = db.conn().execute("SELECT model FROM messages WHERE id='m1'").fetchone()
+    assert msg["model"] == "gemini-3-flash-preview"
+
+    # user_version reflects the migration.
+    ver = db.conn().execute("PRAGMA user_version").fetchone()[0]
+    assert ver == 2
+
+
 def test_short_ciphertext_decryption_returns_none(store):
     s = store.create(
         client_id="c", client_secret="sk", mcp_bearer="b",
