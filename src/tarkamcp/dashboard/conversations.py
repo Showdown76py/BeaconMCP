@@ -18,7 +18,9 @@ from .db import Database
 
 
 VALID_EFFORTS = ("minimal", "low", "medium", "high")
-VALID_MODELS = ("gemini-3-flash", "gemini-3.1-pro")
+VALID_MODELS = ("gemini-3-flash-preview", "gemini-3.1-pro-preview")
+DEFAULT_MODEL = "gemini-3-flash-preview"
+DEFAULT_EFFORT = "low"
 
 
 @dataclass
@@ -120,9 +122,9 @@ class ConversationStore:
 
     def create(self, *, client_id: str, model: str, effort: str) -> Conversation:
         if model not in VALID_MODELS:
-            model = "gemini-3-flash"
+            model = DEFAULT_MODEL
         if effort not in VALID_EFFORTS:
-            effort = "low"
+            effort = DEFAULT_EFFORT
         conv = Conversation(
             id=_new_id(),
             client_id=client_id,

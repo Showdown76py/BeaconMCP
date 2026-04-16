@@ -19,7 +19,7 @@ def db_path() -> Path:
     return Path(override) if override else DEFAULT_DB_PATH
 
 
-_LATEST_VERSION = 1
+_LATEST_VERSION = 2
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -49,7 +49,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
               id              TEXT PRIMARY KEY,
               client_id       TEXT NOT NULL,
               title           TEXT,
-              model           TEXT NOT NULL DEFAULT 'gemini-3-flash',
+              model           TEXT NOT NULL DEFAULT 'gemini-3-flash-preview',
               thinking_effort TEXT NOT NULL DEFAULT 'low',
               created_at      REAL NOT NULL,
               updated_at      REAL NOT NULL
@@ -72,6 +72,28 @@ def _migrate(conn: sqlite3.Connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_msg_conv
               ON messages(conversation_id, created_at);
             """
+        )
+
+    if version < 2:
+        # Google's real Gemini 3 model IDs are suffixed `-preview` at the
+        # time of writing. The initial schema shipped without the suffix;
+        # migrate existing rows so stored conversations/messages keep
+        # resolving to a real model the API accepts.
+        conn.execute(
+            "UPDATE conversations SET model = 'gemini-3-flash-preview' "
+            "WHERE model = 'gemini-3-flash'"
+        )
+        conn.execute(
+            "UPDATE conversations SET model = 'gemini-3.1-pro-preview' "
+            "WHERE model = 'gemini-3.1-pro'"
+        )
+        conn.execute(
+            "UPDATE messages SET model = 'gemini-3-flash-preview' "
+            "WHERE model = 'gemini-3-flash'"
+        )
+        conn.execute(
+            "UPDATE messages SET model = 'gemini-3.1-pro-preview' "
+            "WHERE model = 'gemini-3.1-pro'"
         )
 
     conn.execute(f"PRAGMA user_version = {_LATEST_VERSION}")
