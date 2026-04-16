@@ -537,6 +537,13 @@ def _build_dashboard_routes(client_store, token_store, totp_locked,
     mcp_mode = os.environ.get("TARKAMCP_DASHBOARD_MCP_MODE", "local").strip().lower()
     if mcp_mode not in ("local", "remote"):
         mcp_mode = "local"
+    if mcp_mode == "remote":
+        print(
+            "WARNING: TARKAMCP_DASHBOARD_MCP_MODE=remote is unsupported "
+            "(caused 500 INTERNAL on Gemini 3). Chat turns will error out "
+            "with a helpful message until you remove the variable.",
+            file=sys.stderr,
+        )
 
     deps = DashboardDeps(
         database=database,

@@ -398,8 +398,16 @@ def test_chat_page_auth_required(app_and_client):
     assert r.status_code == 302
 
 
-def test_chat_stream_remote_mode_uses_public_url(tmp_path, engine):
-    """In remote mode the public URL IS used (Google's backend calls it)."""
+def test_chat_stream_remote_mode_still_routes_public_url(tmp_path, engine):
+    """In remote mode the public URL is still the resolved target.
+
+    The engine itself refuses to drive a remote turn (the SDK's
+    backend-driven MCP mode is broken under our auth), but the URL
+    resolution logic is independent and continues to honour the
+    configured public hostname. That lets us keep remote-mode
+    configuration around for a future re-enablement without changing
+    the routing layer.
+    """
     db = Database(tmp_path / "dashboard.db")
     deps = DashboardDeps(
         database=db,
@@ -429,6 +437,31 @@ def test_chat_stream_remote_mode_uses_public_url(tmp_path, engine):
     )
     assert engine.calls[-1].mcp_url == "https://mcp.example/mcp"
     assert engine.calls[-1].mcp_mode == "remote"
+
+
+def test_gemini_engine_rejects_remote_mode():
+    """GeminiChatEngine yields an ErrorEvent instead of calling the SDK."""
+    import asyncio
+    from tarkamcp.dashboard.chat import (
+        ErrorEvent,
+        GeminiChatEngine,
+        TurnInput,
+    )
+
+    engine_real = GeminiChatEngine(api_key="test")
+    turn = TurnInput(
+        history=[], user_text="x", model="gemini-3-flash-preview",
+        effort="low", bearer="b",
+        mcp_url="https://mcp.example/mcp", mcp_mode="remote",
+    )
+
+    async def _drain():
+        return [e async for e in engine_real.run(turn)]
+
+    events = asyncio.run(_drain())
+    assert len(events) == 1
+    assert isinstance(events[0], ErrorEvent)
+    assert events[0].code == "remote_mode_disabled"
 
 
 def test_chat_page_renders_after_login(app_and_client):
