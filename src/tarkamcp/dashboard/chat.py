@@ -284,17 +284,40 @@ class GeminiChatEngine:
         return contents
 
     async def run(self, turn: TurnInput) -> AsyncIterator[ChatEvent]:
-        try:
-            async for event in self._run(turn):
-                yield event
-        except BaseException as e:  # noqa: BLE001
-            leaf = _unwrap_exception(e)
-            # Write the full traceback to stderr so journalctl has the
-            # real cause; the client only gets a short message.
-            traceback.print_exception(e, file=sys.stderr)
-            _logger.error("gemini chat turn failed: %s", leaf, exc_info=False)
-            code, message = _classify_error(leaf, turn.model)
-            yield ErrorEvent(code=code, message=message)
+        # Retry schedule for transient Google 5xx errors. We only retry
+        # while nothing has been streamed yet -- mid-stream failures are
+        # surfaced as-is because we can't replay partial output.
+        backoffs = [1.0, 2.5, 5.0]
+        attempt = 0
+        while True:
+            yielded_any = False
+            try:
+                async for event in self._run(turn):
+                    yielded_any = True
+                    yield event
+                return
+            except BaseException as e:  # noqa: BLE001
+                leaf = _unwrap_exception(e)
+                traceback.print_exception(e, file=sys.stderr)
+
+                if (
+                    not yielded_any
+                    and attempt < len(backoffs)
+                    and _is_transient_error(leaf)
+                ):
+                    delay = backoffs[attempt]
+                    attempt += 1
+                    _logger.warning(
+                        "gemini chat transient error (%s); retry %d/%d in %.1fs",
+                        leaf, attempt, len(backoffs), delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
+                _logger.error("gemini chat turn failed: %s", leaf, exc_info=False)
+                code, message = _classify_error(leaf, turn.model)
+                yield ErrorEvent(code=code, message=message)
+                return
 
     async def _run(self, turn: TurnInput) -> AsyncIterator[ChatEvent]:
         try:
@@ -464,6 +487,21 @@ def _emit_chunk(
     return out
 
 
+def _is_transient_error(exc: BaseException) -> bool:
+    """Return True if ``exc`` looks like a retryable Google 5xx / network blip."""
+    msg = str(exc)
+    if "INTERNAL" in msg and ("500" in msg or "Internal error" in msg):
+        return True
+    if "UNAVAILABLE" in msg or "503" in msg:
+        return True
+    if "DEADLINE_EXCEEDED" in msg or "504" in msg:
+        return True
+    name = type(exc).__name__
+    if name in {"ReadTimeout", "WriteTimeout", "ConnectTimeout", "ConnectError"}:
+        return True
+    return False
+
+
 def _classify_error(exc: BaseException, model: str) -> tuple[str, str]:
     """Map a leaf exception to a short user-facing (code, message).
 
@@ -508,6 +546,35 @@ def _classify_error(exc: BaseException, model: str) -> tuple[str, str]:
         return (
             "rate_limited",
             "Quota Gemini dépassé. Réessaie dans quelques secondes.",
+        )
+
+    # 500 INTERNAL -- Google-side transient failure. We already retried
+    # a few times server-side before surfacing, so this message asks the
+    # user to try again rather than pretending retrying wasn't tried.
+    if "INTERNAL" in msg and ("500" in msg or "Internal error" in msg):
+        return (
+            "upstream_internal",
+            (
+                f"Gemini a renvoyé une erreur interne (500) sur {model} "
+                "malgré plusieurs tentatives. C'est côté Google, pas toi. "
+                "Attends 10–20 s et renvoie ton message — si ça persiste, "
+                "bascule sur un autre modèle."
+            ),
+        )
+
+    # 503 UNAVAILABLE / 504 DEADLINE_EXCEEDED -- surge / latency.
+    if "UNAVAILABLE" in msg or "503" in msg:
+        return (
+            "upstream_unavailable",
+            (
+                "Gemini est temporairement indisponible (503). Réessaie "
+                "dans quelques secondes."
+            ),
+        )
+    if "DEADLINE_EXCEEDED" in msg or "504" in msg:
+        return (
+            "upstream_timeout",
+            "Gemini a dépassé le délai (504). Réessaie avec une question plus courte.",
         )
 
     # Default: include the exception name to help future triage.

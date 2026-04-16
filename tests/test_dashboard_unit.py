@@ -299,6 +299,122 @@ def test_classify_error_generic():
     assert "RuntimeError" in msg
 
 
+def test_classify_error_upstream_internal():
+    from tarkamcp.dashboard.chat import _classify_error
+
+    err = Exception(
+        "500 INTERNAL. {'error': {'code': 500, 'message': 'Internal error encountered.', 'status': 'INTERNAL'}}"
+    )
+    code, msg = _classify_error(err, "gemini-3-flash-preview")
+    assert code == "upstream_internal"
+    assert "500" in msg
+    assert "gemini-3-flash-preview" in msg
+
+
+def test_classify_error_upstream_unavailable():
+    from tarkamcp.dashboard.chat import _classify_error
+
+    err = Exception("503 UNAVAILABLE. The service is temporarily unavailable")
+    code, _msg = _classify_error(err, "gemini-2.5-flash")
+    assert code == "upstream_unavailable"
+
+
+def test_classify_error_upstream_timeout():
+    from tarkamcp.dashboard.chat import _classify_error
+
+    err = Exception("504 DEADLINE_EXCEEDED")
+    code, _msg = _classify_error(err, "gemini-2.5-flash")
+    assert code == "upstream_timeout"
+
+
+def test_is_transient_error_matches_5xx():
+    from tarkamcp.dashboard.chat import _is_transient_error
+
+    assert _is_transient_error(Exception("500 INTERNAL. Internal error"))
+    assert _is_transient_error(Exception("503 UNAVAILABLE"))
+    assert _is_transient_error(Exception("504 DEADLINE_EXCEEDED"))
+    assert not _is_transient_error(Exception("403 PERMISSION_DENIED"))
+    assert not _is_transient_error(RuntimeError("boom"))
+
+
+def _run_retry_scenario(monkeypatch, fake_run):
+    """Helper: swap in ``fake_run`` on a GeminiChatEngine and drain events."""
+    import asyncio as _asyncio
+    from tarkamcp.dashboard import chat as chat_mod
+    from tarkamcp.dashboard.chat import GeminiChatEngine, TurnInput
+
+    async def _noop_sleep(_):
+        return None
+
+    monkeypatch.setattr(chat_mod.asyncio, "sleep", _noop_sleep)
+    engine = GeminiChatEngine(api_key="test")
+    engine._run = fake_run  # type: ignore[assignment]
+    turn = TurnInput(
+        history=[], user_text="x", model="gemini-2.5-flash",
+        effort="low", bearer="b", mcp_url="http://localhost/mcp",
+    )
+
+    async def _drain():
+        return [e async for e in engine.run(turn)]
+
+    return _asyncio.run(_drain())
+
+
+def test_gemini_retry_recovers_from_transient_500(monkeypatch):
+    """run() retries transient 5xx errors before surfacing them."""
+    from tarkamcp.dashboard.chat import TextDelta
+
+    attempts = {"n": 0}
+
+    async def fake_run(_turn):
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise Exception(
+                "500 INTERNAL. {'error': {'code': 500, 'status': 'INTERNAL'}}"
+            )
+        yield TextDelta(text="ok after retries")
+
+    events = _run_retry_scenario(monkeypatch, fake_run)
+    assert attempts["n"] == 3
+    assert len(events) == 1
+    assert isinstance(events[0], TextDelta)
+    assert events[0].text == "ok after retries"
+
+
+def test_gemini_retry_surfaces_after_max_attempts(monkeypatch):
+    from tarkamcp.dashboard.chat import ErrorEvent
+
+    attempts = {"n": 0}
+
+    async def fake_run(_turn):
+        attempts["n"] += 1
+        raise Exception("500 INTERNAL. persistent")
+        yield  # pragma: no cover -- makes fake_run an async generator
+
+    events = _run_retry_scenario(monkeypatch, fake_run)
+    # initial attempt + 3 retries = 4 total
+    assert attempts["n"] == 4
+    assert len(events) == 1
+    assert isinstance(events[0], ErrorEvent)
+    assert events[0].code == "upstream_internal"
+
+
+def test_gemini_retry_skips_on_non_transient(monkeypatch):
+    from tarkamcp.dashboard.chat import ErrorEvent
+
+    attempts = {"n": 0}
+
+    async def fake_run(_turn):
+        attempts["n"] += 1
+        raise Exception("403 PERMISSION_DENIED. caller")
+        yield  # pragma: no cover
+
+    events = _run_retry_scenario(monkeypatch, fake_run)
+    assert attempts["n"] == 1  # no retries for 403
+    assert isinstance(events[0], ErrorEvent)
+    assert events[0].code == "permission_denied"
+
+
 def test_thinking_config_for_gemini_3():
     from tarkamcp.dashboard.chat import GeminiChatEngine
 
