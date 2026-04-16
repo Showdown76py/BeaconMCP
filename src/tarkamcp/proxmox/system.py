@@ -27,6 +27,20 @@ class ExecSession:
 
 
 _exec_sessions: dict[str, ExecSession] = {}
+# Drop finished sessions older than this (seconds) on each new insertion so the
+# store can't grow unboundedly in a long-running server.
+_EXEC_SESSION_TTL = 3600
+
+
+def _prune_exec_sessions() -> None:
+    now = time.time()
+    stale = [
+        eid
+        for eid, s in _exec_sessions.items()
+        if s.status != "running" and now - s.started_at > _EXEC_SESSION_TTL
+    ]
+    for eid in stale:
+        del _exec_sessions[eid]
 
 
 def _detect_vm_type(client: ProxmoxClient, node: str, vmid: int) -> str | None:
@@ -44,14 +58,12 @@ async def _exec_qemu_sync(client: ProxmoxClient, node: str, vmid: int, command: 
     import asyncio
     import shlex
 
-    # Proxmox agent/exec endpoint expects: command (binary path) + optional arg-N params
+    # Proxmox agent/exec endpoint expects `command` as an array (binary + args).
+    # proxmoxer encodes list values with doseq=True, which PVE parses as an array.
     parts = shlex.split(command)
-    exec_kwargs: dict[str, Any] = {"command": parts[0]}
-    for i, arg in enumerate(parts[1:]):
-        exec_kwargs[f"arg{i}"] = arg
 
     # Start the command via QEMU Guest Agent
-    result = client.post(node, f"nodes/{node}/qemu/{vmid}/agent/exec", **exec_kwargs)
+    result = client.post(node, f"nodes/{node}/qemu/{vmid}/agent/exec", command=parts)
     if isinstance(result, dict) and "error" in result:
         return result
 
@@ -89,26 +101,19 @@ async def _exec_qemu_sync(client: ProxmoxClient, node: str, vmid: int, command: 
     }
 
 
-def _exec_lxc_sync(client: ProxmoxClient, node: str, vmid: int, command: str, timeout: int) -> dict[str, Any]:
-    """Execute a command in an LXC container via Proxmox API."""
-    parts = command.split()
-    result = client.post(
-        node,
-        f"nodes/{node}/lxc/{vmid}/exec",
-        command=parts,
-    )
-    if isinstance(result, dict) and "error" in result:
-        return result
+def _exec_lxc_unsupported(vmid: int) -> dict[str, Any]:
+    """LXC exec is not exposed by the Proxmox API.
 
-    # LXC exec via API may return directly or via a different mechanism
-    # depending on PVE version. Handle both.
-    if isinstance(result, dict):
-        return {
-            "stdout": result.get("out-data", result.get("data", "")),
-            "stderr": result.get("err-data", ""),
-            "exit_code": result.get("exitcode", 0),
-        }
-    return {"stdout": str(result), "stderr": "", "exit_code": 0}
+    Commands inside containers must be run via `pct exec` on the host, which
+    requires SSH access to the node.
+    """
+    return {
+        "error": (
+            f"Proxmox API does not expose an exec endpoint for LXC containers. "
+            f"Use ssh_exec_command on the host node with "
+            f"'pct exec {vmid} -- <command>' instead."
+        )
+    }
 
 
 def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
@@ -133,7 +138,10 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
             if not isinstance(data, list):
                 continue
             for s in data:
-                status = client.get(n, f"nodes/{n}/storage/{s['storage']}/status")
+                storage_name = s.get("storage")
+                if not storage_name:
+                    continue
+                status = client.get(n, f"nodes/{n}/storage/{storage_name}/status")
                 used = 0
                 total = 0
                 if isinstance(status, dict) and "error" not in status:
@@ -142,7 +150,7 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
 
                 all_storage.append({
                     "node": n,
-                    "storage": s.get("storage"),
+                    "storage": storage_name,
                     "type": s.get("type"),
                     "content": s.get("content"),
                     "enabled": s.get("enabled", 1) == 1,
@@ -184,12 +192,13 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
 
     @mcp.tool()
     async def proxmox_exec_command(node: str, vmid: int, command: str, timeout: int = 60) -> dict[str, Any]:
-        """Execute a command inside a VM (via QEMU Guest Agent) or container (via lxc exec) and wait for the result.
+        """Execute a command inside a QEMU VM (via QEMU Guest Agent) and wait for the result.
 
         Use for short-lived commands that complete within the timeout (default 60s, max 300s).
         Returns stdout, stderr, and exit_code.
         For long-running commands (apt upgrade, backups, etc.), use proxmox_exec_command_async instead.
         For commands on the Proxmox host itself, use ssh_exec_command.
+        LXC containers have no API exec endpoint: use ssh_exec_command with 'pct exec <vmid> -- <cmd>'.
         """
         timeout = min(timeout, 300)
         vm_type = _detect_vm_type(client, node, vmid)
@@ -198,7 +207,7 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
 
         if vm_type == "qemu":
             return await _exec_qemu_sync(client, node, vmid, command, timeout)
-        return _exec_lxc_sync(client, node, vmid, command, timeout)
+        return _exec_lxc_unsupported(vmid)
 
     @mcp.tool()
     def proxmox_exec_command_async(node: str, vmid: int, command: str) -> dict[str, Any]:
@@ -214,6 +223,11 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         if not vm_type:
             return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
 
+        if vm_type == "lxc":
+            # LXC has no API exec endpoint; surface the actionable error up-front.
+            return _exec_lxc_unsupported(vmid)
+
+        _prune_exec_sessions()
         exec_id = str(uuid.uuid4())[:8]
         session = ExecSession(
             exec_id=exec_id,
@@ -224,26 +238,14 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         )
         _exec_sessions[exec_id] = session
 
-        if vm_type == "qemu":
-            # Start via guest agent with proper arg format
-            parts = shlex.split(command)
-            exec_kwargs: dict[str, Any] = {"command": parts[0]}
-            for i, arg in enumerate(parts[1:]):
-                exec_kwargs[f"arg{i}"] = arg
-            result = client.post(node, f"nodes/{node}/qemu/{vmid}/agent/exec", **exec_kwargs)
-            if isinstance(result, dict) and "error" in result:
-                session.status = "failed"
-                session.stderr = str(result["error"])
-                return {"exec_id": exec_id, "status": "failed", "error": result["error"]}
-            session.pid = result.get("pid") if isinstance(result, dict) else None
-        else:
-            # LXC -- start in background
-            parts = shlex.split(command)
-            result = client.post(node, f"nodes/{node}/lxc/{vmid}/exec", command=parts)
-            if isinstance(result, dict) and "error" in result:
-                session.status = "failed"
-                session.stderr = str(result["error"])
-                return {"exec_id": exec_id, "status": "failed", "error": result["error"]}
+        # Start via guest agent (command is an array: binary + args)
+        parts = shlex.split(command)
+        result = client.post(node, f"nodes/{node}/qemu/{vmid}/agent/exec", command=parts)
+        if isinstance(result, dict) and "error" in result:
+            session.status = "failed"
+            session.stderr = str(result["error"])
+            return {"exec_id": exec_id, "status": "failed", "error": result["error"]}
+        session.pid = result.get("pid") if isinstance(result, dict) else None
 
         return {"exec_id": exec_id, "status": "running", "vmid": vmid, "command": command}
 

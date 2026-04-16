@@ -33,12 +33,6 @@ class ProxmoxClient:
         self._connections[node_name] = conn
         return conn
 
-    def _resolve_node(self, node: str | None) -> str:
-        """Return the node name, defaulting to pve1 if not specified."""
-        if node:
-            return node
-        return self._config.pve_nodes[0].name
-
     def api_call(self, node_name: str, method: str, path: str, **kwargs: Any) -> Any:
         """Execute an API call against a Proxmox node.
 

@@ -24,8 +24,21 @@ class SSHExecSession:
 
 
 _ssh_sessions: dict[str, SSHExecSession] = {}
+_ssh_tasks: set[asyncio.Task[None]] = set()
 _connection_cache: dict[str, tuple[asyncssh.SSHClientConnection, float]] = {}
 _CONNECTION_TTL = 300  # 5 minutes
+_SSH_SESSION_TTL = 3600  # drop completed sessions older than this
+
+
+def _prune_ssh_sessions() -> None:
+    now = time.time()
+    stale = [
+        eid
+        for eid, s in _ssh_sessions.items()
+        if s.status != "running" and now - s.started_at > _SSH_SESSION_TTL
+    ]
+    for eid in stale:
+        del _ssh_sessions[eid]
 
 
 class SSHClient:
@@ -114,6 +127,7 @@ class SSHClient:
 
     async def exec_command_async(self, host: str, command: str) -> str:
         """Start a long-running command and return an exec_id."""
+        _prune_ssh_sessions()
         exec_id = str(uuid.uuid4())[:8]
         session = SSHExecSession(exec_id=exec_id, host=host, command=command)
         _ssh_sessions[exec_id] = session
@@ -132,7 +146,10 @@ class SSHClient:
                 session.status = "failed"
                 session.stderr = str(e)
 
-        asyncio.create_task(_run())
+        # Keep a reference to the task so it isn't garbage collected mid-run.
+        task = asyncio.create_task(_run())
+        _ssh_tasks.add(task)
+        task.add_done_callback(_ssh_tasks.discard)
         return exec_id
 
     @staticmethod

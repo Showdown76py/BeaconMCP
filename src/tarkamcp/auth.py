@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import os
 import secrets
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,10 +45,19 @@ class ClientStore:
         self._load()
 
     def _load(self) -> None:
-        if self._path.exists():
+        if not self._path.exists():
+            return
+        try:
             data = json.loads(self._path.read_text())
-            for c in data.get("clients", []):
-                self._clients[c["client_id"]] = Client(**c)
+        except json.JSONDecodeError as e:
+            print(
+                f"ERROR: {self._path} is not valid JSON ({e}). "
+                "Fix or delete it before restarting.",
+                file=sys.stderr,
+            )
+            raise
+        for c in data.get("clients", []):
+            self._clients[c["client_id"]] = Client(**c)
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,7 +72,15 @@ class ClientStore:
                 for c in self._clients.values()
             ]
         }
-        self._path.write_text(json.dumps(data, indent=2))
+        # Write atomically with restrictive permissions: the file holds secret
+        # hashes and must not be world-readable.
+        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, self._path)
 
     def create(self, name: str) -> tuple[str, str]:
         """Create a new client. Returns (client_id, client_secret)."""
@@ -81,7 +101,8 @@ class ClientStore:
         client = self._clients.get(client_id)
         if not client:
             return False
-        return client.client_secret_hash == _hash_secret(client_secret)
+        # Constant-time comparison to avoid leaking the hash via timing.
+        return hmac.compare_digest(client.client_secret_hash, _hash_secret(client_secret))
 
     def list_clients(self) -> list[dict[str, Any]]:
         """List all registered clients (without secrets)."""
