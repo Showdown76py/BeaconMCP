@@ -6,14 +6,18 @@
 [![MCP Protocol](https://img.shields.io/badge/MCP-Model_Context_Protocol-5A67D8)](https://modelcontextprotocol.io/)
 [![Proxmox VE](https://img.shields.io/badge/Proxmox-VE_8.x-E57000?logo=proxmox&logoColor=white)](https://www.proxmox.com/)
 [![HP iLO 4](https://img.shields.io/badge/HP-iLO_4-0096D6?logo=hp&logoColor=white)](https://www.hpe.com/us/en/servers/integrated-lights-out-ilo.html)
+[![ChatGPT](https://img.shields.io/badge/ChatGPT-Compatible-74AA9C?logo=openai&logoColor=white)](https://chatgpt.com/)
+[![Gemini](https://img.shields.io/badge/Gemini-Compatible-4285F4?logo=google&logoColor=white)](https://gemini.google.com/)
 [![License](https://img.shields.io/github/license/Showdown76py/TarkaMCP)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Built_with-Claude_Code-F97316)](https://claude.ai/code)
 
-**Serveur MCP pour la gestion d'infrastructure Proxmox VE via Claude.**
+**Serveur MCP pour la gestion d'infrastructure Proxmox VE.**
 
-Donne à Claude un accès direct à tes nœuds Proxmox, à l'iLO HP, et au SSH pour diagnostiquer, gérer les VMs/CTs, et résoudre les problèmes d'infrastructure.
+Compatible **Claude** (Code, web, mobile) &bull; **ChatGPT** &bull; **Gemini** (CLI, API)
 
-[Installation](#installation-côté-client) &bull; [Configuration](#configuration-côté-serveur-proxmox) &bull; [Outils](#outils-disponibles) &bull; [Tests](#tests)
+Donne à l'IA un accès direct à tes nœuds Proxmox, à l'iLO HP, et au SSH pour diagnostiquer, gérer les VMs/CTs, et résoudre les problèmes d'infrastructure.
+
+[Installation](#installation-côté-client) &bull; [Connexion par plateforme](#connexion-par-plateforme) &bull; [Outils](#outils-disponibles) &bull; [Tests](#tests)
 
 </div>
 
@@ -26,7 +30,8 @@ Donne à Claude un accès direct à tes nœuds Proxmox, à l'iLO HP, et au SSH p
 - **Exécution de commandes** dans les VMs/CTs via QEMU Guest Agent ou SSH, avec support sync et async
 - **Gestion hardware à distance** -- power on/off/reset, températures, ventilateurs via iLO 4
 - **Architecture modulaire** -- chaque module se charge uniquement si ses credentials sont configurés
-- **Contexte infrastructure** -- fichier YAML exposé comme ressource MCP pour guider Claude
+- **Contexte infrastructure** -- fichier YAML exposé comme ressource MCP pour guider l'IA
+- **Multi-plateforme** -- stdio (Claude Code, Gemini CLI) + Streamable HTTP (Claude mobile, ChatGPT, Gemini API)
 
 ---
 
@@ -34,10 +39,11 @@ Donne à Claude un accès direct à tes nœuds Proxmox, à l'iLO HP, et au SSH p
 
 - [Architecture](#architecture)
 - [Installation côté client (ta machine)](#installation-côté-client)
+- [Déploiement remote (serveur)](#déploiement-remote-serveur)
+- [Connexion par plateforme](#connexion-par-plateforme)
 - [Configuration côté serveur (Proxmox)](#configuration-côté-serveur-proxmox)
 - [Configuration côté serveur (iLO)](#configuration-côté-serveur-ilo)
 - [Configuration du .env](#configuration-du-env)
-- [Intégration Claude Code](#intégration-claude-code)
 - [Tests](#tests)
 - [Outils disponibles](#outils-disponibles)
 - [Dépannage](#dépannage)
@@ -62,6 +68,15 @@ Ta machine (Claude Code)              Infrastructure
                             tunnel    |    via pve1 SSH             |
                             SSH       +-----------------------------+
 ```
+
+## Deux modes de fonctionnement
+
+| Mode | Transport | Usage | Commande |
+|------|-----------|-------|----------|
+| **Local** | stdio | Claude Code, Gemini CLI | `python -m tarkamcp` |
+| **Remote** | Streamable HTTP | Claude mobile/web, ChatGPT, Gemini API | `python -m tarkamcp --http` |
+
+Le mode **local** est pour un usage depuis ta machine. Le mode **remote** expose un serveur HTTP avec authentification par bearer token, accessible depuis n'importe quel client MCP.
 
 ## Installation côté client
 
@@ -241,9 +256,51 @@ Les modules sont chargés conditionnellement :
 
 ---
 
-## Intégration Claude Code
+## Déploiement remote (serveur)
 
-### Option A : Settings globaux
+Pour utiliser TarkaMCP depuis Claude mobile, ChatGPT, ou Gemini, il faut le déployer comme serveur HTTP sur ton infrastructure.
+
+### Installation rapide sur pve1
+
+```bash
+git clone https://github.com/Showdown76py/TarkaMCP.git /opt/tarkamcp
+cd /opt/tarkamcp
+sudo bash deploy/install.sh
+```
+
+Le script va :
+1. Installer les dépendances Python
+2. Créer un `.env` avec un token d'auth généré automatiquement
+3. Installer le service systemd
+
+Ensuite :
+```bash
+# Éditer le .env avec tes vrais credentials Proxmox
+nano /opt/tarkamcp/.env
+
+# Démarrer le serveur
+sudo systemctl start tarkamcp
+
+# Vérifier
+curl http://localhost:8420/health
+```
+
+### Exposer via Cloudflare Tunnel
+
+Dans ton dashboard Cloudflare Zero Trust, ajouter un tunnel public :
+
+| Paramètre | Valeur |
+|-----------|--------|
+| **Hostname** | `mcp.example.com` (ou ton choix) |
+| **Service** | `http://localhost:8420` |
+
+L'URL de ton serveur MCP sera : `https://mcp.example.com/mcp`
+
+---
+
+## Connexion par plateforme
+
+### Claude Code (local, stdio)
 
 Ajouter dans `~/.claude/settings.json` :
 
@@ -259,42 +316,57 @@ Ajouter dans `~/.claude/settings.json` :
 }
 ```
 
-Avec cette option, le `.env` doit être dans le dossier `TarkaMCP/`.
+### Claude (web & mobile)
 
-### Option B : Settings avec variables inline
+1. Aller dans **Settings** > **Integrations** > **Add MCP Server**
+2. Remplir :
+   - **URL** : `https://mcp.example.com/mcp`
+   - **Authentication** : Bearer Token
+   - **Token** : le token généré lors de l'installation
 
-```json
-{
-  "mcpServers": {
-    "tarkamcp": {
-      "command": "python",
-      "args": ["-m", "tarkamcp"],
-      "cwd": "/chemin/vers/TarkaMCP",
-      "env": {
-        "PVE1_HOST": "pve1.example.com",
-        "PVE1_TOKEN_ID": "root@pam!tarkamcp",
-        "PVE1_TOKEN_SECRET": "ton-token-secret",
-        "SSH_USER": "root",
-        "SSH_PASSWORD": "ton-password",
-        "ILO_HOST": "192.168.1.X",
-        "ILO_USER": "Administrator",
-        "ILO_PASSWORD": "ton-password-ilo",
-        "ILO_JUMP_HOST": "pve1",
-        "PVE_VERIFY_SSL": "false"
-      }
-    }
-  }
-}
+### ChatGPT
+
+1. Aller dans **Settings** > **Developer Mode** > **MCP Servers**
+2. Ajouter un serveur :
+   - **URL** : `https://mcp.example.com/mcp`
+   - **Auth Header** : `Bearer <ton-token>`
+
+### Gemini CLI
+
+```bash
+# Dans la config Gemini CLI, ajouter le serveur MCP
+gemini mcp add tarkamcp --url https://mcp.example.com/mcp \
+  --header "Authorization: Bearer <ton-token>"
 ```
 
-### Vérification dans Claude Code
+### Gemini API (programmatique)
 
-Une fois configuré, relancer Claude Code et vérifier :
-```
-> Utilise proxmox_list_nodes pour voir l'état du cluster
+```python
+from google import genai
+
+client = genai.Client()
+response = client.models.generate_content(
+    model="gemini-2.0-flash",
+    contents="Liste les VMs sur pve1",
+    config={
+        "tools": [{
+            "mcp_servers": [{
+                "url": "https://mcp.example.com/mcp",
+                "headers": {"Authorization": "Bearer <ton-token>"},
+            }]
+        }]
+    },
+)
 ```
 
-Claude devrait appeler l'outil et afficher les nœuds.
+### Vérification
+
+Depuis n'importe quelle plateforme, demander :
+```
+Utilise proxmox_list_nodes pour voir l'état du cluster
+```
+
+L'IA devrait appeler l'outil et afficher les nœuds.
 
 ---
 

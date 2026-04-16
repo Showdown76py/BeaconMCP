@@ -1,0 +1,15 @@
+[Unit]
+Description=TarkaMCP - Proxmox MCP Server (HTTP)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/tarkamcp
+EnvironmentFile=/opt/tarkamcp/.env
+ExecStart=/usr/bin/python3 -m tarkamcp --http
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
