@@ -346,34 +346,27 @@ class GeminiChatEngine:
         thinking = self._build_thinking_config(turn.model, turn.effort)
 
         if turn.mcp_mode == "remote":
-            # Google's backend calls the MCP endpoint directly. Requires a
-            # publicly reachable URL and (on many keys) allowlist access to
-            # the mcp_servers feature.
-            config = types.GenerateContentConfig(
-                thinking_config=thinking,
-                tools=[types.Tool(
-                    mcp_servers=[types.McpServer(
-                        name="tarkamcp",
-                        streamable_http_transport=types.StreamableHttpTransport(
-                            url=turn.mcp_url,
-                            headers={
-                                "Authorization": f"Bearer {turn.bearer}",
-                            },
-                        ),
-                    )],
-                )],
+            # Historically we supported Google's backend-driven MCP
+            # (``McpServer`` + ``StreamableHttpTransport``), but that
+            # mode is fundamentally incompatible with our TarkaMCP auth
+            # setup (OAuth bearer + TOTP + Cloudflare Tunnel): Google's
+            # backend fetch of /mcp loses the Authorization header in
+            # transit, the MCP handshake returns 401, and the upstream
+            # model deterministically emits 500 INTERNAL. We surface a
+            # clear error instead of cascading through retries.
+            yield ErrorEvent(
+                code="remote_mode_disabled",
+                message=(
+                    "Le mode MCP 'remote' n'est plus supporté (il causait "
+                    "des 500 INTERNAL systématiques à cause du flux OAuth). "
+                    "Retire TARKAMCP_DASHBOARD_MCP_MODE=remote de ton .env "
+                    "et relance le service pour repasser en mode local."
+                ),
             )
-            client = self._ensure_client()
-            stream = await client.aio.models.generate_content_stream(
-                model=turn.model, contents=contents, config=config,
-            )
-            async for chunk in stream:
-                for event in _emit_chunk(chunk, tool_starts, seen_tool_ids):
-                    yield event
             return
 
-        # Default "local" mode: open an MCP ClientSession from the
-        # dashboard process, and run a MANUAL function-calling loop.
+        # Local mode: open an MCP ClientSession from the dashboard
+        # process, and run a MANUAL function-calling loop.
         #
         # We previously passed ``tools=[session]`` and relied on the SDK's
         # Automatic Function Calling path, but that route has two known
@@ -656,69 +649,6 @@ def _mcp_call_result_to_response(result: Any) -> dict:
     structured = getattr(result, "structuredContent", None)
     if structured is not None:
         out["structured"] = structured
-    return out
-
-
-def _emit_chunk(
-    chunk: Any,
-    tool_starts: dict[str, float],
-    seen_tool_ids: set[str],
-) -> list[ChatEvent]:
-    """Translate a google-genai stream chunk into ChatEvents.
-
-    The SDK shape varies across minor versions; everything is looked up
-    defensively. When the SDK auto-executes MCP tools via the local
-    ClientSession, we still observe ``function_call`` parts for each
-    invocation and ``function_response`` parts for each result.
-    """
-    out: list[ChatEvent] = []
-    candidates = getattr(chunk, "candidates", None) or []
-    for cand in candidates:
-        content = getattr(cand, "content", None)
-        if not content:
-            continue
-        parts = getattr(content, "parts", None) or []
-        for part in parts:
-            text = getattr(part, "text", None)
-            if text:
-                if getattr(part, "thought", False):
-                    out.append(ThinkingDelta(summary=text))
-                else:
-                    out.append(TextDelta(text=text))
-
-            fc = getattr(part, "function_call", None)
-            if fc:
-                fc_id = getattr(fc, "id", None) or f"fc_{len(seen_tool_ids)}"
-                if fc_id not in seen_tool_ids:
-                    seen_tool_ids.add(fc_id)
-                    tool_starts[fc_id] = time.monotonic()
-                    args = getattr(fc, "args", {}) or {}
-                    out.append(ToolCallStart(
-                        id=fc_id,
-                        name=getattr(fc, "name", "?"),
-                        args=dict(args),
-                    ))
-
-            fr = getattr(part, "function_response", None)
-            if fr:
-                fr_id = getattr(fr, "id", None) or ""
-                if not fr_id:
-                    # Some SDK versions omit the id on the response; fall
-                    # back to the most recent unresolved invocation.
-                    fr_id = next(
-                        iter(reversed(list(tool_starts.keys()))), "",
-                    )
-                started = tool_starts.pop(fr_id, time.monotonic())
-                duration = int((time.monotonic() - started) * 1000)
-                response = getattr(fr, "response", None) or {}
-                status = "error" if (
-                    isinstance(response, dict) and "error" in response
-                ) else "ok"
-                out.append(ToolCallEnd(
-                    id=fr_id, status=status,
-                    preview=_short_preview(response),
-                    duration_ms=duration,
-                ))
     return out
 
 
