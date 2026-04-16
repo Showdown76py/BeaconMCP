@@ -18,8 +18,15 @@ from .db import Database
 
 
 VALID_EFFORTS = ("minimal", "low", "medium", "high")
-VALID_MODELS = ("gemini-3-flash-preview", "gemini-3.1-pro-preview")
-DEFAULT_MODEL = "gemini-3-flash-preview"
+# Stable Gemini 2.5 ship first (wider access), then Gemini 3 preview
+# variants for users on the allowlist.
+VALID_MODELS = (
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-3-flash-preview",
+    "gemini-3.1-pro-preview",
+)
+DEFAULT_MODEL = "gemini-2.5-flash"
 DEFAULT_EFFORT = "low"
 
 

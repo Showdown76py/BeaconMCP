@@ -220,6 +220,33 @@ def test_cleanup_expired(store):
     assert store.load(s_new.session_id) is not None
 
 
+def test_thinking_config_for_gemini_3():
+    from tarkamcp.dashboard.chat import GeminiChatEngine
+
+    cfg = GeminiChatEngine._build_thinking_config("gemini-3-flash-preview", "high")
+    assert cfg.thinking_level is not None
+    assert cfg.thinking_budget is None
+    assert cfg.include_thoughts is False
+
+
+def test_thinking_config_for_gemini_2_5():
+    from tarkamcp.dashboard.chat import GeminiChatEngine
+
+    cfg = GeminiChatEngine._build_thinking_config("gemini-2.5-flash", "medium")
+    assert cfg.thinking_level is None
+    assert cfg.thinking_budget == 4096
+
+
+def test_thinking_config_unknown_effort_defaults_to_low():
+    from tarkamcp.dashboard.chat import GeminiChatEngine
+
+    cfg3 = GeminiChatEngine._build_thinking_config("gemini-3.1-pro-preview", "nonsense")
+    # Enum repr contains LOW
+    assert "LOW" in str(cfg3.thinking_level)
+    cfg25 = GeminiChatEngine._build_thinking_config("gemini-2.5-pro", "nonsense")
+    assert cfg25.thinking_budget == 1024  # low
+
+
 def test_migration_v1_to_v2_renames_gemini_models(tmp_path):
     """A DB created under schema v1 with bare model names must be upgraded."""
     import sqlite3

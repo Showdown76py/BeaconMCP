@@ -15,11 +15,32 @@ Two implementations:
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Iterable, Protocol, runtime_checkable
 
 from .conversations import Message, ToolCall
+
+
+# ---------------------------------------------------------------------------
+# Effort level mapping
+# ---------------------------------------------------------------------------
+
+def _is_gemini_3(model: str) -> bool:
+    return model.startswith("gemini-3")
+
+
+# Approximate token budgets mapped from the four effort presets. Used for
+# Gemini 2.5 which doesn't accept the `thinking_level` enum (that one is
+# Gemini 3+). Numbers err on the higher side so "high" actually has room
+# to think; Gemini will clamp to the model ceiling if needed.
+_BUDGET_BY_EFFORT = {
+    "minimal": 0,
+    "low": 1024,
+    "medium": 4096,
+    "high": 16384,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -156,19 +177,29 @@ def assemble_assistant_message(
 
 
 # ---------------------------------------------------------------------------
-# Real Gemini engine (wired in Stage 3)
+# Real Gemini engine
 # ---------------------------------------------------------------------------
 
-# Mapping our string effort values to the SDK enum is done lazily inside
-# GeminiChatEngine.run() to keep import cost low and to make it easy to
-# stub out the SDK in tests.
+# The SDK is imported lazily so test suites that only exercise the fake
+# engine do not pay the (large) import cost. All google-genai / mcp
+# references inside GeminiChatEngine are thus guarded.
 
 class GeminiChatEngine:
-    """Real-Gemini implementation. Imports google-genai lazily."""
+    """Gemini-backed engine that orchestrates MCP tool calls in-process.
+
+    We open a local MCP ``ClientSession`` against the TarkaMCP endpoint
+    using the user's bearer, and pass that session to google-genai as a
+    tool. The SDK auto-discovers the tools, handles function-call /
+    function-response bookkeeping, and emits text / function_call /
+    function_response parts through the streaming API. This path does
+    NOT use the ``McpServer`` remote tool (where Google's backend calls
+    our MCP directly) — that feature is preview-gated and returned
+    ``PERMISSION_DENIED`` on standard API keys.
+    """
 
     def __init__(self, *, api_key: str) -> None:
         self._api_key = api_key
-        self._client = None  # built on first use
+        self._client = None  # type: ignore[assignment]
 
     def _ensure_client(self):
         if self._client is None:
@@ -177,15 +208,27 @@ class GeminiChatEngine:
         return self._client
 
     @staticmethod
-    def _to_thinking_level(effort: str):
+    def _build_thinking_config(model: str, effort: str):
         from google.genai import types  # type: ignore
-        mapping = {
-            "minimal": types.ThinkingLevel.MINIMAL,
-            "low": types.ThinkingLevel.LOW,
-            "medium": types.ThinkingLevel.MEDIUM,
-            "high": types.ThinkingLevel.HIGH,
-        }
-        return mapping.get(effort, types.ThinkingLevel.LOW)
+
+        if _is_gemini_3(model):
+            mapping = {
+                "minimal": types.ThinkingLevel.MINIMAL,
+                "low": types.ThinkingLevel.LOW,
+                "medium": types.ThinkingLevel.MEDIUM,
+                "high": types.ThinkingLevel.HIGH,
+            }
+            return types.ThinkingConfig(
+                thinking_level=mapping.get(effort, types.ThinkingLevel.LOW),
+                include_thoughts=False,
+            )
+
+        # Gemini 2.5: use thinking_budget instead.
+        budget = _BUDGET_BY_EFFORT.get(effort, _BUDGET_BY_EFFORT["low"])
+        return types.ThinkingConfig(
+            thinking_budget=budget,
+            include_thoughts=False,
+        )
 
     @staticmethod
     def _build_contents(history, user_text):
@@ -210,143 +253,142 @@ class GeminiChatEngine:
 
     async def run(self, turn: TurnInput) -> AsyncIterator[ChatEvent]:
         try:
+            import httpx  # type: ignore
             from google.genai import types  # type: ignore
-        except ImportError:
-            yield ErrorEvent(code="sdk_missing", message="google-genai not installed")
+            from mcp.client.session import ClientSession  # type: ignore
+            from mcp.client.streamable_http import streamable_http_client  # type: ignore
+        except ImportError as e:  # noqa: BLE001
+            yield ErrorEvent(code="sdk_missing", message=str(e))
             return
 
         client = self._ensure_client()
-        config = types.GenerateContentConfig(
-            thinking_config=types.ThinkingConfig(
-                thinking_level=self._to_thinking_level(turn.effort),
-                include_thoughts=False,
-            ),
-            tools=[types.Tool(
-                mcp_servers=[types.McpServer(
-                    name="tarkamcp",
-                    streamable_http_transport=types.StreamableHttpTransport(
-                        url=turn.mcp_url,
-                        headers={"Authorization": f"Bearer {turn.bearer}"},
-                    ),
-                )],
-            )],
-        )
-        contents = self._build_contents(turn.history, turn.user_text)
-
-        loop = asyncio.get_running_loop()
-        queue: asyncio.Queue[ChatEvent | None] = asyncio.Queue()
-        seen_tool_ids: set[str] = set()
+        headers = {"Authorization": f"Bearer {turn.bearer}"}
         tool_starts: dict[str, float] = {}
+        seen_tool_ids: set[str] = set()
 
-        def _producer():
-            try:
-                stream = client.models.generate_content_stream(
-                    model=turn.model, contents=contents, config=config,
-                )
-                for chunk in stream:
-                    self._emit_chunk(chunk, queue, loop, seen_tool_ids, tool_starts)
-            except Exception as e:  # noqa: BLE001
-                asyncio.run_coroutine_threadsafe(
-                    queue.put(ErrorEvent(code="gemini_error", message=str(e))), loop,
-                ).result()
-            finally:
-                asyncio.run_coroutine_threadsafe(queue.put(None), loop).result()
-
-        producer_task = loop.run_in_executor(None, _producer)
         try:
-            while True:
-                event = await queue.get()
-                if event is None:
-                    break
-                yield event
-        finally:
-            await producer_task
+            async with httpx.AsyncClient(
+                headers=headers,
+                timeout=httpx.Timeout(30.0, read=120.0),
+            ) as http_client:
+                async with streamable_http_client(
+                    turn.mcp_url, http_client=http_client,
+                ) as (read_stream, write_stream, _get_session_id):
+                    async with ClientSession(read_stream, write_stream) as session:
+                        await session.initialize()
 
-    def _emit_chunk(self, chunk, queue, loop, seen_tool_ids, tool_starts):
-        # The SDK shape varies; handle the common fields defensively.
-        candidates = getattr(chunk, "candidates", None) or []
-        for cand in candidates:
-            content = getattr(cand, "content", None)
-            if not content:
-                continue
-            parts = getattr(content, "parts", None) or []
-            for part in parts:
-                text = getattr(part, "text", None)
-                if text:
-                    asyncio.run_coroutine_threadsafe(
-                        queue.put(TextDelta(text=text)), loop,
-                    )
-                fc = getattr(part, "function_call", None)
-                if fc:
-                    fc_id = getattr(fc, "id", None) or f"fc_{len(seen_tool_ids)}"
-                    if fc_id not in seen_tool_ids:
-                        seen_tool_ids.add(fc_id)
-                        tool_starts[fc_id] = time.monotonic()
-                        asyncio.run_coroutine_threadsafe(
-                            queue.put(ToolCallStart(
-                                id=fc_id,
-                                name=getattr(fc, "name", "?"),
-                                args=dict(getattr(fc, "args", {}) or {}),
-                            )), loop,
+                        config = types.GenerateContentConfig(
+                            thinking_config=self._build_thinking_config(
+                                turn.model, turn.effort,
+                            ),
+                            tools=[session],  # type: ignore[list-item]
                         )
-                fr = getattr(part, "function_response", None)
-                if fr:
-                    fr_id = getattr(fr, "id", None) or ""
-                    if not fr_id:
-                        # Some SDK versions don't echo the id; fall back to
-                        # the most recent unresolved one.
-                        fr_id = next(iter(reversed(list(tool_starts.keys()))), "")
-                    started = tool_starts.pop(fr_id, time.monotonic())
-                    duration = int((time.monotonic() - started) * 1000)
-                    response = getattr(fr, "response", None) or {}
-                    status = "error" if "error" in response else "ok"
-                    preview = _short_preview(response)
-                    asyncio.run_coroutine_threadsafe(
-                        queue.put(ToolCallEnd(
-                            id=fr_id, status=status,
-                            preview=preview, duration_ms=duration,
-                        )), loop,
-                    )
+                        contents = self._build_contents(turn.history, turn.user_text)
+
+                        stream = await client.aio.models.generate_content_stream(
+                            model=turn.model, contents=contents, config=config,
+                        )
+                        async for chunk in stream:
+                            for event in _emit_chunk(chunk, tool_starts, seen_tool_ids):
+                                yield event
+        except Exception as e:  # noqa: BLE001
+            yield ErrorEvent(code="gemini_error", message=str(e))
 
     async def title(self, *, model: str, user_text: str) -> str | None:
         try:
             from google.genai import types  # type: ignore
         except ImportError:
             return None
+        client = self._ensure_client()
+        try:
+            # Force minimal thinking to keep titling fast and cheap.
+            resp = await client.aio.models.generate_content(
+                model=model,
+                contents=[types.Content(
+                    role="user",
+                    parts=[types.Part(text=(
+                        "Donne un titre français de 4 mots maximum, sans emoji, "
+                        "sans guillemets, sans ponctuation finale, qui résume cette demande:\n\n"
+                        f"{user_text}"
+                    ))],
+                )],
+                config=types.GenerateContentConfig(
+                    thinking_config=self._build_thinking_config(model, "minimal"),
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        text = (getattr(resp, "text", "") or "").strip().strip('"').strip()
+        return text[:80] or None
 
-        loop = asyncio.get_running_loop()
 
-        def _call() -> str | None:
-            try:
-                client = self._ensure_client()
-                resp = client.models.generate_content(
-                    model=model,
-                    contents=[
-                        types.Content(role="user", parts=[types.Part(text=(
-                            "Donne un titre français de 4 mots maximum, sans emoji, "
-                            "sans guillemets, sans ponctuation finale, qui résume cette demande:\n\n"
-                            f"{user_text}"
-                        ))]),
-                    ],
-                    config=types.GenerateContentConfig(
-                        thinking_config=types.ThinkingConfig(
-                            thinking_level=types.ThinkingLevel.MINIMAL,
-                        ),
-                    ),
-                )
-                text = (getattr(resp, "text", "") or "").strip().strip('"').strip()
-                return text[:80] or None
-            except Exception:  # noqa: BLE001
-                return None
+def _emit_chunk(
+    chunk: Any,
+    tool_starts: dict[str, float],
+    seen_tool_ids: set[str],
+) -> list[ChatEvent]:
+    """Translate a google-genai stream chunk into ChatEvents.
 
-        return await loop.run_in_executor(None, _call)
+    The SDK shape varies across minor versions; everything is looked up
+    defensively. When the SDK auto-executes MCP tools via the local
+    ClientSession, we still observe ``function_call`` parts for each
+    invocation and ``function_response`` parts for each result.
+    """
+    out: list[ChatEvent] = []
+    candidates = getattr(chunk, "candidates", None) or []
+    for cand in candidates:
+        content = getattr(cand, "content", None)
+        if not content:
+            continue
+        parts = getattr(content, "parts", None) or []
+        for part in parts:
+            text = getattr(part, "text", None)
+            if text:
+                if getattr(part, "thought", False):
+                    out.append(ThinkingDelta(summary=text))
+                else:
+                    out.append(TextDelta(text=text))
+
+            fc = getattr(part, "function_call", None)
+            if fc:
+                fc_id = getattr(fc, "id", None) or f"fc_{len(seen_tool_ids)}"
+                if fc_id not in seen_tool_ids:
+                    seen_tool_ids.add(fc_id)
+                    tool_starts[fc_id] = time.monotonic()
+                    args = getattr(fc, "args", {}) or {}
+                    out.append(ToolCallStart(
+                        id=fc_id,
+                        name=getattr(fc, "name", "?"),
+                        args=dict(args),
+                    ))
+
+            fr = getattr(part, "function_response", None)
+            if fr:
+                fr_id = getattr(fr, "id", None) or ""
+                if not fr_id:
+                    # Some SDK versions omit the id on the response; fall
+                    # back to the most recent unresolved invocation.
+                    fr_id = next(
+                        iter(reversed(list(tool_starts.keys()))), "",
+                    )
+                started = tool_starts.pop(fr_id, time.monotonic())
+                duration = int((time.monotonic() - started) * 1000)
+                response = getattr(fr, "response", None) or {}
+                status = "error" if (
+                    isinstance(response, dict) and "error" in response
+                ) else "ok"
+                out.append(ToolCallEnd(
+                    id=fr_id, status=status,
+                    preview=_short_preview(response),
+                    duration_ms=duration,
+                ))
+    return out
 
 
 def _short_preview(payload: Any, *, limit: int = 500) -> str:
     if isinstance(payload, dict) and "result" in payload:
         payload = payload["result"]
     if isinstance(payload, (dict, list)):
-        import json as _json
         text = _json.dumps(payload, ensure_ascii=False)[:limit]
         return text
     text = str(payload)
