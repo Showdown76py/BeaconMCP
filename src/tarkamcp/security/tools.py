@@ -28,9 +28,11 @@ def register_security_tools(mcp: FastMCP) -> None:
         if revoke_current_token():
             return {
                 "revoked": True,
+                "grace_seconds": 30,
                 "message": (
-                    "Bearer token revoked. The next request will need a new "
-                    "authorization (OAuth + 2FA)."
+                    "Bearer token scheduled for revocation. It remains valid "
+                    "for ~30s so this response can reach the client; after "
+                    "that the next request will need a fresh OAuth + 2FA."
                 ),
             }
         return {
