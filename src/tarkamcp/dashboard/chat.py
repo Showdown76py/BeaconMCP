@@ -16,11 +16,37 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+import logging
+import sys
 import time
+import traceback
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Iterable, Protocol, runtime_checkable
 
 from .conversations import Message, ToolCall
+
+_logger = logging.getLogger("tarkamcp.dashboard.chat")
+
+
+def _unwrap_exception(exc: BaseException) -> BaseException:
+    """Drill into nested ExceptionGroups to return the leaf exception.
+
+    anyio and asyncio wrap concurrent errors in ``ExceptionGroup``; the
+    default string representation is ``"unhandled errors in a TaskGroup
+    (N sub-exception)"`` which hides the actual failure. We walk the
+    chain to expose the most specific underlying error.
+    """
+    current = exc
+    for _ in range(8):  # bounded recursion, exception chains are shallow
+        inner = getattr(current, "exceptions", None)
+        if not inner:
+            return current
+        # Prefer the first exception that is itself NOT an ExceptionGroup.
+        for sub in inner:
+            if not getattr(sub, "exceptions", None):
+                return sub
+        current = inner[0]
+    return current
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +120,13 @@ class TurnInput:
     model: str
     effort: str
     bearer: str
-    mcp_url: str  # public URL for the MCP endpoint
+    mcp_url: str  # URL (remote mode) or connect URL (local mode)
+    # "local": dashboard opens an MCP ClientSession against mcp_url and
+    #         passes the session to Gemini as a tool. Works on any key.
+    # "remote": passes an McpServer(url, headers) to Gemini and lets
+    #           Google's backend call mcp_url directly. Natively supported
+    #           on Gemini 3; requires mcp_url to be publicly reachable.
+    mcp_mode: str = "local"
 
 
 # ---------------------------------------------------------------------------
@@ -253,46 +285,95 @@ class GeminiChatEngine:
 
     async def run(self, turn: TurnInput) -> AsyncIterator[ChatEvent]:
         try:
-            import httpx  # type: ignore
+            async for event in self._run(turn):
+                yield event
+        except BaseException as e:  # noqa: BLE001
+            leaf = _unwrap_exception(e)
+            # Write the full traceback to stderr so journalctl has the
+            # real cause; the client only gets a short message.
+            traceback.print_exception(e, file=sys.stderr)
+            _logger.error("gemini chat turn failed: %s", leaf, exc_info=False)
+            yield ErrorEvent(
+                code="gemini_error",
+                message=f"{type(leaf).__name__}: {leaf}",
+            )
+
+    async def _run(self, turn: TurnInput) -> AsyncIterator[ChatEvent]:
+        try:
             from google.genai import types  # type: ignore
-            from mcp.client.session import ClientSession  # type: ignore
-            from mcp.client.streamable_http import streamable_http_client  # type: ignore
-        except ImportError as e:  # noqa: BLE001
+        except ImportError as e:
             yield ErrorEvent(code="sdk_missing", message=str(e))
             return
 
-        client = self._ensure_client()
-        headers = {"Authorization": f"Bearer {turn.bearer}"}
         tool_starts: dict[str, float] = {}
         seen_tool_ids: set[str] = set()
 
+        contents = self._build_contents(turn.history, turn.user_text)
+        thinking = self._build_thinking_config(turn.model, turn.effort)
+
+        if turn.mcp_mode == "remote":
+            # Google's backend calls the MCP endpoint directly. Requires a
+            # publicly reachable URL and (on many keys) allowlist access to
+            # the mcp_servers feature.
+            config = types.GenerateContentConfig(
+                thinking_config=thinking,
+                tools=[types.Tool(
+                    mcp_servers=[types.McpServer(
+                        name="tarkamcp",
+                        streamable_http_transport=types.StreamableHttpTransport(
+                            url=turn.mcp_url,
+                            headers={
+                                "Authorization": f"Bearer {turn.bearer}",
+                            },
+                        ),
+                    )],
+                )],
+            )
+            client = self._ensure_client()
+            stream = await client.aio.models.generate_content_stream(
+                model=turn.model, contents=contents, config=config,
+            )
+            async for chunk in stream:
+                for event in _emit_chunk(chunk, tool_starts, seen_tool_ids):
+                    yield event
+            return
+
+        # Default "local" mode: open an MCP ClientSession from the
+        # dashboard process and hand it to the SDK as a tool.
         try:
-            async with httpx.AsyncClient(
-                headers=headers,
-                timeout=httpx.Timeout(30.0, read=120.0),
-            ) as http_client:
-                async with streamable_http_client(
-                    turn.mcp_url, http_client=http_client,
-                ) as (read_stream, write_stream, _get_session_id):
-                    async with ClientSession(read_stream, write_stream) as session:
-                        await session.initialize()
+            import httpx  # type: ignore
+            from mcp.client.session import ClientSession  # type: ignore
+            from mcp.client.streamable_http import (  # type: ignore
+                streamable_http_client,
+            )
+        except ImportError as e:
+            yield ErrorEvent(code="sdk_missing", message=str(e))
+            return
 
-                        config = types.GenerateContentConfig(
-                            thinking_config=self._build_thinking_config(
-                                turn.model, turn.effort,
-                            ),
-                            tools=[session],  # type: ignore[list-item]
-                        )
-                        contents = self._build_contents(turn.history, turn.user_text)
+        headers = {"Authorization": f"Bearer {turn.bearer}"}
+        async with httpx.AsyncClient(
+            headers=headers,
+            timeout=httpx.Timeout(30.0, read=120.0),
+        ) as http_client:
+            async with streamable_http_client(
+                turn.mcp_url, http_client=http_client,
+            ) as (read_stream, write_stream, _get_session_id):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
 
-                        stream = await client.aio.models.generate_content_stream(
-                            model=turn.model, contents=contents, config=config,
-                        )
-                        async for chunk in stream:
-                            for event in _emit_chunk(chunk, tool_starts, seen_tool_ids):
-                                yield event
-        except Exception as e:  # noqa: BLE001
-            yield ErrorEvent(code="gemini_error", message=str(e))
+                    config = types.GenerateContentConfig(
+                        thinking_config=thinking,
+                        tools=[session],  # type: ignore[list-item]
+                    )
+                    client = self._ensure_client()
+                    stream = await client.aio.models.generate_content_stream(
+                        model=turn.model, contents=contents, config=config,
+                    )
+                    async for chunk in stream:
+                        for event in _emit_chunk(
+                            chunk, tool_starts, seen_tool_ids,
+                        ):
+                            yield event
 
     async def title(self, *, model: str, user_text: str) -> str | None:
         try:

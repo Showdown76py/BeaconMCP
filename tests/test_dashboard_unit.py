@@ -220,6 +220,39 @@ def test_cleanup_expired(store):
     assert store.load(s_new.session_id) is not None
 
 
+def test_unwrap_exception_single():
+    from tarkamcp.dashboard.chat import _unwrap_exception
+
+    err = ValueError("boom")
+    assert _unwrap_exception(err) is err
+
+
+def test_unwrap_exception_simple_group():
+    from tarkamcp.dashboard.chat import _unwrap_exception
+
+    inner = RuntimeError("real cause")
+    group = ExceptionGroup("task group", [inner])
+    assert _unwrap_exception(group) is inner
+
+
+def test_unwrap_exception_nested_groups():
+    from tarkamcp.dashboard.chat import _unwrap_exception
+
+    inner = ConnectionError("network")
+    nested = ExceptionGroup("inner", [inner])
+    outer = ExceptionGroup("outer", [nested])
+    assert _unwrap_exception(outer) is inner
+
+
+def test_unwrap_exception_prefers_leaf_over_group():
+    from tarkamcp.dashboard.chat import _unwrap_exception
+
+    leaf = TypeError("t")
+    sibling_group = ExceptionGroup("sibling", [RuntimeError("deep")])
+    outer = ExceptionGroup("outer", [sibling_group, leaf])
+    assert _unwrap_exception(outer) is leaf
+
+
 def test_thinking_config_for_gemini_3():
     from tarkamcp.dashboard.chat import GeminiChatEngine
 
