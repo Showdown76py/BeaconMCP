@@ -19,11 +19,42 @@ import os
 import secrets
 import sys
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pyotp
+
+
+# Populated by the HTTP auth middleware at the start of each request and
+# cleared at the end. Lets MCP tools discover which bearer token they are
+# executing under, so a tool like ``security_end_session`` can revoke it.
+current_bearer_token: ContextVar[str | None] = ContextVar(
+    "current_bearer_token", default=None
+)
+
+# Registered by the HTTP layer so MCP tools (instantiated via FastMCP, which
+# runs before ``_run_http``) can reach the running TokenStore without an
+# import cycle.
+_active_token_store: "TokenStore | None" = None
+
+
+def register_token_store(store: "TokenStore") -> None:
+    global _active_token_store
+    _active_token_store = store
+
+
+def revoke_current_token() -> bool:
+    """Revoke the bearer token associated with the in-flight request.
+
+    Returns True if a token was found and revoked. Safe no-op if called
+    outside an HTTP request context.
+    """
+    token = current_bearer_token.get()
+    if not token or _active_token_store is None:
+        return False
+    return _active_token_store.revoke(token)
 
 
 CLIENTS_FILE = Path("/opt/tarkamcp/clients.json")
@@ -238,6 +269,10 @@ class TokenStore:
             del self._tokens[token]
             return None
         return access_token.client_id
+
+    def revoke(self, token: str) -> bool:
+        """Revoke a token immediately. Returns True if the token existed."""
+        return self._tokens.pop(token, None) is not None
 
     def _cleanup(self) -> None:
         now = time.time()
