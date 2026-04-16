@@ -270,9 +270,27 @@ class TokenStore:
             return None
         return access_token.client_id
 
+    # Seconds to keep a revoked token alive so the current MCP response /
+    # SSE stream has time to reach the client before the middleware starts
+    # rejecting follow-up requests.
+    REVOKE_GRACE_SECONDS = 30.0
+
     def revoke(self, token: str) -> bool:
-        """Revoke a token immediately. Returns True if the token existed."""
-        return self._tokens.pop(token, None) is not None
+        """Schedule a token for revocation after a short grace period.
+
+        Returns True if the token existed. The token stays technically valid
+        for :attr:`REVOKE_GRACE_SECONDS` seconds so the in-flight HTTP
+        response (and any immediate SSE follow-up that MCP streamable-HTTP
+        needs) can finish; after that the standard expiration check in
+        :meth:`validate` rejects it.
+        """
+        access_token = self._tokens.get(token)
+        if access_token is None:
+            return False
+        deadline = time.time() + self.REVOKE_GRACE_SECONDS
+        if access_token.expires_at > deadline:
+            access_token.expires_at = deadline
+        return True
 
     def _cleanup(self) -> None:
         now = time.time()
