@@ -68,6 +68,13 @@ _BUDGET_BY_EFFORT = {
     "high": 16384,
 }
 
+# Gemini 2.5 Pro cannot disable thinking -- valid range is [128, 32768].
+# Passing 0 or a value below 128 deterministically triggers 400/500 from
+# the backend. Flash and Flash-Lite accept 0 (disables thinking).
+_MIN_BUDGET_BY_MODEL = {
+    "gemini-2.5-pro": 128,
+}
+
 
 # ---------------------------------------------------------------------------
 # Events
@@ -255,8 +262,12 @@ class GeminiChatEngine:
                 include_thoughts=False,
             )
 
-        # Gemini 2.5: use thinking_budget instead.
+        # Gemini 2.5: use thinking_budget instead. Clamp to the model's
+        # minimum (2.5 Pro requires >=128; passing 0 there causes 500s).
         budget = _BUDGET_BY_EFFORT.get(effort, _BUDGET_BY_EFFORT["low"])
+        min_budget = _MIN_BUDGET_BY_MODEL.get(model, 0)
+        if budget < min_budget:
+            budget = min_budget
         return types.ThinkingConfig(
             thinking_budget=budget,
             include_thoughts=False,
@@ -286,8 +297,10 @@ class GeminiChatEngine:
     async def run(self, turn: TurnInput) -> AsyncIterator[ChatEvent]:
         # Retry schedule for transient Google 5xx errors. We only retry
         # while nothing has been streamed yet -- mid-stream failures are
-        # surfaced as-is because we can't replay partial output.
-        backoffs = [1.0, 2.5, 5.0]
+        # surfaced as-is because we can't replay partial output. Kept
+        # short (2 retries, ~3.5 s total) because persistent 2.5-pro 5xx
+        # episodes are not rescued by more retries.
+        backoffs = [0.5, 2.0]
         attempt = 0
         while True:
             yielded_any = False
@@ -360,7 +373,23 @@ class GeminiChatEngine:
             return
 
         # Default "local" mode: open an MCP ClientSession from the
-        # dashboard process and hand it to the SDK as a tool.
+        # dashboard process, and run a MANUAL function-calling loop.
+        #
+        # We previously passed ``tools=[session]`` and relied on the SDK's
+        # Automatic Function Calling path, but that route has two known
+        # failure modes for Gemini 2.5 Pro:
+        #
+        #   - AFC corrupts MCP function names non-deterministically
+        #     (googleapis/python-genai#1892)
+        #   - Combining thinking_config + MCP + streaming triggers
+        #     MALFORMED_FUNCTION_CALL / 500 INTERNAL on the backend
+        #     (googleapis/python-genai#2081, #1374)
+        #
+        # Manual loop: we call ``list_tools()`` ourselves, convert each
+        # to a ``FunctionDeclaration`` with ``parameters_json_schema``,
+        # stream Gemini's response, execute any ``function_call`` via
+        # ``session.call_tool()``, and feed the results back in a new
+        # ``generate_content_stream`` call until no function_call remains.
         try:
             import httpx  # type: ignore
             from mcp.client.session import ClientSession  # type: ignore
@@ -371,6 +400,11 @@ class GeminiChatEngine:
             yield ErrorEvent(code="sdk_missing", message=str(e))
             return
 
+        _logger.info(
+            "gemini chat: model=%s effort=%s mcp_url=%s",
+            turn.model, turn.effort, turn.mcp_url,
+        )
+
         headers = {"Authorization": f"Bearer {turn.bearer}"}
         async with httpx.AsyncClient(
             headers=headers,
@@ -380,21 +414,154 @@ class GeminiChatEngine:
                 turn.mcp_url, http_client=http_client,
             ) as (read_stream, write_stream, _get_session_id):
                 async with ClientSession(read_stream, write_stream) as session:
-                    await session.initialize()
+                    try:
+                        await session.initialize()
+                    except Exception as e:  # noqa: BLE001
+                        yield ErrorEvent(
+                            code="mcp_init_failed",
+                            message=(
+                                f"Impossible de se connecter à l'MCP "
+                                f"({turn.mcp_url}): {e}. Vérifie que "
+                                "TARKAMCP_DASHBOARD_PUBLIC_URL n'est pas "
+                                "défini en mode local."
+                            ),
+                        )
+                        return
+
+                    try:
+                        tools_result = await session.list_tools()
+                    except Exception as e:  # noqa: BLE001
+                        yield ErrorEvent(
+                            code="mcp_list_tools_failed",
+                            message=f"MCP list_tools a échoué: {e}",
+                        )
+                        return
+
+                    mcp_tools = list(tools_result.tools or [])
+                    if not mcp_tools:
+                        yield ErrorEvent(
+                            code="mcp_no_tools",
+                            message=(
+                                "L'MCP n'expose aucun outil. Vérifie que le "
+                                "bearer est valide et que les modules Proxmox "
+                                "sont chargés."
+                            ),
+                        )
+                        return
+
+                    function_decls = [
+                        _mcp_tool_to_declaration(t, types) for t in mcp_tools
+                    ]
+                    tools_cfg = [types.Tool(function_declarations=function_decls)]
 
                     config = types.GenerateContentConfig(
                         thinking_config=thinking,
-                        tools=[session],  # type: ignore[list-item]
+                        tools=tools_cfg,
+                        automatic_function_calling=(
+                            types.AutomaticFunctionCallingConfig(disable=True)
+                        ),
                     )
                     client = self._ensure_client()
-                    stream = await client.aio.models.generate_content_stream(
-                        model=turn.model, contents=contents, config=config,
+
+                    current_contents = list(contents)
+                    for round_idx in range(_MAX_TOOL_ROUNDS):
+                        stream = await client.aio.models.generate_content_stream(
+                            model=turn.model,
+                            contents=current_contents,
+                            config=config,
+                        )
+
+                        model_parts: list = []
+                        fc_invocations: list = []  # (fc_part, fc_id)
+                        async for chunk in stream:
+                            for part in _iter_parts(chunk):
+                                text = getattr(part, "text", None)
+                                if text:
+                                    if getattr(part, "thought", False):
+                                        yield ThinkingDelta(summary=text)
+                                    else:
+                                        yield TextDelta(text=text)
+                                    model_parts.append(
+                                        types.Part(
+                                            text=text,
+                                            thought=bool(
+                                                getattr(part, "thought", False)
+                                            ),
+                                        )
+                                    )
+
+                                fc = getattr(part, "function_call", None)
+                                if fc:
+                                    fc_id = (
+                                        getattr(fc, "id", None)
+                                        or f"fc_{len(seen_tool_ids)}"
+                                    )
+                                    seen_tool_ids.add(fc_id)
+                                    tool_starts[fc_id] = time.monotonic()
+                                    args = dict(getattr(fc, "args", None) or {})
+                                    fc_invocations.append((fc, fc_id, args))
+                                    model_parts.append(part)
+                                    yield ToolCallStart(
+                                        id=fc_id,
+                                        name=getattr(fc, "name", "?"),
+                                        args=args,
+                                    )
+
+                        if not fc_invocations:
+                            return  # model is done
+
+                        current_contents.append(
+                            types.Content(role="model", parts=model_parts)
+                        )
+
+                        response_parts: list = []
+                        for fc, fc_id, args in fc_invocations:
+                            name = getattr(fc, "name", "")
+                            start = tool_starts.pop(fc_id, time.monotonic())
+                            try:
+                                result = await session.call_tool(name, args)
+                                payload = _mcp_call_result_to_response(result)
+                                status = (
+                                    "error"
+                                    if getattr(result, "isError", False)
+                                    else "ok"
+                                )
+                            except Exception as e:  # noqa: BLE001
+                                payload = {"error": str(e)}
+                                status = "error"
+                            duration = int((time.monotonic() - start) * 1000)
+
+                            yield ToolCallEnd(
+                                id=fc_id, status=status,
+                                preview=_short_preview(payload),
+                                duration_ms=duration,
+                            )
+
+                            response_parts.append(
+                                types.Part(
+                                    function_response=types.FunctionResponse(
+                                        id=getattr(fc, "id", None),
+                                        name=name,
+                                        response=(
+                                            payload
+                                            if isinstance(payload, dict)
+                                            else {"result": payload}
+                                        ),
+                                    )
+                                )
+                            )
+
+                        current_contents.append(
+                            types.Content(role="user", parts=response_parts)
+                        )
+
+                    yield ErrorEvent(
+                        code="tool_loop_limit",
+                        message=(
+                            f"La boucle d'appel d'outils a dépassé "
+                            f"{_MAX_TOOL_ROUNDS} tours sans réponse finale."
+                        ),
                     )
-                    async for chunk in stream:
-                        for event in _emit_chunk(
-                            chunk, tool_starts, seen_tool_ids,
-                        ):
-                            yield event
 
     async def title(self, *, model: str, user_text: str) -> str | None:
         try:
@@ -422,6 +589,74 @@ class GeminiChatEngine:
             return None
         text = (getattr(resp, "text", "") or "").strip().strip('"').strip()
         return text[:80] or None
+
+
+# Max rounds of function_call / function_response before we give up.
+# Each round is one generate_content_stream + one batch of tool calls.
+# 10 is comfortably above realistic orchestration depth while still
+# bounding run-away loops.
+_MAX_TOOL_ROUNDS = 10
+
+
+def _iter_parts(chunk: Any):
+    """Yield every ``Part`` from a google-genai stream chunk."""
+    for cand in getattr(chunk, "candidates", None) or []:
+        content = getattr(cand, "content", None)
+        if not content:
+            continue
+        for part in getattr(content, "parts", None) or []:
+            yield part
+
+
+def _mcp_tool_to_declaration(tool: Any, types_mod: Any) -> Any:
+    """Convert an MCP ``Tool`` into a Gemini ``FunctionDeclaration``.
+
+    MCP exposes ``inputSchema`` as a JSON Schema dict which the SDK's
+    ``parameters_json_schema`` field accepts directly -- no manual
+    translation to ``types.Schema`` needed.
+    """
+    name = getattr(tool, "name", "")
+    description = getattr(tool, "description", "") or ""
+    schema = getattr(tool, "inputSchema", None)
+    if not isinstance(schema, dict) or not schema:
+        # Gemini requires an object schema. Default to an empty object so
+        # tools without declared parameters still validate.
+        schema = {"type": "object", "properties": {}}
+    return types_mod.FunctionDeclaration(
+        name=name,
+        description=description,
+        parameters_json_schema=schema,
+    )
+
+
+def _mcp_call_result_to_response(result: Any) -> dict:
+    """Turn an MCP ``CallToolResult`` into a JSON-serialisable response.
+
+    Gemini's ``FunctionResponse.response`` must be a plain dict. We
+    flatten the MCP content list into ``{"content": [...]}`` plus an
+    optional ``error`` flag.
+    """
+    out: dict[str, Any] = {}
+    content_items: list = []
+    for c in getattr(result, "content", None) or []:
+        text = getattr(c, "text", None)
+        if text is not None:
+            content_items.append({"type": "text", "text": text})
+            continue
+        data = getattr(c, "data", None)
+        mime = getattr(c, "mimeType", None)
+        if data is not None:
+            content_items.append({
+                "type": "binary",
+                "mimeType": mime or "application/octet-stream",
+            })
+    out["content"] = content_items
+    if getattr(result, "isError", False):
+        out["error"] = True
+    structured = getattr(result, "structuredContent", None)
+    if structured is not None:
+        out["structured"] = structured
+    return out
 
 
 def _emit_chunk(

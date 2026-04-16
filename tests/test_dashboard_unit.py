@@ -327,6 +327,72 @@ def test_classify_error_upstream_timeout():
     assert code == "upstream_timeout"
 
 
+def test_mcp_tool_to_declaration_passes_input_schema():
+    from google.genai import types
+
+    from tarkamcp.dashboard.chat import _mcp_tool_to_declaration
+
+    class FakeMCPTool:
+        name = "proxmox_list_vms"
+        description = "List VMs on a Proxmox node"
+        inputSchema = {
+            "type": "object",
+            "properties": {"node": {"type": "string"}},
+            "required": ["node"],
+        }
+
+    decl = _mcp_tool_to_declaration(FakeMCPTool(), types)
+    assert decl.name == "proxmox_list_vms"
+    assert decl.description == "List VMs on a Proxmox node"
+    assert decl.parameters_json_schema["required"] == ["node"]
+
+
+def test_mcp_tool_to_declaration_defaults_schema_when_missing():
+    from google.genai import types
+
+    from tarkamcp.dashboard.chat import _mcp_tool_to_declaration
+
+    class FakeMCPTool:
+        name = "ping"
+        description = ""
+        inputSchema = None
+
+    decl = _mcp_tool_to_declaration(FakeMCPTool(), types)
+    # Gemini rejects empty/missing schemas; helper must substitute an
+    # empty object schema so the tool still registers.
+    assert decl.parameters_json_schema == {"type": "object", "properties": {}}
+
+
+def test_mcp_call_result_to_response_flattens_text_content():
+    from tarkamcp.dashboard.chat import _mcp_call_result_to_response
+
+    class FakeText:
+        text = "hello"
+
+    class FakeResult:
+        content = [FakeText()]
+        isError = False
+        structuredContent = None
+
+    payload = _mcp_call_result_to_response(FakeResult())
+    assert payload == {"content": [{"type": "text", "text": "hello"}]}
+
+
+def test_mcp_call_result_to_response_marks_error():
+    from tarkamcp.dashboard.chat import _mcp_call_result_to_response
+
+    class FakeText:
+        text = "boom"
+
+    class FakeResult:
+        content = [FakeText()]
+        isError = True
+        structuredContent = None
+
+    payload = _mcp_call_result_to_response(FakeResult())
+    assert payload["error"] is True
+
+
 def test_is_transient_error_matches_5xx():
     from tarkamcp.dashboard.chat import _is_transient_error
 
@@ -392,8 +458,8 @@ def test_gemini_retry_surfaces_after_max_attempts(monkeypatch):
         yield  # pragma: no cover -- makes fake_run an async generator
 
     events = _run_retry_scenario(monkeypatch, fake_run)
-    # initial attempt + 3 retries = 4 total
-    assert attempts["n"] == 4
+    # initial attempt + 2 retries = 3 total
+    assert attempts["n"] == 3
     assert len(events) == 1
     assert isinstance(events[0], ErrorEvent)
     assert events[0].code == "upstream_internal"
@@ -430,6 +496,18 @@ def test_thinking_config_for_gemini_2_5():
     cfg = GeminiChatEngine._build_thinking_config("gemini-2.5-flash", "medium")
     assert cfg.thinking_level is None
     assert cfg.thinking_budget == 4096
+
+
+def test_thinking_config_clamps_gemini_2_5_pro_minimum():
+    """2.5 Pro cannot disable thinking; budget must clamp to 128+."""
+    from tarkamcp.dashboard.chat import GeminiChatEngine
+
+    cfg = GeminiChatEngine._build_thinking_config("gemini-2.5-pro", "minimal")
+    assert cfg.thinking_budget == 128  # clamped up from 0
+
+    # 2.5 Flash has no minimum -- "minimal" means disable thinking.
+    cfg_flash = GeminiChatEngine._build_thinking_config("gemini-2.5-flash", "minimal")
+    assert cfg_flash.thinking_budget == 0
 
 
 def test_thinking_config_unknown_effort_defaults_to_low():

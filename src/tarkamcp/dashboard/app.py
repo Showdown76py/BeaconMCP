@@ -654,17 +654,20 @@ def _require_active_session(
 def _resolve_mcp_url(request: Request, deps: DashboardDeps) -> str:
     """Return the URL the chat engine should use for MCP.
 
-    - In **local** mode the dashboard opens the session itself, so a
-      loopback target (``http://127.0.0.1:<port>/mcp``) is ideal: no
-      Cloudflare round-trip and no dependency on the public hostname.
+    - In **local** mode the dashboard opens the session itself, so we
+      ALWAYS use loopback. Going through a public URL means a round-trip
+      via Cloudflare (or whatever reverse proxy) which can strip the
+      Authorization header, deterministically producing a 401 on /mcp
+      that then cascades into a malformed tools list and a 500 from
+      Gemini. ``mcp_public_url`` is ignored here by design.
     - In **remote** mode Google's backend calls the URL directly, so we
       must return a publicly reachable address. Users can override via
       ``TARKAMCP_DASHBOARD_PUBLIC_URL``; otherwise we fall back to the
       reverse-proxy Host header.
     """
-    if deps.mcp_public_url:
-        return deps.mcp_public_url.rstrip("/") + "/mcp"
     if deps.mcp_mode == "remote":
+        if deps.mcp_public_url:
+            return deps.mcp_public_url.rstrip("/") + "/mcp"
         scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
         host = request.headers.get(
             "x-forwarded-host", request.headers.get("host", "localhost"),

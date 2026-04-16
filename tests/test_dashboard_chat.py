@@ -252,7 +252,9 @@ def test_chat_stream_simple_text(app_and_client, engine, deps):
     turn = engine.calls[0]
     assert turn.user_text == "ping"
     assert turn.bearer.startswith("b_")
-    assert turn.mcp_url == "https://mcp.example/mcp"
+    # Local mode (default) ignores mcp_public_url and uses loopback so
+    # the dashboard never round-trips through its own reverse proxy.
+    assert turn.mcp_url == "http://127.0.0.1:8420/mcp"
     assert turn.history == []
 
     # Message persisted in DB
@@ -394,6 +396,39 @@ def test_chat_page_auth_required(app_and_client):
     _, client = app_and_client
     r = client.get("/app/chat")
     assert r.status_code == 302
+
+
+def test_chat_stream_remote_mode_uses_public_url(tmp_path, engine):
+    """In remote mode the public URL IS used (Google's backend calls it)."""
+    db = Database(tmp_path / "dashboard.db")
+    deps = DashboardDeps(
+        database=db,
+        session_store=SessionStore(db, key=os.urandom(32)),
+        client_store=FakeClientStore(),
+        token_store=FakeTokenStore(),
+        totp_locked=lambda cid: False,
+        totp_record_failure=lambda cid: None,
+        totp_record_success=lambda cid: None,
+        conversations=ConversationStore(db),
+        engine=engine,
+        mcp_public_url="https://mcp.example/",
+        mcp_mode="remote",
+    )
+    app = Starlette(routes=build_dashboard_routes(deps))
+    client = TestClient(app, follow_redirects=False)
+
+    csrf = _login(client)
+    r = client.post("/app/api/conversations",
+                    headers={"X-CSRF-Token": csrf, "Content-Type": "application/json"},
+                    content="{}")
+    cid = r.json()["conversation"]["id"]
+    client.post(
+        "/app/api/chat/stream",
+        headers={"X-CSRF-Token": csrf, "Content-Type": "application/json"},
+        content=json.dumps({"conversation_id": cid, "content": "ping"}),
+    )
+    assert engine.calls[-1].mcp_url == "https://mcp.example/mcp"
+    assert engine.calls[-1].mcp_mode == "remote"
 
 
 def test_chat_page_renders_after_login(app_and_client):
