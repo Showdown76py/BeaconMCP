@@ -223,7 +223,7 @@ response = client.models.generate_content(
 Un panel web optionnel est servi par TarkaMCP sur la même URL (`https://mcp.tarkacore.dev/app/...`). Il offre :
 
 - `/app/login` — récupérer un bearer MCP via Client ID + Secret + TOTP, session persistée 90 jours dans un cookie HttpOnly. Plus de curl sur téléphone.
-- `/app/chat` — chat multi-conversations avec Gemini 3 Flash / 3.1 Pro et contrôle de l'effort de thinking (`minimal` / `low` / `medium` / `high`). Les outils TarkaMCP sont exposés à Gemini via MCP natif.
+- `/app/chat` — chat multi-conversations avec Gemini 2.5 Flash/Pro (stable) ou Gemini 3 Flash / 3.1 Pro (preview, allowlist Google requise). Contrôle de l'effort de thinking (`minimal` / `low` / `medium` / `high`). Les outils TarkaMCP sont exposés à Gemini via une session MCP locale tenue côté dashboard, ce qui évite les limitations preview du mode "MCP remote" de l'API Gemini.
 
 ### Activation
 

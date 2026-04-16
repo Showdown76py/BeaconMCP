@@ -646,13 +646,20 @@ def _require_active_session(
 
 
 def _resolve_mcp_url(request: Request, deps: DashboardDeps) -> str:
+    """Return the URL the engine should connect to for MCP.
+
+    Since the chat engine opens an MCP client session *from the dashboard
+    process*, the fastest and most reliable target is the local
+    127.0.0.1:<port> endpoint served by the same Uvicorn instance. That
+    avoids a round-trip through Cloudflare and keeps working when the
+    public hostname is unreachable. Callers can override via
+    ``TARKAMCP_DASHBOARD_PUBLIC_URL`` if they need a different target.
+    """
     if deps.mcp_public_url:
         return deps.mcp_public_url.rstrip("/") + "/mcp"
-    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
-    host = request.headers.get(
-        "x-forwarded-host", request.headers.get("host", "localhost"),
-    )
-    return f"{scheme}://{host}/mcp"
+    import os as _os
+    port = _os.environ.get("TARKAMCP_PORT", "8420")
+    return f"http://127.0.0.1:{port}/mcp"
 
 
 def _sse(event: str, data: Any) -> bytes:
