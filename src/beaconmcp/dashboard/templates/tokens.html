@@ -28,14 +28,22 @@
         <svg width="14" height="14"><use href="#i-copy"/></svg>
       </button>
     </div>
-    {% if dcr_enabled %}
-    <p class="muted small" style="margin-top:0.75rem">
-      Using ChatGPT? ChatGPT cannot accept a bearer token — it requires
-      OAuth Dynamic Client Registration. Mint a one-off connector URL on
-      the <a href="/app/connectors">ChatGPT connectors</a> page instead.
-    </p>
-    {% endif %}
   </section>
+
+  {% if dcr_enabled %}
+  <section class="tokens-section chatgpt-cta">
+    <h2>Using ChatGPT?</h2>
+    <p>
+      ChatGPT's connector UI cannot accept a bearer token — it requires
+      OAuth Dynamic Client Registration. Mint a one-off connector URL
+      instead; it's single-use, expires in 15 min, and stays 2FA-gated.
+    </p>
+    <a href="/app/connectors" class="btn-primary-link">
+      Open ChatGPT connectors
+      <svg width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
+    </a>
+  </section>
+  {% endif %}
 
   {% if just_created %}
   <section class="tokens-section token-just-created">

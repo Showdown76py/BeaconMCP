@@ -1204,6 +1204,30 @@ a.sidebar-link { cursor: pointer; }
   border-radius: var(--radius-sm);
   padding: 0.35rem 0.55rem;
 }
+
+.chatgpt-cta {
+  border-left: 3px solid var(--accent, #e57000);
+}
+.chatgpt-cta p {
+  margin: 0.25rem 0 1rem;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.btn-primary-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.6rem 1rem;
+  background: var(--accent, #e57000);
+  color: #fff;
+  border-radius: var(--radius-sm);
+  font-weight: 500;
+  text-decoration: none;
+  transition: filter 120ms ease;
+}
+.btn-primary-link:hover { filter: brightness(1.08); }
+.btn-primary-link:active { filter: brightness(0.95); }
 .token-endpoint code {
   flex: 1;
   font-family: var(--font-mono);
