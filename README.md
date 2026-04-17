@@ -40,7 +40,7 @@ Compatible **Claude** (web, mobile) &bull; **ChatGPT** &bull; **Gemini** (CLI, A
 - [Configuration iLO](#configuration-ilo)
 - [Configuration .env](#configuration-env)
 - [Connexion par plateforme](#connexion-par-plateforme)
-- [Dashboard web (chat Gemini)](#dashboard-web-chat-gemini)
+- [Dashboard web](#dashboard-web)
 - [Tests](#tests)
 - [Outils disponibles](#outils-disponibles)
 - [Dépannage](#dépannage)
@@ -167,17 +167,24 @@ tarkamcp auth revoke tarkamcp_abc123...
 
 1. **Settings** > **Developer Mode** > **MCP Servers**
 2. URL : `https://mcp.example.com/mcp`
-3. Obtenir un bearer token (TOTP requis à chaque refresh, toutes les 24 h) :
-   ```bash
-   TOTP=$(oathtool --totp -b "$TOTP_SECRET")   # ou tape-le depuis l'app
-   curl -X POST https://mcp.example.com/oauth/token \
-     -d "grant_type=client_credentials&client_id=ID&client_secret=SECRET&totp=$TOTP"
-   ```
-4. Utiliser l'`access_token` retourné comme bearer token
+3. Obtenir un bearer token. Deux options :
+   - **Via le dashboard** (recommandé) : [page Tokens API](#page-tokens-api) → crée un token nommé "ChatGPT", copie la valeur.
+   - **Via curl** :
+     ```bash
+     TOTP=$(oathtool --totp -b "$TOTP_SECRET")   # ou tape-le depuis l'app
+     curl -X POST https://mcp.example.com/oauth/token \
+       -d "grant_type=client_credentials&client_id=ID&client_secret=SECRET&totp=$TOTP"
+     ```
+4. Utiliser la valeur comme bearer token. Expire dans 24 h.
 
 ### Gemini CLI
 
 ```bash
+# Option 1 : récupère un token depuis le dashboard (Tokens API → nouveau token "Gemini CLI")
+gemini mcp add tarkamcp --url https://mcp.example.com/mcp \
+  --header "Authorization: Bearer <token-copié-depuis-le-dashboard>"
+
+# Option 2 : via curl
 TOTP=$(oathtool --totp -b "$TOTP_SECRET")
 TOKEN=$(curl -s -X POST https://mcp.example.com/oauth/token \
   -d "grant_type=client_credentials&client_id=ID&client_secret=SECRET&totp=$TOTP" \
@@ -187,7 +194,7 @@ gemini mcp add tarkamcp --url https://mcp.example.com/mcp \
   --header "Authorization: Bearer $TOKEN"
 ```
 
-Le token étant valide 24 h, il faut relancer ce bloc (avec un nouveau code TOTP) une fois par jour.
+Le token est valide 24 h (option 1 comme option 2). Recréer un nouveau token dans le dashboard ou relancer le bloc curl pour renouveler.
 
 ### Gemini API
 
@@ -218,12 +225,13 @@ response = client.models.generate_content(
 
 ---
 
-## Dashboard web (chat Gemini)
+## Dashboard web
 
-Un panel web optionnel est servi par TarkaMCP sur la même URL (`https://mcp.example.com/app/...`). Il offre :
+Un panel web optionnel est servi par TarkaMCP sur la même URL (`https://mcp.example.com/app/...`). Trois pages :
 
-- `/app/login` — récupérer un bearer MCP via Client ID + Secret + TOTP, session persistée 90 jours dans un cookie HttpOnly. Plus de curl sur téléphone.
-- `/app/chat` — chat multi-conversations avec Gemini 2.5 Flash/Pro (stable, accessibles avec toute clé AI Studio) ou Gemini 3 Flash / 3.1 Pro (preview, allowlist Google requise — sinon 403 PERMISSION_DENIED). Le défaut est `gemini-2.5-flash`. Contrôle de l'effort de thinking (`minimal` / `low` / `medium` / `high`).
+- **`/app/login`** — récupère un bearer MCP via Client ID + Secret + TOTP, session persistée 90 jours dans un cookie HttpOnly. Plus de curl sur téléphone.
+- **`/app/chat`** — chat multi-conversations avec Gemini 2.5 Flash/Pro (stable) ou Gemini 3 Flash / 3.1 Pro (preview, allowlist Google requise).
+- **`/app/tokens`** — génère des bearers nommés pour brancher TarkaMCP sur Gemini web, ChatGPT, Claude Desktop, etc. sans passer par curl.
 
 ### Activation
 
@@ -247,8 +255,46 @@ Dashboard: http://0.0.0.0:8420/app/login
 
 1. Tu ouvres `https://mcp.example.com/` sur ton téléphone → redirige vers `/app/login`.
 2. Tu tapes Client ID + Client Secret + code TOTP (une seule fois tous les 90 jours).
-3. Tu arrives sur `/app/chat` avec l'historique de tes conversations.
+3. Tu arrives sur `/app/chat` avec l'historique de tes conversations. Une card "Tokens API" prominente dans la sidebar mène à `/app/tokens`.
 4. Toutes les 24 h le bearer MCP expire — le dashboard redemande *juste* le code TOTP (client_id et secret stockés chiffrés côté serveur).
+
+### Page Tokens API
+
+Accessible via la card "Tokens API" dans la sidebar du chat, ou directement à `/app/tokens`. Conçue pour les utilisateurs qui branchent TarkaMCP sur un client MCP externe plutôt que d'utiliser le chat intégré.
+
+Elle affiche :
+- L'URL MCP à coller dans le client externe (bouton Copier).
+- Un formulaire de création qui **exige un nom** (max 60 caractères, ex. "Gemini Web", "ChatGPT macOS") + le code TOTP courant.
+- Le token généré une **seule fois** dans une card orange avec bouton Copier — après rechargement il n'est plus affiché.
+- La liste des tokens actifs : nom, préfixe 12 car, heures avant expiration, bouton Révoquer.
+
+Contraintes :
+
+| Paramètre | Valeur |
+|-----------|--------|
+| Expiration | **24 h** (hérité de `TokenStore.TOKEN_TTL`) |
+| Cap par client | **3 tokens actifs** maximum |
+| TOTP | Re-vérifié à chaque création |
+| Révocation | Par préfixe (≥ 6 car), scoped au client propriétaire |
+| Stockage | **En mémoire** — un `systemctl restart` invalide tous les tokens |
+
+### Chat : modèles & thinking
+
+- **Gemini 2.5 Flash / Pro** : dispos sur toute clé AI Studio. **Utilisés par défaut** (`gemini-2.5-flash`).
+- **Gemini 3 Flash / 3.1 Pro (preview)** : gated par allowlist Google. Sans allowlist, le dashboard affiche un message clair indiquant de rebasculer sur 2.5.
+- **Effort de thinking** : `minimal` / `low` / `medium` / `high` via dropdown. `gemini-2.5-pro` ne peut pas désactiver le thinking — le budget est automatiquement clampé à 128 tokens minimum.
+- **Rendu markdown** : le client parse les headings (`#`–`######`), listes ordonnées/non-ordonnées, blockquotes, horizontal rules, code fences (avec `lang-*` class), inline code, bold/italic/strike et links HTTP(S).
+
+### Confirmation obligatoire pour SSH exec
+
+`ssh_exec_command` et `ssh_exec_command_async` ne s'exécutent **jamais** sans clic manuel depuis le chat. Quand Gemini demande à lancer une commande SSH :
+
+1. La tool-card apparaît en état "approbation requise" (badge orange, auto-ouverte pour voir les `args`).
+2. Deux boutons : **Autoriser** / **Refuser**.
+3. Tant que tu n'as pas cliqué, le turn Gemini reste bloqué côté serveur (timeout à 5 min).
+4. Si tu refuses, Gemini reçoit un `FunctionResponse {"error": "user_rejected"}` et peut adapter sa réponse.
+
+L'allow-list est hardcodée dans `src/tarkamcp/dashboard/chat.py` (`_NEEDS_CONFIRMATION`). Pour l'étendre (par exemple aux outils `proxmox_exec_*`), ajoute les noms à ce set.
 
 ### Données stockées
 
@@ -259,31 +305,17 @@ SQLite à `/opt/tarkamcp/dashboard.db` (WAL). Trois tables :
 
 Tout est scopé par `client_id` ; tu peux avoir plusieurs sessions actives (téléphone + PC) pour un même client.
 
-### Mode MCP (local / remote)
+### Architecture MCP interne
 
-Le dashboard expose deux chemins pour que Gemini utilise les outils TarkaMCP :
+Le dashboard tient lui-même une session MCP (`streamablehttp_client` + `ClientSession`) vers le `/mcp` local (`http://127.0.0.1:8420/mcp`). Les outils sont convertis manuellement en `FunctionDeclaration` et la boucle `function_call` / `function_response` est orchestrée côté serveur (AFC SDK désactivé via `AutomaticFunctionCallingConfig(disable=True)`) pour contourner des bugs connus de google-genai sur Gemini 2.5 Pro avec MCP + streaming + thinking.
 
-| Mode | Comment | Quand l'utiliser |
-|------|---------|------------------|
-| `local` (défaut) | Le dashboard tient une session MCP en process et la passe à Gemini comme "tool". Google ne voit que des function declarations. | Marche sur toutes les clés, indépendant du preview. |
-| `remote` | On passe un `McpServer(url, headers)` à Gemini, Google appelle `mcp.example.com/mcp` directement. | Natif Gemini 3 — à activer si ta clé a l'allowlist. |
+> Un mode "remote" (McpServer backend-driven) existait mais a été désactivé : il produisait systématiquement des 500 INTERNAL à cause de la perte de l'header Authorization via Cloudflare Tunnel. Si `TARKAMCP_DASHBOARD_MCP_MODE=remote` est défini, le service affiche un warning au boot et chaque turn chat retourne un message d'erreur actionable.
 
-Switch via :
-```env
-TARKAMCP_DASHBOARD_MCP_MODE=remote
-TARKAMCP_DASHBOARD_PUBLIC_URL=https://mcp.example.com  # requis en mode remote si pas de X-Forwarded-Host
-```
+### Robustesse aux redémarrages
 
-### Modèles & accès
+Le `TokenStore` est en mémoire : après `systemctl restart tarkamcp`, les bearers sont invalidés alors que les sessions dashboard (SQLite) persistent. Le dashboard détecte cela via `TokenStore.validate()` sur chaque route sensible ; si le bearer n'existe plus côté MCP mais que la session est encore timestamp-valide, l'utilisateur est redirigé vers `/app/refresh` pour retaper son TOTP et émettre un nouveau bearer.
 
-- **Gemini 2.5 Flash / Pro** : dispos sur toute clé AI Studio. **Utilise-les par défaut.**
-- **Gemini 3 Flash / 3.1 Pro (preview)** : gated par allowlist Google. Si ta clé n'y a pas accès, tu verras :
-  ```
-  Ta clé Gemini n'a pas accès à gemini-3-flash-preview (allowlist Google requise
-  pour les modèles preview). Bascule sur gemini-2.5-flash ou gemini-2.5-pro via
-  le dropdown en bas à gauche — ils sont dispos sur toutes les clés AI Studio.
-  ```
-  Demande l'accès sur [ai.google.dev](https://ai.google.dev) ou reste sur 2.5.
+Conséquence pour les tokens externes (`/app/tokens`) : un restart du service force toutes les intégrations Gemini web / ChatGPT / Claude Desktop à régénérer leur token. Si ça devient gênant, migrer le `TokenStore` vers SQLite (non fait actuellement).
 
 ### Désactiver
 
@@ -492,6 +524,11 @@ python tests/test_integration.py --test-vmid 9999
 | `invalid_grant` + `missing or invalid totp` | Code 2FA faux, expiré (>30 s), ou déjà utilisé | Générer un nouveau code dans l'app. Vérifier l'horloge du serveur vs celle du téléphone (`timedatectl`). |
 | Page 2FA affiche "Trop de tentatives" | 5 codes faux consécutifs → lockout 5 min | Attendre. Le compteur se réinitialise à la prochaine validation correcte. |
 | Clients silencieusement révoqués après update | Migration 2FA : les anciens clients sans TOTP sont rejetés au démarrage | Regarder `journalctl -u tarkamcp` pour la liste, recréer via `tarkamcp auth create` |
+| Dashboard boucle entre `/app/refresh` et `/app/chat` | Bearer wipe après redémarrage du service | Taper le code TOTP sur la page de refresh pour regénérer un bearer |
+| Clients MCP externes déconnectés après un restart | `TokenStore` en mémoire, wipé au restart | Recréer les tokens dans `/app/tokens` (max 3, expire 24 h) |
+| `event: error ... "code": "remote_mode_disabled"` dans le chat | `TARKAMCP_DASHBOARD_MCP_MODE=remote` dans `.env` | Retirer la ligne du `.env` et redémarrer — seul le mode local est supporté |
+| Chat bloqué sur une card SSH avec deux boutons | Confirmation obligatoire pour `ssh_exec_command*` | Cliquer **Autoriser** ou **Refuser**. Timeout à 5 min sinon auto-reject |
+| Tokens API : "Limite atteinte : maximum 3 tokens" | 3 tokens nommés déjà actifs pour ce client | Révoquer un token existant dans la liste avant d'en créer un nouveau |
 
 ---
 
