@@ -516,6 +516,58 @@ button.ghost.full { width: 100%; justify-content: center; }
 
 .msg-body.md a { word-break: break-all; }
 
+/* Headings: match the chat typography — compact, no decorative weight bombs. */
+.msg-body.md h1,
+.msg-body.md h2,
+.msg-body.md h3,
+.msg-body.md h4,
+.msg-body.md h5,
+.msg-body.md h6 {
+  margin: 0.9rem 0 0.4rem;
+  line-height: 1.3;
+  font-weight: 600;
+}
+.msg-body.md h1:first-child,
+.msg-body.md h2:first-child,
+.msg-body.md h3:first-child,
+.msg-body.md h4:first-child,
+.msg-body.md h5:first-child,
+.msg-body.md h6:first-child { margin-top: 0; }
+.msg-body.md h1 { font-size: 1.25rem; }
+.msg-body.md h2 { font-size: 1.15rem; }
+.msg-body.md h3 { font-size: 1.05rem; }
+.msg-body.md h4 { font-size: 1rem; }
+.msg-body.md h5,
+.msg-body.md h6 { font-size: 0.95rem; color: var(--text-muted); }
+
+/* Lists */
+.msg-body.md ul,
+.msg-body.md ol {
+  margin: 0.25rem 0 0.75rem;
+  padding-left: 1.4rem;
+}
+.msg-body.md li { margin: 0.15rem 0; }
+.msg-body.md li > p { margin: 0; }
+.msg-body.md ul ul,
+.msg-body.md ol ol,
+.msg-body.md ul ol,
+.msg-body.md ol ul { margin: 0.15rem 0 0.15rem; }
+
+/* Blockquote */
+.msg-body.md blockquote {
+  margin: 0.5rem 0;
+  padding: 0.25rem 0.85rem;
+  border-left: 3px solid var(--border);
+  color: var(--text-muted);
+}
+
+/* Horizontal rule */
+.msg-body.md hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1rem 0;
+}
+
 /* Tool cards */
 
 .tool-card {
