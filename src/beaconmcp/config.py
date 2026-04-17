@@ -324,8 +324,18 @@ class Config:
         return None
 
     def get_node_host(self, name: str) -> str | None:
+        """Resolve a node name to a bare hostname suitable for SSH.
+
+        ``proxmox.nodes[].host`` may carry a port (e.g. ``pve1.example.com:8006``
+        or ``pve1.example.com:443``) for the Proxmox API, but SSH and
+        BMC-over-SSH-tunnel clients always need the bare hostname — asyncssh
+        treats the ``host:port`` string as a literal DNS label and fails to
+        resolve. Strip the port here so every caller gets a usable value.
+        """
         node = self.get_node(name)
-        return node.host if node else None
+        if node is None:
+            return None
+        return _strip_port(node.host)
 
     def get_bmc_device(self, device_id: str) -> BMCDevice | None:
         for d in self.bmc_devices:
@@ -452,3 +462,23 @@ def _bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _strip_port(host: str) -> str:
+    """Return ``host`` without a trailing ``:port`` component.
+
+    Handles IPv6 bracket literals (``[::1]:8006`` -> ``[::1]``) and regular
+    hostnames (``pve1.example.com:8006`` -> ``pve1.example.com``). Leaves
+    the value unchanged when no port is present.
+    """
+    if not host:
+        return host
+    if host.startswith("["):
+        end = host.find("]")
+        if end != -1:
+            return host[: end + 1]
+        return host
+    head, sep, tail = host.rpartition(":")
+    if sep and tail.isdigit():
+        return head
+    return host
