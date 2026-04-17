@@ -171,6 +171,35 @@ def test_ssh_vmid_to_ip_defaults_none_when_absent(
     assert cfg.ssh.vmid_to_ip is None
 
 
+def test_get_node_host_strips_port(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """proxmox.nodes[].host often carries the API port (e.g. :443 behind a reverse
+    proxy). SSH and BMC-over-SSH-tunnel need the bare hostname."""
+    monkeypatch.setenv("PVE1_TOKEN_SECRET", "x")
+    monkeypatch.setenv("PVE2_TOKEN_SECRET", "y")
+    path = _write(
+        tmp_path / "beaconmcp.yaml",
+        """
+        version: 1
+        proxmox:
+          nodes:
+            - name: pve1
+              host: pve1.example.com:443
+              token_id: "root@pam!beaconmcp"
+              token_secret: ${PVE1_TOKEN_SECRET}
+            - name: pve6
+              host: "[::1]:8006"
+              token_id: "root@pam!beaconmcp"
+              token_secret: ${PVE2_TOKEN_SECRET}
+        """,
+    )
+    cfg = Config.load(config_path=path)
+    assert cfg.get_node_host("pve1") == "pve1.example.com"
+    assert cfg.get_node_host("pve6") == "[::1]"
+    assert cfg.get_node_host("missing") is None
+    # The raw .host value is preserved for proxmoxer which accepts host:port.
+    assert cfg.pve_nodes[0].host == "pve1.example.com:443"
+
+
 def test_redacted_masks_secrets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PVE1_TOKEN_SECRET", "abcdefghij")
     path = _write(
