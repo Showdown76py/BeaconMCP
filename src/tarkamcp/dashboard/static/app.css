@@ -307,6 +307,7 @@ button.primary.icon-btn {
 .sidebar-cta:hover {
   background: color-mix(in oklab, var(--accent) 16%, var(--bg-elevated));
   border-color: var(--accent);
+  text-decoration: none;
 }
 .sidebar-cta:active { transform: translateY(1px); }
 
@@ -848,7 +849,7 @@ a.sidebar-link { cursor: pointer; }
   display: flex;
   justify-content: center;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.5rem;
   max-width: 48rem;
   margin: 0 auto;
   width: 100%;
@@ -856,6 +857,20 @@ a.sidebar-link { cursor: pointer; }
   color: var(--fg-faint);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.01em;
+  background: transparent;
+  border: 0;
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+  font-family: inherit;
+}
+
+.usage-bar:hover,
+.usage-bar:focus-visible {
+  background: color-mix(in oklab, var(--fg-faint) 10%, transparent);
+  color: var(--fg-muted);
+  outline: none;
 }
 
 .usage-bar .usage-win {
@@ -875,10 +890,6 @@ a.sidebar-link { cursor: pointer; }
   color: var(--fg-muted);
 }
 
-.usage-bar .usage-reset {
-  color: var(--fg-faint);
-}
-
 .usage-bar .usage-sep {
   color: var(--fg-faint);
 }
@@ -887,6 +898,140 @@ a.sidebar-link { cursor: pointer; }
   color: var(--danger);
   font-weight: 600;
 }
+
+/* Usage modal (click the footer bar to open) */
+
+.usage-modal-backdrop {
+  z-index: 40;
+}
+
+.usage-modal {
+  position: fixed;
+  z-index: 41;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(520px, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  background: var(--bg-elevated);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.25rem 1.25rem 1rem;
+  box-shadow: 0 20px 60px color-mix(in oklab, black 60%, transparent);
+  animation: fade-in 150ms ease both;
+}
+
+.usage-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.usage-modal-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.usage-modal-close {
+  background: transparent;
+  border: 0;
+  color: var(--fg-muted);
+  padding: 0.25rem;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.usage-modal-close:hover { color: var(--fg); background: color-mix(in oklab, var(--fg-faint) 12%, transparent); }
+
+.usage-section {
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--border);
+}
+.usage-section:first-of-type { border-top: 0; padding-top: 0; }
+
+.usage-section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.usage-section-head h3 {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.usage-percent {
+  font-size: 0.82rem;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-reset-label {
+  margin: 0.25rem 0 0.6rem;
+  font-size: 0.78rem;
+  color: var(--fg-faint);
+}
+
+.usage-progress {
+  width: 100%;
+  height: 8px;
+  background: color-mix(in oklab, var(--fg-faint) 18%, transparent);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.usage-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 200ms ease;
+}
+
+.usage-section.usage-over .usage-progress-fill { background: var(--danger); }
+.usage-section.usage-over .usage-percent { color: var(--danger); font-weight: 600; }
+
+.usage-modal-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.usage-modal-updated {
+  font-size: 0.75rem;
+  color: var(--fg-faint);
+}
+
+.usage-modal-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: 0.75rem;
+  padding: 0.3rem 0.6rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.usage-modal-refresh:hover { color: var(--fg); border-color: var(--fg-muted); }
+.usage-modal-refresh.spinning svg { animation: spin 800ms linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 /* Backdrop */
 

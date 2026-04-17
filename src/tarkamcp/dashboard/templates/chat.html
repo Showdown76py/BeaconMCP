@@ -115,22 +115,66 @@
           <svg width="18" height="18"><use href="#i-send"/></svg>
         </button>
       </div>
-      <div id="usage-bar" class="usage-bar" hidden aria-live="polite">
+      <button id="usage-bar" class="usage-bar" hidden aria-live="polite"
+              type="button" aria-haspopup="dialog"
+              aria-label="Voir les détails d'usage">
         <span class="usage-win usage-5h">
           <span class="usage-label">5h</span>
           <span class="usage-value" id="usage-5h-value">—</span>
-          <span class="usage-reset" id="usage-5h-reset"></span>
         </span>
         <span class="usage-sep" aria-hidden="true">·</span>
         <span class="usage-win usage-week">
           <span class="usage-label">7j</span>
           <span class="usage-value" id="usage-week-value">—</span>
         </span>
-      </div>
+      </button>
     </footer>
   </main>
 
   <div id="sidebar-backdrop" class="backdrop" hidden></div>
+
+  <div id="usage-modal-backdrop" class="backdrop usage-modal-backdrop" hidden></div>
+  <div id="usage-modal" class="usage-modal" role="dialog" aria-modal="true"
+       aria-labelledby="usage-modal-title" hidden tabindex="-1">
+    <header class="usage-modal-header">
+      <h2 id="usage-modal-title">Limites d'usage</h2>
+      <button class="icon-btn usage-modal-close" type="button"
+              aria-label="Fermer">
+        <svg width="16" height="16"><use href="#i-x"/></svg>
+      </button>
+    </header>
+
+    <section class="usage-section">
+      <div class="usage-section-head">
+        <h3>Session en cours</h3>
+        <span class="usage-percent" id="usage-modal-5h-pct">—</span>
+      </div>
+      <p class="usage-reset-label" id="usage-modal-5h-reset">—</p>
+      <div class="usage-progress">
+        <div class="usage-progress-fill" id="usage-modal-5h-fill"></div>
+      </div>
+    </section>
+
+    <section class="usage-section">
+      <div class="usage-section-head">
+        <h3>Fenêtre hebdomadaire</h3>
+        <span class="usage-percent" id="usage-modal-week-pct">—</span>
+      </div>
+      <p class="usage-reset-label">Fenêtre glissante sur 7 jours</p>
+      <div class="usage-progress">
+        <div class="usage-progress-fill" id="usage-modal-week-fill"></div>
+      </div>
+    </section>
+
+    <footer class="usage-modal-footer">
+      <span id="usage-modal-updated" class="usage-modal-updated">—</span>
+      <button class="usage-modal-refresh" type="button"
+              id="usage-modal-refresh" aria-label="Actualiser">
+        <svg width="14" height="14"><use href="#i-regen"/></svg>
+        <span>Actualiser</span>
+      </button>
+    </footer>
+  </div>
 </div>
 
 <script type="module" src="/app/static/chat.js"></script>

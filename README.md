@@ -320,7 +320,7 @@ Deux fenêtres sont appliquées **par client OAuth** :
 
 Poser la variable à `0` désactive la fenêtre correspondante. Au dépassement, la prochaine requête est rejetée **avant** d'être envoyée à Gemini, avec un message précisant l'heure de reset pour la fenêtre 5h.
 
-Le panel chat affiche en footer une ligne discrète `5h $X.XX / $Y.YY · reset HHhMM · 7j $X.XX / $Y.YY`, mise à jour après chaque tour via SSE `usage_update`.
+Le panel chat affiche en footer une ligne discrète `5H XX% · 7J XX%` (pourcentage consommé par fenêtre), mise à jour après chaque tour via SSE `usage_update`. Cliquer la barre ouvre un modal style Claude avec barres de progression, heure de réinitialisation de la session 5h, label « fenêtre glissante 7j » et bouton « Actualiser ».
 
 Tarifs utilisés (USD / 1M tokens, alignés sur le tarif public Google AI Studio au 2026-04-17) :
 
