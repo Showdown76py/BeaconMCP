@@ -288,7 +288,8 @@ button.primary.icon-btn {
   aspect-ratio: 1;
 }
 
-button.ghost {
+button.ghost,
+a.ghost {
   background: transparent;
   border: 1px solid var(--border);
   color: var(--fg-muted);
@@ -298,11 +299,15 @@ button.ghost {
   align-items: center;
   gap: 0.5rem;
   font-size: 0.88rem;
+  text-decoration: none;
   transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
 }
 
-button.ghost:hover { background: var(--bg); color: var(--fg); border-color: var(--border-strong); }
-button.ghost.full { width: 100%; justify-content: center; }
+button.ghost:hover,
+a.ghost:hover { background: var(--bg); color: var(--fg); border-color: var(--border-strong); }
+button.ghost.full,
+a.ghost.full { width: 100%; justify-content: center; }
+a.sidebar-link { cursor: pointer; }
 
 .icon-btn {
   background: transparent;
@@ -801,3 +806,230 @@ button.ghost.full { width: 100%; justify-content: center; }
   .composer-options { justify-content: center; }
 }
 
+/* ---------------- Tokens page ---------------- */
+
+.tokens-page {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  margin: 0;
+  min-height: 100vh;
+}
+
+.tokens-wrap {
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.tokens-header h1 {
+  margin: 0.4rem 0 0.25rem;
+  font-size: 1.5rem;
+}
+
+.tokens-header p { margin: 0; }
+
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--fg-muted);
+  text-decoration: none;
+  font-size: 0.88rem;
+}
+.back-link:hover { color: var(--fg); }
+.back-link svg { transform: rotate(180deg); }
+
+.tokens-section {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.1rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.tokens-section h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.token-endpoint {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.55rem;
+}
+.token-endpoint code {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  overflow-x: auto;
+  white-space: nowrap;
+  padding: 0.3rem 0.1rem;
+}
+
+.btn-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.6rem;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.82rem;
+  transition: color 0.15s, border-color 0.15s;
+}
+.btn-copy:hover {
+  color: var(--fg);
+  border-color: var(--border-strong);
+}
+
+.token-just-created {
+  border-color: color-mix(in oklab, var(--accent) 55%, var(--border));
+  background: color-mix(in oklab, var(--accent) 8%, var(--bg-elevated));
+}
+
+.token-value-wrap {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 0.4rem 0.55rem;
+}
+.token-value {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  overflow-x: auto;
+  white-space: nowrap;
+  padding: 0.35rem 0.1rem;
+  user-select: all;
+}
+
+.tokens-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.tokens-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+}
+.tokens-form input {
+  font-family: inherit;
+  font-size: 0.95rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-soft);
+  color: var(--fg);
+}
+.tokens-form input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.tokens-form button {
+  align-self: flex-start;
+  padding: 0.55rem 1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-family: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.tokens-form button:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+.tokens-form button:disabled,
+.tokens-form input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.tokens-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.token-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas:
+    "head   action"
+    "meta   action";
+  gap: 0.25rem 0.75rem;
+  padding: 0.7rem 0.85rem;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  align-items: center;
+}
+.token-row-head { grid-area: head; display: flex; gap: 0.5rem; align-items: baseline; flex-wrap: wrap; }
+.token-row-meta { grid-area: meta; }
+.token-revoke-form { grid-area: action; margin: 0; }
+.token-prefix {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--fg-muted);
+}
+
+.btn-danger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.6rem;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.82rem;
+  transition: color 0.15s, border-color 0.15s;
+}
+.btn-danger:hover {
+  color: var(--danger);
+  border-color: color-mix(in oklab, var(--danger) 55%, var(--border));
+}
+
+.banner {
+  padding: 0.55rem 0.75rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.88rem;
+}
+.banner-error {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border: 1px solid color-mix(in oklab, var(--danger) 40%, var(--border));
+}
+
+.muted { color: var(--fg-muted); }
+.small { font-size: 0.85rem; }
+
+@media (max-width: 600px) {
+  .tokens-wrap { padding: 1.25rem 0.85rem 3rem; }
+}

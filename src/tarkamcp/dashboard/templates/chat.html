@@ -52,6 +52,10 @@
         <span class="muted small">Session</span>
         <span class="client-name">{{ client_name }}</span>
       </div>
+      <a href="/app/tokens" class="ghost full sidebar-link">
+        <svg width="16" height="16"><use href="#i-copy"/></svg>
+        <span>Tokens API</span>
+      </a>
       <form method="POST" action="/app/logout">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button type="submit" class="ghost full">
