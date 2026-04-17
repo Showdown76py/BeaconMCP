@@ -35,12 +35,12 @@ proxmox:
   nodes:
     - name: pve1
       host: pve1.example.com
-      token_id: root@pam!beaconmcp
+      token_id: "root@pam!beaconmcp"   # quotes required: '!' and '@' are YAML-reserved
       token_secret: ${PVE1_TOKEN_SECRET}
 
     - name: pve2
       host: pve2.example.com
-      token_id: root@pam!beaconmcp
+      token_id: "root@pam!beaconmcp"
       token_secret: ${PVE2_TOKEN_SECRET}
 
 ssh:
