@@ -28,6 +28,13 @@
         <svg width="14" height="14"><use href="#i-copy"/></svg>
       </button>
     </div>
+    {% if dcr_enabled %}
+    <p class="muted small" style="margin-top:0.75rem">
+      Using ChatGPT? ChatGPT cannot accept a bearer token — it requires
+      OAuth Dynamic Client Registration. Mint a one-off connector URL on
+      the <a href="/app/connectors">ChatGPT connectors</a> page instead.
+    </p>
+    {% endif %}
   </section>
 
   {% if just_created %}

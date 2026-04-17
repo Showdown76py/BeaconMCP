@@ -1135,6 +1135,7 @@ def _render_tokens_page(
         mcp_url=mcp_url,
         locked=deps.totp_locked(session.client_id),
         chat_enabled=deps.engine is not None,
+        dcr_enabled=deps.dyn_reg is not None,
     )
 
 
