@@ -660,7 +660,7 @@ def test_tokens_page_lists_empty(app_and_client):
     r = client.get("/app/tokens")
     assert r.status_code == 200
     assert "No active tokens" in r.text
-    assert "0/3" in r.text  # count indicator
+    assert "0 / 3" in r.text  # count indicator
 
 
 def test_tokens_create_requires_name(app_and_client):
@@ -694,8 +694,7 @@ def test_tokens_create_success(app_and_client, deps):
         data={"csrf_token": csrf, "name": "Gemini Web", "totp": "123456"},
     )
     assert r.status_code == 200
-    assert "New token created" in r.text
-    assert "Gemini Web" in r.text
+    assert "New token: Gemini Web" in r.text
     assert deps.token_store.count_named("c") == 1
 
 
