@@ -40,12 +40,20 @@ class FakeTokenStore:
     def __init__(self):
         self.revoked = []
         self._n = 0
+        self._live: dict[str, str] = {}
     def issue(self, cid):
         self._n += 1
-        return f"b_{self._n}", BEARER_TTL_SECONDS
-    def validate(self, token): return None
+        token = f"b_{self._n}"
+        self._live[token] = cid
+        return token, BEARER_TTL_SECONDS
+    def validate(self, token):
+        # Mirrors the real TokenStore: return client_id if the token
+        # was issued by this store instance. Tests can subclass to
+        # simulate a wiped store (e.g. after a service restart).
+        return self._live.get(token)
     def revoke(self, token):
         self.revoked.append(token)
+        self._live.pop(token, None)
         return True
 
 
@@ -295,6 +303,48 @@ def test_chat_stream_tool_call(app_and_client, engine, deps):
     assert tc.status == "ok"
     assert tc.preview == "2 VMs"
     assert tc.duration_ms == 42
+
+
+def test_chat_stream_detects_token_wiped_after_restart(tmp_path, engine):
+    """After a service restart TokenStore is empty but the session's
+    bearer is still there; we must emit session_expired before reaching
+    the MCP server with a stale token.
+    """
+    class InvalidatingTokenStore(FakeTokenStore):
+        # Mimic TokenStore behaviour after restart: every token is
+        # unknown, so validate() always returns None.
+        def validate(self, token):
+            return None
+
+    db = Database(tmp_path / "dashboard.db")
+    deps = DashboardDeps(
+        database=db,
+        session_store=SessionStore(db, key=os.urandom(32)),
+        client_store=FakeClientStore(),
+        token_store=InvalidatingTokenStore(),
+        totp_locked=lambda cid: False,
+        totp_record_failure=lambda cid: None,
+        totp_record_success=lambda cid: None,
+        conversations=ConversationStore(db),
+        engine=engine,
+    )
+    app = Starlette(routes=build_dashboard_routes(deps))
+    client = TestClient(app, follow_redirects=False)
+
+    csrf = _login(client)
+    r = client.post("/app/api/conversations",
+                    headers={"X-CSRF-Token": csrf, "Content-Type": "application/json"},
+                    content="{}")
+    cid = r.json()["conversation"]["id"]
+    r = client.post(
+        "/app/api/chat/stream",
+        headers={"X-CSRF-Token": csrf, "Content-Type": "application/json"},
+        content=json.dumps({"conversation_id": cid, "content": "ping"}),
+    )
+    events = _parse_sse(r.text)
+    assert events[0][0] == "session_expired"
+    # Engine must NOT have been called with a doomed bearer.
+    assert len(engine.calls) == 0
 
 
 def test_chat_stream_session_expired(app_and_client, deps):
