@@ -64,16 +64,52 @@ def _load_icons() -> list[Icon]:
     ]
 
 
+def _build_instructions() -> str:
+    """Assemble the MCP server greeting from whatever capabilities are enabled.
+
+    Each capability contributes its own blurb so a server with only SSH (e.g.
+    a couple of VPS) doesn't advertise Proxmox tools it can't expose, and a
+    Proxmox-only server doesn't pretend to have an SSH fallback. The greeting
+    is the first thing a client model reads — keeping it truthful is what
+    makes the conditional registration useful.
+    """
+    blurbs: list[str] = []
+    entry: list[str] = []
+    if config.pve_nodes:
+        node_count = len(config.pve_nodes)
+        blurbs.append(
+            f"a Proxmox VE cluster ({node_count} node"
+            f"{'s' if node_count > 1 else ''}) via proxmox_* tools"
+        )
+        entry.append("proxmox_list_nodes to see the cluster")
+    if config.ssh and config.ssh.hosts:
+        host_count = len(config.ssh.hosts)
+        blurbs.append(
+            f"{host_count} SSH host{'s' if host_count > 1 else ''} via "
+            "ssh_* tools for direct shell access"
+        )
+        entry.append("ssh_list_sessions to track running commands")
+    if bmc_registry:
+        dev_count = len(bmc_registry)
+        blurbs.append(
+            f"{dev_count} BMC device{'s' if dev_count > 1 else ''} "
+            "(HP iLO / IPMI / iDRAC / Supermicro) via bmc_* tools for "
+            "hardware power and health"
+        )
+        entry.append("bmc_list_devices to see hardware endpoints")
+
+    if not blurbs:
+        # Defensive: the config loader refuses to start with no capability.
+        return "BeaconMCP running with no capabilities configured."
+
+    body = "BeaconMCP exposes " + "; ".join(blurbs) + "."
+    entry_line = " Start with " + ", or ".join(entry) + "." if entry else ""
+    return body + entry_line
+
+
 mcp = FastMCP(
     "beaconmcp",
-    instructions=(
-        "BeaconMCP exposes a Proxmox VE cluster (N nodes), N BMC devices "
-        "(HP iLO, IPMI, iDRAC, Supermicro), and an SSH fallback as a single "
-        "MCP server. Use proxmox_* tools for VM/CT management and "
-        "diagnostics, bmc_* tools for hardware power and health, and ssh_* "
-        "tools for direct shell access. Start with proxmox_list_nodes to "
-        "see the cluster and bmc_list_devices to see hardware endpoints."
-    ),
+    instructions=_build_instructions(),
     website_url="https://github.com/Showdown76py/BeaconMCP",
     icons=_load_icons(),
     transport_security=TransportSecuritySettings(
@@ -97,13 +133,54 @@ def get_infrastructure() -> str:
 
 @mcp.prompt()
 def beaconmcp_context() -> str:
-    """Inject infrastructure context into the conversation for Proxmox management tasks."""
-    nodes_info = ", ".join(n.name for n in config.pve_nodes)
+    """Inject infrastructure context: topology and capability-aware diagnostic workflow."""
+    topology_lines: list[str] = []
+    if config.pve_nodes:
+        topology_lines.append(
+            "Proxmox nodes: " + ", ".join(n.name for n in config.pve_nodes)
+        )
+    if config.ssh and config.ssh.hosts:
+        topology_lines.append(
+            "SSH hosts: " + ", ".join(h.name for h in config.ssh.hosts)
+        )
     if bmc_registry:
-        bmc_info = ", ".join(f"{d.id} ({d.type})" for d in config.bmc_devices)
-    else:
-        bmc_info = "no BMC devices configured"
-    ssh_info = "SSH fallback available" if config.ssh else "SSH not configured"
+        topology_lines.append(
+            "BMC devices: "
+            + ", ".join(f"{d.id} ({d.type})" for d in config.bmc_devices)
+        )
+    topology = "\n".join(topology_lines) if topology_lines else "(no capabilities)"
+
+    # Build a diagnostic workflow that only references tools that are
+    # actually registered. A VPS-only deployment gets a one-step workflow
+    # and no Proxmox/BMC references, which stops the model from suggesting
+    # tool calls that would 404.
+    steps: list[str] = []
+    if config.pve_nodes:
+        steps.append("Check cluster state with proxmox_list_nodes.")
+        steps.append("For a specific node, use proxmox_node_status.")
+    if config.pve_nodes and config.ssh and config.ssh.hosts:
+        steps.append(
+            "If a Proxmox node is unreachable via API, try ssh_exec_command "
+            "against the matching ssh.hosts entry."
+        )
+    if bmc_registry:
+        steps.append(
+            "If a host is completely unresponsive, list BMC devices with "
+            "bmc_list_devices and use bmc_health_status / bmc_power_status."
+        )
+    if config.pve_nodes and config.ssh and config.ssh.hosts:
+        steps.append(
+            "For in-VM issues, prefer proxmox_exec_command (QEMU Guest Agent) "
+            "or ssh_exec_command."
+        )
+    elif config.pve_nodes:
+        steps.append("For in-VM issues, use proxmox_exec_command (QEMU Guest Agent).")
+    elif config.ssh and config.ssh.hosts:
+        steps.append(
+            "Use ssh_exec_command on declared hosts; start "
+            "ssh_exec_command_async for anything that may exceed 60s."
+        )
+    workflow = "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1)) or "(no workflow: no capabilities configured)"
 
     infra = config.infrastructure
     conventions = ""
@@ -114,11 +191,9 @@ def beaconmcp_context() -> str:
     if infra.get("notes"):
         notes = "\n".join(f"- {n}" for n in infra["notes"])
 
-    return f"""You are managing a Proxmox VE infrastructure with the following topology:
+    return f"""You are operating a BeaconMCP-managed infrastructure with the following topology:
 
-Nodes: {nodes_info}
-BMC: {bmc_info}
-Access: {ssh_info}
+{topology}
 
 Conventions:
 {conventions}
@@ -127,21 +202,18 @@ Notes:
 {notes}
 
 Diagnostic workflow:
-1. Check cluster state with proxmox_list_nodes.
-2. For a specific node, use proxmox_node_status.
-3. If a node is unreachable via API, try ssh_exec_command on the host.
-4. If the host is completely unresponsive, list BMC devices with
-   bmc_list_devices and use bmc_health_status / bmc_power_status on the
-   matching one.
-5. For in-VM issues, prefer proxmox_exec_command (QEMU Guest Agent) or
-   ssh_exec_command."""
+{workflow}"""
 
 
-# Register tool modules
-register_monitoring_tools(mcp, proxmox_client)
-register_vm_tools(mcp, proxmox_client)
-register_system_tools(mcp, proxmox_client)
-if config.ssh:
+# Register tool modules only for the capabilities that are actually
+# configured. Each ``if`` gate here is what makes a VPS-only, Proxmox-only,
+# or BMC-only deployment possible: tools the server cannot honor stay out
+# of the exposed tool list.
+if config.pve_nodes:
+    register_monitoring_tools(mcp, proxmox_client)
+    register_vm_tools(mcp, proxmox_client)
+    register_system_tools(mcp, proxmox_client)
+if config.ssh and config.ssh.hosts:
     register_ssh_tools(mcp, ssh_client)
 if bmc_registry:
     register_bmc_tools(mcp, bmc_registry)
