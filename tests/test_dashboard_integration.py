@@ -104,6 +104,9 @@ def deps(tmp_path, monkeypatch):
     def totp_record_success(cid):
         failures.pop(cid, None)
 
+    # A sentinel non-None engine so the post-login landing stays /app/chat.
+    # These integration tests exercise chat-mode routing; the tokens-only
+    # mode (engine=None) is covered separately.
     return DashboardDeps(
         database=db,
         session_store=session_store,
@@ -112,12 +115,45 @@ def deps(tmp_path, monkeypatch):
         totp_locked=totp_locked,
         totp_record_failure=totp_record_failure,
         totp_record_success=totp_record_success,
+        engine=object(),  # type: ignore[arg-type]
     )
 
 
 @pytest.fixture()
 def client(deps):
     app = Starlette(routes=build_dashboard_routes(deps))
+    return TestClient(app, follow_redirects=False)
+
+
+@pytest.fixture()
+def tokens_only_client(tmp_path):
+    """A fixture mirroring ``deps``/``client`` but with engine=None.
+
+    Exercises the tokens-only mode of the dashboard: no Gemini key set,
+    so ``/app/chat`` redirects to ``/app/tokens`` and post-login lands
+    there directly.
+    """
+    db = Database(tmp_path / "dashboard-tokens-only.db")
+    session_store = SessionStore(db, key=os.urandom(32))
+    failures: dict[str, tuple[int, float]] = {}
+
+    deps_local = DashboardDeps(
+        database=db,
+        session_store=session_store,
+        client_store=FakeClientStore(),
+        token_store=FakeTokenStore(),
+        totp_locked=lambda cid: (
+            failures.get(cid, (0, 0.0))[0] >= 5
+            and time.time() < failures.get(cid, (0, 0.0))[1]
+        ),
+        totp_record_failure=lambda cid: failures.__setitem__(
+            cid,
+            (failures.get(cid, (0, 0.0))[0] + 1, time.time() + 300),
+        ),
+        totp_record_success=lambda cid: (failures.pop(cid, None), None)[1],
+        engine=None,
+    )
+    app = Starlette(routes=build_dashboard_routes(deps_local))
     return TestClient(app, follow_redirects=False)
 
 
@@ -350,3 +386,64 @@ def test_security_headers_present(client):
     assert r.headers.get("X-Content-Type-Options") == "nosniff"
     assert "Referrer-Policy" in r.headers
     assert "Content-Security-Policy" in r.headers
+
+
+# ---------------------------------------------------------------------------
+# Tokens-only mode (engine=None): chat redirects to tokens
+# ---------------------------------------------------------------------------
+
+
+def test_tokens_only_login_lands_on_tokens(tokens_only_client):
+    r = tokens_only_client.get("/app/login")
+    token = r.cookies.get(CSRF_COOKIE)
+    assert token
+    r = tokens_only_client.post(
+        "/app/login",
+        data={
+            "csrf_token": token,
+            "client_id": "tarkamcp_test",
+            "client_secret": "sk_test",
+            "totp": "123456",
+            "remember": "on",
+        },
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/app/tokens"
+
+
+def test_tokens_only_chat_redirects_to_tokens(tokens_only_client):
+    r = tokens_only_client.get("/app/login")
+    token = r.cookies.get(CSRF_COOKIE)
+    tokens_only_client.post(
+        "/app/login",
+        data={
+            "csrf_token": token,
+            "client_id": "tarkamcp_test",
+            "client_secret": "sk_test",
+            "totp": "123456",
+            "remember": "on",
+        },
+    )
+    r = tokens_only_client.get("/app/chat")
+    assert r.status_code == 302
+    assert r.headers["location"] == "/app/tokens"
+
+
+def test_tokens_only_login_page_redirects_when_authenticated(tokens_only_client):
+    r = tokens_only_client.get("/app/login")
+    token = r.cookies.get(CSRF_COOKIE)
+    tokens_only_client.post(
+        "/app/login",
+        data={
+            "csrf_token": token,
+            "client_id": "tarkamcp_test",
+            "client_secret": "sk_test",
+            "totp": "123456",
+            "remember": "on",
+        },
+    )
+    # Already authenticated: /app/login should bounce to the tokens page
+    # since there is no chat engine configured.
+    r = tokens_only_client.get("/app/login")
+    assert r.status_code == 302
+    assert r.headers["location"] == "/app/tokens"

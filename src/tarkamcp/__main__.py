@@ -508,9 +508,10 @@ def _run_http(mcp, host: str, port: int):
     print(f"Token:     http://{host}:{port}/oauth/token")
     print(f"Health:    http://{host}:{port}/health")
     if dashboard_routes:
-        print(f"Dashboard: http://{host}:{port}/app/login")
+        chat_status = "enabled" if os.environ.get("GEMINI_API_KEY") else "disabled, tokens only"
+        print(f"Dashboard: http://{host}:{port}/app/login (chat: {chat_status})")
     else:
-        print("Dashboard: disabled (set GEMINI_API_KEY to enable)")
+        print("Dashboard: disabled (TARKAMCP_DASHBOARD_ENABLED=false)")
     if n_clients == 0:
         print(f"\nAucun client ! Créer avec : tarkamcp auth create --name 'Mon Client'")
     uvicorn.run(app, host=host, port=port, log_level="info")
