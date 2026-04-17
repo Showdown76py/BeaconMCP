@@ -384,10 +384,9 @@ class GeminiChatEngine:
         # ``session.call_tool()``, and feed the results back in a new
         # ``generate_content_stream`` call until no function_call remains.
         try:
-            import httpx  # type: ignore
             from mcp.client.session import ClientSession  # type: ignore
             from mcp.client.streamable_http import (  # type: ignore
-                streamable_http_client,
+                streamablehttp_client,
             )
         except ImportError as e:
             yield ErrorEvent(code="sdk_missing", message=str(e))
@@ -398,15 +397,20 @@ class GeminiChatEngine:
             turn.model, turn.effort, turn.mcp_url,
         )
 
-        headers = {"Authorization": f"Bearer {turn.bearer}"}
-        async with httpx.AsyncClient(
-            headers=headers,
-            timeout=httpx.Timeout(30.0, read=120.0),
-        ) as http_client:
-            async with streamable_http_client(
-                turn.mcp_url, http_client=http_client,
-            ) as (read_stream, write_stream, _get_session_id):
-                async with ClientSession(read_stream, write_stream) as session:
+        # ``streamablehttp_client`` (no underscore) is the variant that
+        # actually threads the ``headers`` dict through every request.
+        # Previously we used ``streamable_http_client(http_client=...)``
+        # and relied on httpx default-headers propagation, but the MCP
+        # client builds fresh requests that don't inherit the defaults,
+        # so the Authorization header was being dropped -- producing a
+        # hard 401 on /mcp even when calling loopback.
+        async with streamablehttp_client(
+            turn.mcp_url,
+            headers={"Authorization": f"Bearer {turn.bearer}"},
+            timeout=30,
+            sse_read_timeout=300,
+        ) as (read_stream, write_stream, _get_session_id):
+            async with ClientSession(read_stream, write_stream) as session:
                     try:
                         await session.initialize()
                     except Exception as e:  # noqa: BLE001

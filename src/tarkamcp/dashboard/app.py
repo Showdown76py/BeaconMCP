@@ -520,6 +520,18 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                 yield _sse("session_expired", {})
                 return
 
+            # Also check the bearer against the live TokenStore: the
+            # store is in-memory, so a `systemctl restart tarkamcp` wipes
+            # every token even though the SQLite-backed session still
+            # has it. Without this check we'd pass a stale bearer to
+            # /mcp, get a deterministic 401, and propagate a confusing
+            # HTTPStatusError. Trigger the same refresh flow instead.
+            validator = getattr(deps.token_store, "validate", None)
+            if callable(validator) and session.mcp_bearer:
+                if validator(session.mcp_bearer) is None:
+                    yield _sse("session_expired", {})
+                    return
+
             # History = everything prior to this turn. The engine appends
             # the user message itself via TurnInput.user_text.
             history = store.list_messages(conv.id)
