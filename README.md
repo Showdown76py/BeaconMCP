@@ -9,7 +9,7 @@
 [![IPMI](https://img.shields.io/badge/IPMI-2.0-4E5D70)](https://en.wikipedia.org/wiki/Intelligent_Platform_Management_Interface)
 [![ChatGPT](https://img.shields.io/badge/ChatGPT-Compatible-74AA9C?logo=openai&logoColor=white)](https://chatgpt.com/)
 [![Gemini](https://img.shields.io/badge/Gemini-Compatible-4285F4?logo=google&logoColor=white)](https://gemini.google.com/)
-[![License](https://img.shields.io/github/license/Showdown76py/BeaconMCP)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache_2.0_%2B_Commons_Clause-red)](LICENSE)
 
 **Remote MCP server for Proxmox VE clusters and BMC-managed hardware.**
 
@@ -324,4 +324,4 @@ Common errors, their causes, and the fixes that worked are in [docs/troubleshoot
 
 ## License
 
-[Apache 2.0](LICENSE)
+[Apache 2.0 with Commons Clause](LICENSE) — use, fork, and modification are free, but **reselling the software (including as a hosted service) requires a separate commercial license**. The code remains source-available.
