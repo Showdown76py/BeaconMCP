@@ -141,12 +141,17 @@ ChatEvent = (
 
 
 # Tool names that MUST go through a human approval step before we run
-# them from a Gemini turn. SSH exec on the PVE hosts is the obvious one
-# -- any conversation could otherwise fire arbitrary shell. Keep this
-# list tight; every entry adds a modal click to the UX.
+# them from a Gemini turn. Anything that can fire arbitrary shell on a
+# host or VM (SSH directly, QEMU Guest Agent exec via proxmox_exec_*)
+# belongs here -- otherwise a single compromised/confused turn could
+# rm -rf a production box. ``proxmox_exec_get_result`` is read-only so
+# it stays unconfirmed. Keep this list tight; every entry adds a modal
+# click to the UX.
 _NEEDS_CONFIRMATION: frozenset[str] = frozenset({
     "ssh_exec_command",
     "ssh_exec_command_async",
+    "proxmox_exec_command",
+    "proxmox_exec_command_async",
 })
 
 

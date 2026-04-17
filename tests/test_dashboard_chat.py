@@ -849,3 +849,18 @@ def test_chat_page_renders_after_login(app_and_client):
     assert "chat-root" in r.text
     assert "gemini-3-flash-preview" in r.text
     assert "gemini-3.1-pro-preview" in r.text
+
+
+def test_needs_confirmation_includes_proxmox_exec():
+    """Every tool that can fire arbitrary shell on a host/VM must require
+    human approval -- not just SSH, but also the QEMU Guest Agent exec
+    path (``proxmox_exec_command`` + its async twin).
+    """
+    from tarkamcp.dashboard.chat import _NEEDS_CONFIRMATION
+    assert "proxmox_exec_command" in _NEEDS_CONFIRMATION
+    assert "proxmox_exec_command_async" in _NEEDS_CONFIRMATION
+    assert "ssh_exec_command" in _NEEDS_CONFIRMATION
+    assert "ssh_exec_command_async" in _NEEDS_CONFIRMATION
+    # The read-only result-fetcher must NOT require a click.
+    assert "proxmox_exec_get_result" not in _NEEDS_CONFIRMATION
+    assert "ssh_exec_get_result" not in _NEEDS_CONFIRMATION

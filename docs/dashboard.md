@@ -65,16 +65,16 @@ Contraintes :
 - **Effort de thinking** : `minimal` / `low` / `medium` / `high` via dropdown. `gemini-2.5-pro` ne peut pas désactiver le thinking — le budget est automatiquement clampé à 128 tokens minimum.
 - **Rendu markdown** : le client parse les headings (`#`–`######`), listes ordonnées/non-ordonnées, blockquotes, horizontal rules, code fences (avec `lang-*` class), inline code, bold/italic/strike et links HTTP(S).
 
-## Confirmation obligatoire pour SSH exec
+## Confirmation obligatoire pour les outils qui font du shell
 
-`ssh_exec_command` et `ssh_exec_command_async` ne s'exécutent **jamais** sans clic manuel depuis le chat. Quand Gemini demande à lancer une commande SSH :
+`ssh_exec_command`, `ssh_exec_command_async`, `proxmox_exec_command` et `proxmox_exec_command_async` ne s'exécutent **jamais** sans clic manuel depuis le chat. Quand Gemini demande à lancer une de ces commandes :
 
 1. La tool-card apparaît en état "approbation requise" (badge orange, auto-ouverte pour voir les `args`).
 2. Deux boutons : **Autoriser** / **Refuser**.
 3. Tant que tu n'as pas cliqué, le turn Gemini reste bloqué côté serveur (timeout à 5 min).
 4. Si tu refuses, Gemini reçoit un `FunctionResponse {"error": "user_rejected"}` et peut adapter sa réponse.
 
-L'allow-list est hardcodée dans `src/tarkamcp/dashboard/chat.py` (`_NEEDS_CONFIRMATION`). Pour l'étendre (par exemple aux outils `proxmox_exec_*`), ajoute les noms à ce set.
+L'allow-list est hardcodée dans `src/tarkamcp/dashboard/chat.py` (`_NEEDS_CONFIRMATION`). Seul le chat intégré applique cette confirmation — les clients MCP externes (Claude Desktop, Gemini CLI, ChatGPT MCP) doivent avoir leur propre mode "approuver chaque appel" activé côté client (voir la section **Sécurité** du README principal).
 
 ## Données stockées
 
