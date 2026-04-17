@@ -288,6 +288,74 @@ button.primary.icon-btn {
   aspect-ratio: 1;
 }
 
+/* Prominent "Tokens API" call-to-action right below "Nouveau chat".
+ * Sized like a second primary action so it competes for attention --
+ * ~40% of users arrive for external-client token management, not chat. */
+.sidebar-cta {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in oklab, var(--accent) 45%, var(--border));
+  background: color-mix(in oklab, var(--accent) 9%, var(--bg-elevated));
+  color: var(--fg);
+  text-decoration: none;
+  transition: background 150ms ease, border-color 150ms ease, transform 80ms ease;
+}
+
+.sidebar-cta:hover {
+  background: color-mix(in oklab, var(--accent) 16%, var(--bg-elevated));
+  border-color: var(--accent);
+}
+.sidebar-cta:active { transform: translateY(1px); }
+
+.sidebar-cta-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  flex-shrink: 0;
+}
+
+.sidebar-cta-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.sidebar-cta-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  line-height: 1.15;
+  color: var(--fg);
+}
+
+.sidebar-cta-sub {
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+  line-height: 1.25;
+  margin-top: 0.15rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-cta-chev {
+  color: var(--fg-faint);
+  flex-shrink: 0;
+  transition: color 150ms ease, transform 150ms ease;
+}
+.sidebar-cta:hover .sidebar-cta-chev {
+  color: var(--accent);
+  transform: translateX(2px);
+}
+
 button.ghost,
 a.ghost {
   background: transparent;
