@@ -130,7 +130,12 @@ Place BeaconMCP behind a reverse proxy that terminates TLS and forwards the publ
 
 ## Connecting clients
 
+> **Security note — always type the TOTP by hand from your phone.**
+> The TOTP seed belongs in an authenticator app on a device you physically control (Google Authenticator, Authy, 1Password, Aegis, a YubiKey with OTP, etc.). Do **not** generate codes programmatically with `oathtool` / `pyotp` / a shell alias, and do **not** store the raw seed in a `.env`, a secrets manager, or next to the client secret — doing so collapses the two factors into one and removes the protection TOTP exists to provide. Every flow below is designed so you read a 6-digit code off your phone and type it into either the authorization page or the dashboard.
+
 ### Claude (web, mobile, desktop)
+
+Claude performs the full OAuth 2.1 flow against BeaconMCP, so there is no long-lived bearer to store on its side — you type the TOTP into the authorization page whenever a new token is issued.
 
 1. **Settings → Integrations → Add custom connector.**
 2. Fill in:
@@ -139,69 +144,72 @@ Place BeaconMCP behind a reverse proxy that terminates TLS and forwards the publ
    - **OAuth Client ID** and **OAuth Client Secret** from `beaconmcp auth create`.
 3. **Add.**
 
-On first use, Claude redirects to the BeaconMCP authorization page, which prompts for the 6-digit TOTP code. Tokens last 24 hours; Claude re-prompts at expiry.
+On first use (and after each 24-hour token expiry) Claude redirects to the BeaconMCP authorization page. Read the current 6-digit code from your authenticator app and type it in. This is the recommended integration: Claude never holds the TOTP seed, and a leaked session cannot mint a new token without a fresh code from your phone.
 
 ### ChatGPT
 
-1. **Settings → Developer Mode → MCP Servers.**
-2. URL: `https://<your-host>/mcp`.
-3. Obtain a bearer token either from the dashboard's **API Tokens** page (recommended) or via a direct OAuth token request:
+ChatGPT's MCP connector expects a static bearer header, so an OAuth redirect is not an option. Mint the bearer yourself from the dashboard (where you type the TOTP from your phone) and paste it into ChatGPT.
 
-   ```bash
-   TOTP=$(oathtool --totp -b "$TOTP_SECRET")
-   curl -X POST https://<your-host>/oauth/token \
-     -d "grant_type=client_credentials&client_id=$ID&client_secret=$SECRET&totp=$TOTP"
-   ```
-
-4. Use the returned `access_token` as the bearer. Expires in 24 hours.
+1. Open `https://<your-host>/app/login` in a browser, sign in, and type your current TOTP code from your authenticator app.
+2. Go to **API Tokens**, click **Create token**, give it a name (e.g. `chatgpt`), and copy the token shown. It is displayed once.
+3. In ChatGPT: **Settings → Developer Mode → MCP Servers → Add**.
+   - **URL:** `https://<your-host>/mcp`
+   - **Authorization:** `Bearer <token>`
+4. When the token expires or you no longer need it, revoke it from the same **API Tokens** page. Issue a new one the same way — always via the dashboard, never by scripting the TOTP.
 
 ### Gemini CLI
 
-```bash
-gemini mcp add beaconmcp \
-  --url https://<your-host>/mcp \
-  --header "Authorization: Bearer <token>"
-```
+Gemini CLI sends a static `Authorization` header with every call, so the bearer is generated the same way as for ChatGPT.
 
-Issue the token either from the dashboard or from the `curl` snippet above.
+1. In the dashboard (`/app/tokens`), authenticate with your TOTP from your phone, then create a new token named `gemini-cli`.
+2. Register the MCP server:
 
-### Gemini API
+   ```bash
+   gemini mcp add beaconmcp \
+     --url https://<your-host>/mcp \
+     --header "Authorization: Bearer <token>"
+   ```
 
-```python
-import requests, pyotp
-from google import genai
+3. Replace the token via the same dashboard flow when it expires — do not bake TOTP generation into a shell alias or wrapper script.
 
-totp = pyotp.TOTP(TOTP_SECRET).now()
-token = requests.post(
-    "https://<your-host>/oauth/token",
-    data={
-        "grant_type": "client_credentials",
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "totp": totp,
-    },
-).json()["access_token"]
+### Gemini API (google-genai SDK)
 
-client = genai.Client()
-response = client.models.generate_content(
-    model="gemini-2.0-flash",
-    contents="List the VMs on pve1",
-    config={
-        "tools": [
-            {
-                "mcp_servers": [
-                    {
-                        "url": "https://<your-host>/mcp",
-                        "headers": {"Authorization": f"Bearer {token}"},
-                    }
-                ]
-            }
-        ]
-    },
-)
-```
+For programmatic Gemini API usage, the BeaconMCP server is passed as a remote MCP tool. The SDK needs an `Authorization` header at call time; obtain the bearer interactively from the dashboard rather than letting the process derive TOTP codes on its own.
 
-Storing the TOTP seed next to the client secret defeats the second factor. Prefer a secrets manager or a hardware authenticator for production workloads.
+1. Create a dashboard token as in the Gemini CLI section above.
+2. Put the resulting bearer in your environment (e.g. `BEACONMCP_TOKEN`) or in your secrets manager. **Do not put the TOTP seed there.**
+3. Reference it when invoking the model:
+
+   ```python
+   import os
+   from google import genai
+
+   token = os.environ["BEACONMCP_TOKEN"]
+
+   client = genai.Client()
+   response = client.models.generate_content(
+       model="gemini-2.0-flash",
+       contents="List the VMs on pve1",
+       config={
+           "tools": [
+               {
+                   "mcp_servers": [
+                       {
+                           "url": "https://<your-host>/mcp",
+                           "headers": {"Authorization": f"Bearer {token}"},
+                       }
+                   ]
+               }
+           ]
+       },
+   )
+   ```
+
+4. When the bearer expires, re-issue it through the dashboard. Long-running services should rotate tokens on a schedule (an operator typing the TOTP) rather than embedding the seed.
+
+### Other MCP-over-HTTP clients
+
+Any client that can send a bearer on `https://<your-host>/mcp` works the same way: create a token from `/app/tokens` after typing your TOTP, configure the client to send `Authorization: Bearer <token>`, revoke from the same page when you are done. If the client natively speaks OAuth 2.1 (like Claude), prefer that flow — it keeps the TOTP prompt at the authorization page instead of relying on a stored bearer.
 
 ---
 
