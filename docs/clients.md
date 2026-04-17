@@ -3,13 +3,12 @@
 BeaconMCP exposes a single MCP endpoint (`https://<your-host>/mcp`) and three
 auth paths the dashboard helps you drive:
 
-- **OAuth 2.1 (pre-registered client)** — Claude only. See the main
-  [README](../README.md#connecting-clients) for that flow.
-- **OAuth + Dynamic Client Registration** — ChatGPT (Web / Mobile / Codex),
-  Gemini CLI, OpenCode, Cursor, VS Code. Requires
-  `server.allow_dynamic_registration: true` in `beaconmcp.yaml`.
-- **Static bearer token** — Gemini (Web/CLI/Antigravity), Mistral, VS Code,
-  Cursor, any HTTP-only MCP client.
+- **OAuth 2.1** — Claude (manual credentials), plus ChatGPT, Codex, Le Chat,
+  Gemini CLI, OpenCode, Cursor, and VS Code (auto-discovery). Every
+  auto-discovery client rides on Dynamic Client Registration server-side,
+  so set `server.allow_dynamic_registration: true` in `beaconmcp.yaml`.
+- **Static bearer token** — Gemini Antigravity, Mistral Vibe, any HTTP-only
+  MCP client. Fallback path when a client can't do OAuth 2.1.
 
 > **Security note — always type the TOTP by hand from your phone.**
 > The TOTP seed belongs in an authenticator app on a device you physically
@@ -60,7 +59,7 @@ page presents the same information with copy-pasteable snippets per platform
 
 ---
 
-## ChatGPT (OAuth + DCR)
+## ChatGPT (OAuth 2.1)
 
 ChatGPT's Developer Mode connector only accepts **OAuth with Dynamic Client
 Registration (RFC 7591)** — it will not take a pre-provisioned
@@ -105,7 +104,7 @@ phone; the derived client has no TOTP seed of its own.
 > context-window waste from MCP tool schemas. No setup instructions
 > here — there is no working integration to document.
 
-## ChatGPT Codex (OAuth + DCR, terminal/IDE)
+## ChatGPT Codex (OAuth 2.1, terminal/IDE)
 
 Codex is OpenAI's terminal/IDE MCP client. It speaks full OAuth 2.1 and
 catches the redirect on an ephemeral local port.
@@ -127,7 +126,7 @@ be pinned via `mcp_oauth_callback_port`.
 
 ---
 
-## OpenCode (OAuth + DCR)
+## OpenCode (OAuth 2.1)
 
 OpenCode natively handles OAuth with Dynamic Client Registration. Point it
 at a slug URL minted from `/app/connectors` and it auto-registers on first
@@ -154,7 +153,7 @@ URLs are single-use and expire in 15 min — mint a fresh one per install.
 
 ## Gemini
 
-### Gemini CLI (OAuth + DCR, recommended)
+### Gemini CLI (OAuth 2.1, recommended)
 
 Gemini CLI speaks full OAuth 2.1 with Dynamic Client Registration — drop
 a remote URL in `settings.json`, run `/mcp auth <name>`, and the CLI
@@ -307,7 +306,7 @@ server is its own `[[mcp_servers]]` array entry.
 
 ---
 
-## VS Code (OAuth + DCR)
+## VS Code (OAuth 2.1)
 
 VS Code routes MCP authentication through its native Authentication
 Provider system — the same flow used for your GitHub / Microsoft Entra
@@ -315,7 +314,7 @@ logins. It reads `WWW-Authenticate`, shows a toast to Allow, catches
 the redirect on the `vscode://` (or `vscode-insiders://`) OS URI scheme,
 and stores the resulting token in your OS keychain.
 
-**Recommended — OAuth + DCR:**
+**Recommended — OAuth 2.1:**
 
 ```json
 // .vscode/mcp.json  (or settings.json → "mcp.servers")
@@ -353,7 +352,7 @@ Verify with *Command Palette → MCP: List Servers*.
 
 ---
 
-## Cursor (OAuth + DCR)
+## Cursor (OAuth 2.1)
 
 Cursor is a first-class OAuth 2.1 client since v1.0. Drop a remote URL
 in `mcp.json`, Cursor surfaces a blue *Connect* button in
@@ -361,7 +360,7 @@ in `mcp.json`, Cursor surfaces a blue *Connect* button in
 consent (PKCE + DCR are automatic), and catches the redirect via the
 `cursor://` OS scheme (or a loopback fallback).
 
-**Recommended — OAuth + DCR:**
+**Recommended — OAuth 2.1:**
 
 ```json
 // ~/.cursor/mcp.json (global) or .cursor/mcp.json (per project)

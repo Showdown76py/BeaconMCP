@@ -71,81 +71,79 @@
     {# ============================================================ #}
     <div class="view view-by-method" role="tabpanel">
       <input type="radio" name="method-tab" id="tab-oauth" checked>
-      <input type="radio" name="method-tab" id="tab-dcr">
       <input type="radio" name="method-tab" id="tab-bearer">
       <nav class="inner-tabs" role="tablist">
         <label for="tab-oauth" class="inner-tab">
-          <span class="tab-badge tab-badge-oauth">OAuth</span>
-          Pre-registered
+          <span class="tab-badge tab-badge-oauth">OAuth 2.1</span>
+          Browser auth
         </label>
-        {% if dcr_enabled %}
-        <label for="tab-dcr" class="inner-tab">
-          <span class="tab-badge tab-badge-dcr">OAuth + DCR</span>
-          Dynamic
-        </label>
-        {% endif %}
         <label for="tab-bearer" class="inner-tab">
           <span class="tab-badge tab-badge-bearer">Bearer</span>
           Static token
         </label>
       </nav>
 
-      {# ---------- Panel: OAuth ---------- #}
+      {# ---------- Panel: OAuth 2.1 ---------- #}
       <div class="tab-panel" data-panel="oauth">
         <article class="card">
           <header class="card-head">
             <div class="card-title">
-              <h2>OAuth 2.1 with a pre-registered client</h2>
-              <p class="muted">Works for clients that let you paste <code>client_id</code> + <code>client_secret</code> and follow a redirect.</p>
+              <h2>OAuth 2.1</h2>
+              <p class="muted">The default MCP auth flow. The client opens a browser, BeaconMCP prompts for your TOTP, token lasts 24 h.</p>
             </div>
             <div class="card-logos">
               <span class="logo-pill">Claude</span>
-              <span class="logo-pill">Mistral</span>
-            </div>
-          </header>
-          <ol class="steps">
-            <li>
-              On the BeaconMCP server:
-              <pre><code>beaconmcp auth create --name "Claude iPhone"</code></pre>
-              The CLI shows a <code>client_id</code>, a <code>client_secret</code>, and a TOTP QR code (scan it now — the secret is printed once).
-            </li>
-            <li>In your Claude client: <em>Settings → Integrations → Add custom connector</em>.</li>
-            <li>URL: <code>{{ mcp_url }}</code>. Paste the client credentials.</li>
-            <li>Claude redirects you to this server's authorization page — type the 6-digit code from your authenticator app. Token refreshes after 24 h.</li>
-          </ol>
-        </article>
-      </div>
-
-      {# ---------- Panel: DCR ---------- #}
-      {% if dcr_enabled %}
-      <div class="tab-panel" data-panel="dcr">
-        <article class="card">
-          <header class="card-head">
-            <div class="card-title">
-              <h2>OAuth Dynamic Client Registration</h2>
-              <p class="muted">For clients that auto-register via a URL with no credentials field.</p>
-            </div>
-            <div class="card-logos">
               <span class="logo-pill">ChatGPT</span>
               <span class="logo-pill">Codex</span>
+              <span class="logo-pill">Le Chat</span>
               <span class="logo-pill">Gemini CLI</span>
               <span class="logo-pill">OpenCode</span>
               <span class="logo-pill">Cursor</span>
               <span class="logo-pill">VS Code</span>
             </div>
           </header>
+          <p>Two flavours, same user experience from your phone's point of view:</p>
+
+          <h3 class="subhead">Manual client (Claude only)</h3>
           <p>
-            A one-off bootstrap URL gates DCR on your account. The derived
-            client has no TOTP seed of its own — 2FA delegates to yours, so
-            a leaked client can't authorize anything without your phone.
+            Claude is the one client that asks you to paste a
+            <code>client_id</code> / <code>client_secret</code>.
+            Provision them once via the CLI:
+          </p>
+          <pre><code>beaconmcp auth create --name "Claude iPhone"</code></pre>
+          <p>Then <em>Settings → Integrations → Add custom connector</em>. URL: <code>{{ mcp_url }}</code>.</p>
+
+          <h3 class="subhead">Auto-discovery (every other client)</h3>
+          <p>
+            ChatGPT, Codex, Le Chat, Gemini CLI, OpenCode, Cursor, and
+            VS Code don't ask for credentials. They read BeaconMCP's
+            <code>.well-known</code> metadata and register themselves
+            on their own. On our side this rides on Dynamic Client
+            Registration, so
+            <code>server.allow_dynamic_registration: true</code> must be
+            set in <code>beaconmcp.yaml</code>.
+          </p>
+          {% if dcr_enabled %}
+          <p>
+            Mint a one-off connector URL from the button below. Paste it
+            into the client; it auto-registers and redirects you to
+            BeaconMCP's TOTP page. The URL is single-use and dies in 15
+            min.
           </p>
           <a href="/app/connectors" class="btn-primary-link">
             Open OAuth connectors
             <svg width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
           </a>
+          {% else %}
+          <p class="muted">
+            Auto-discovery is currently <strong>disabled</strong> on this
+            server. Set <code>server.allow_dynamic_registration: true</code>
+            in <code>beaconmcp.yaml</code> and restart to enable these
+            clients.
+          </p>
+          {% endif %}
         </article>
       </div>
-      {% endif %}
 
       {# ---------- Panel: Bearer ---------- #}
       <div class="tab-panel" data-panel="bearer">
@@ -335,7 +333,7 @@
           <header class="card-head">
             <div class="card-title">
               <h2>ChatGPT</h2>
-              <span class="method-tag method-tag-dcr">OAuth + DCR</span>
+              <span class="method-tag method-tag-oauth">OAuth 2.1</span>
             </div>
           </header>
           <p class="muted">
@@ -412,7 +410,7 @@ url = "https://&lt;your-host&gt;/mcp/c/&lt;slug&gt;"</code></pre>
             <label for="gem-web" class="sub-tab">Web / Mobile</label>
           </nav>
           <div class="sub-panel" data-sub="gem-cli">
-            <p><span class="method-tag method-tag-dcr">OAuth + DCR</span> <span class="method-tag method-tag-bearer">Bearer</span></p>
+            <p><span class="method-tag method-tag-oauth">OAuth 2.1</span> <span class="method-tag method-tag-bearer">Bearer</span></p>
             <p>
               Gemini CLI speaks full OAuth 2.1 with DCR — drop a remote
               URL in <code>settings.json</code> and run
@@ -420,7 +418,7 @@ url = "https://&lt;your-host&gt;/mcp/c/&lt;slug&gt;"</code></pre>
               flow (TOTP prompt in your default browser).
             </p>
             {% if dcr_enabled %}
-            <p><strong>Recommended — OAuth + DCR:</strong></p>
+            <p><strong>Recommended — OAuth 2.1:</strong></p>
 <pre><code>// ~/.gemini/settings.json
 {
   "mcpServers": {
@@ -523,7 +521,7 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
           <header class="card-head">
             <div class="card-title">
               <h2>OpenCode</h2>
-              <span class="method-tag method-tag-dcr">OAuth + DCR</span>
+              <span class="method-tag method-tag-oauth">OAuth 2.1</span>
             </div>
           </header>
           <p>
@@ -567,7 +565,7 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
           <header class="card-head">
             <div class="card-title">
               <h2>VS Code</h2>
-              <span class="method-tag method-tag-dcr">OAuth + DCR</span>
+              <span class="method-tag method-tag-oauth">OAuth 2.1</span>
               <span class="method-tag method-tag-bearer">Bearer</span>
             </div>
           </header>
@@ -580,7 +578,7 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
             keychain.
           </p>
           {% if dcr_enabled %}
-          <p><strong>Recommended — OAuth + DCR:</strong></p>
+          <p><strong>Recommended — OAuth 2.1:</strong></p>
 <pre><code>// .vscode/mcp.json (or settings.json → "mcp.servers")
 {
   "servers": {
@@ -618,7 +616,7 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
           <header class="card-head">
             <div class="card-title">
               <h2>Cursor</h2>
-              <span class="method-tag method-tag-dcr">OAuth + DCR</span>
+              <span class="method-tag method-tag-oauth">OAuth 2.1</span>
               <span class="method-tag method-tag-bearer">Bearer</span>
             </div>
           </header>
@@ -631,7 +629,7 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
             automatic.
           </p>
           {% if dcr_enabled %}
-          <p><strong>Recommended — OAuth + DCR:</strong></p>
+          <p><strong>Recommended — OAuth 2.1:</strong></p>
 <pre><code>// ~/.cursor/mcp.json (global) or .cursor/mcp.json (per project)
 {
   "mcpServers": {
