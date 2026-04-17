@@ -112,7 +112,7 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         if isinstance(result, dict) and "error" in result:
             return result
         return {
-            "source_vmid": vmid,
+            "src_vmid": vmid,
             "new_vmid": newid,
             "name": name,
             "node": node,
@@ -137,8 +137,8 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
             return result
         return {
             "vmid": vmid,
-            "from_node": node,
-            "to_node": target_node,
+            "src_node": node,
+            "dst_node": target_node,
             "action": "migrate",
             "upid": result,
         }
@@ -164,4 +164,4 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         result = client.put(node, f"nodes/{node}/{vm_type}/{vmid}/config", **updates)
         if isinstance(result, dict) and "error" in result:
             return result
-        return {"vmid": vmid, "node": node, "action": "config_update", "updates_applied": updates}
+        return {"vmid": vmid, "node": node, "action": "config_update", "applied": updates}

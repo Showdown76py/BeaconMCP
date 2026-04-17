@@ -40,7 +40,7 @@ def register_ssh_tools(mcp: FastMCP, ssh_client: SSHClient) -> None:
                 "exec_id": exec_id,
                 "status": "running",
                 "host": host,
-                "resolved_host": ssh_client.resolve_host(host),
+                "resolved": ssh_client.resolve_host(host),
                 "command": command,
             }
         except (SSHNotConfiguredError, SSHHostResolutionError) as e:
@@ -65,7 +65,7 @@ def register_ssh_tools(mcp: FastMCP, ssh_client: SSHClient) -> None:
             "stdout": session.stdout,
             "stderr": session.stderr,
             "exit_code": session.exit_code,
-            "elapsed_seconds": round(time.time() - session.started_at)
+            "elapsed_s": round(time.time() - session.started_at)
             if session.status == "running"
             else None,
         }

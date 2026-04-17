@@ -125,17 +125,22 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
 
         Use to check disk space, storage health, or find available storage.
         Omit 'node' to list storage from all configured nodes.
-        Returns storage name, type (local, nfs, ceph, etc.), usage, and available space.
+        Returns: {"storage": {"<node>": [{name, type, content, enabled, used_gb,
+        total_gb, usage_pct}]}}. The storage pool name is in the 'name' field
+        of each entry. Per-node errors appear as {"error": "..."} entries.
         """
         target_nodes = [node] if node else client.configured_nodes
-        all_storage: list[dict[str, Any]] = []
+        by_node: dict[str, list[dict[str, Any]]] = {}
 
         for n in target_nodes:
+            entries: list[dict[str, Any]] = []
             data = client.get(n, f"nodes/{n}/storage")
             if isinstance(data, dict) and "error" in data:
-                all_storage.append({"node": n, "error": data["error"]})
+                entries.append({"error": data["error"]})
+                by_node[n] = entries
                 continue
             if not isinstance(data, list):
+                by_node[n] = entries
                 continue
             for s in data:
                 storage_name = s.get("storage")
@@ -148,9 +153,8 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
                     used = status.get("used", 0)
                     total = status.get("total", 0)
 
-                all_storage.append({
-                    "node": n,
-                    "storage": storage_name,
+                entries.append({
+                    "name": storage_name,
                     "type": s.get("type"),
                     "content": s.get("content"),
                     "enabled": s.get("enabled", 1) == 1,
@@ -158,8 +162,9 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
                     "total_gb": round(total / 1073741824, 1),
                     "usage_pct": round(used / total * 100, 1) if total > 0 else 0,
                 })
+            by_node[n] = entries
 
-        return {"storage": all_storage}
+        return {"storage": by_node}
 
     @mcp.tool()
     def proxmox_network_config(node: str) -> dict[str, Any]:
@@ -301,5 +306,5 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
             "stderr": session.stderr,
             "exit_code": session.exit_code,
             "command": session.command,
-            "elapsed_seconds": round(time.time() - session.started_at),
+            "elapsed_s": round(time.time() - session.started_at),
         }

@@ -15,14 +15,14 @@ def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         """List all Proxmox cluster nodes with their status (online/offline).
 
         Use this as the first step when diagnosing cluster health or checking which nodes are available.
-        Returns a list of nodes with name, status, CPU usage, memory usage, and uptime.
+        Returns: {"nodes": [{name, status, cpu, mem_used_gb, mem_total_gb, uptime_h}]}.
         If a node appears offline, use ilo_health_status to check if it's a hardware issue,
         or ssh_exec_command to try reaching it directly.
         """
-        # GET /nodes returns the full cluster view from whichever member answers,
-        # so we stop at the first reachable configured node. Nodes we can't reach
-        # via their API are still reported as "unreachable" so the caller knows
-        # which credentials are stale.
+        # Query every configured node. In a joined cluster each member returns the
+        # same view (deduped by name); with standalone hosts each returns only
+        # itself, so we need to poll them all. Nodes we can't reach via their API
+        # are reported as "unreachable" so the caller knows which creds are stale.
         results: dict[str, dict[str, Any]] = {}
         unreachable: list[dict[str, Any]] = []
 
@@ -40,11 +40,11 @@ def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
                         "name": name,
                         "status": node.get("status", "unknown"),
                         "cpu": round(node.get("cpu", 0) * 100, 1),
-                        "memory_used_gb": round(node.get("mem", 0) / 1073741824, 1),
-                        "memory_total_gb": round(node.get("maxmem", 0) / 1073741824, 1),
-                        "uptime_hours": round(node.get("uptime", 0) / 3600, 1),
+                        "mem_used_gb": round(node.get("mem", 0) / 1073741824, 1),
+                        "mem_total_gb": round(node.get("maxmem", 0) / 1073741824, 1),
+                        "uptime_h": round(node.get("uptime", 0) / 3600, 1),
                     }
-                break
+                continue
             unreachable.append({"name": node_name, "status": "unknown", "raw": str(data)})
 
         # Surface any configured-but-unreachable node that didn't appear in the
@@ -60,7 +60,9 @@ def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
 
         Use after proxmox_list_nodes to drill into a specific node.
         Provide the node name (e.g., 'pve1').
-        Returns detailed resource usage and system information.
+        Returns: {node, cpu_cores, cpu_model, cpu_pct, mem_used_gb, mem_total_gb,
+        swap_used_gb, swap_total_gb, rootfs_used_gb, rootfs_total_gb, uptime_h,
+        kernel_version, pve_version}.
         """
         data = client.get(node, f"nodes/{node}/status")
         if isinstance(data, dict) and "error" in data:
@@ -69,14 +71,14 @@ def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
             "node": node,
             "cpu_cores": data.get("cpuinfo", {}).get("cores"),
             "cpu_model": data.get("cpuinfo", {}).get("model"),
-            "cpu_usage_pct": round(data.get("cpu", 0) * 100, 1),
-            "memory_used_gb": round(data.get("memory", {}).get("used", 0) / 1073741824, 1),
-            "memory_total_gb": round(data.get("memory", {}).get("total", 0) / 1073741824, 1),
+            "cpu_pct": round(data.get("cpu", 0) * 100, 1),
+            "mem_used_gb": round(data.get("memory", {}).get("used", 0) / 1073741824, 1),
+            "mem_total_gb": round(data.get("memory", {}).get("total", 0) / 1073741824, 1),
             "swap_used_gb": round(data.get("swap", {}).get("used", 0) / 1073741824, 1),
             "swap_total_gb": round(data.get("swap", {}).get("total", 0) / 1073741824, 1),
             "rootfs_used_gb": round(data.get("rootfs", {}).get("used", 0) / 1073741824, 1),
             "rootfs_total_gb": round(data.get("rootfs", {}).get("total", 0) / 1073741824, 1),
-            "uptime_hours": round(data.get("uptime", 0) / 3600, 1),
+            "uptime_h": round(data.get("uptime", 0) / 3600, 1),
             "kernel_version": data.get("kversion"),
             "pve_version": data.get("pveversion"),
         }
@@ -88,35 +90,40 @@ def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         Use to get an overview of what's running on the cluster.
         Omit 'node' to list VMs across all configured nodes.
         Provide a node name (e.g., 'pve1') to list only that node's VMs.
-        Returns VMID, name, status, type (qemu/lxc), CPU, and memory for each.
+        Returns: {"vms": {"<node>": [{vmid, name, status, type, cpu_pct,
+        mem_used_mb, mem_max_mb, disk_used_gb, uptime_h}]}, "total": N}.
+        Per-node errors appear as {"error": "..."} entries in that node's list.
         """
         target_nodes = [node] if node else client.configured_nodes
-        all_vms: list[dict[str, Any]] = []
+        by_node: dict[str, list[dict[str, Any]]] = {}
+        total = 0
 
         for n in target_nodes:
+            entries: list[dict[str, Any]] = []
             for vm_type in ("qemu", "lxc"):
                 data = client.get(n, f"nodes/{n}/{vm_type}")
                 if isinstance(data, dict) and "error" in data:
-                    all_vms.append({"node": n, "type": vm_type, "error": data["error"]})
+                    entries.append({"type": vm_type, "error": data["error"]})
                     continue
                 if not isinstance(data, list):
                     continue
                 for vm in data:
-                    all_vms.append({
-                        "node": n,
+                    entries.append({
                         "vmid": vm.get("vmid"),
                         "name": vm.get("name", ""),
                         "status": vm.get("status"),
                         "type": vm_type,
-                        "cpu_usage_pct": round(vm.get("cpu", 0) * 100, 1),
-                        "memory_used_mb": round(vm.get("mem", 0) / 1048576, 0),
-                        "memory_max_mb": round(vm.get("maxmem", 0) / 1048576, 0),
+                        "cpu_pct": round(vm.get("cpu", 0) * 100, 1),
+                        "mem_used_mb": round(vm.get("mem", 0) / 1048576, 0),
+                        "mem_max_mb": round(vm.get("maxmem", 0) / 1048576, 0),
                         "disk_used_gb": round(vm.get("disk", 0) / 1073741824, 1),
-                        "uptime_hours": round(vm.get("uptime", 0) / 3600, 1),
+                        "uptime_h": round(vm.get("uptime", 0) / 3600, 1),
                     })
+            entries.sort(key=lambda v: v.get("vmid", 0))
+            by_node[n] = entries
+            total += sum(1 for e in entries if "vmid" in e)
 
-        all_vms.sort(key=lambda v: v.get("vmid", 0))
-        return {"vms": all_vms, "total": len(all_vms)}
+        return {"vms": by_node, "total": total}
 
     @mcp.tool()
     def proxmox_vm_status(node: str, vmid: int) -> dict[str, Any]:
@@ -125,6 +132,9 @@ def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         Use after proxmox_list_vms to drill into a specific VM.
         Provide both the node name and VMID.
         Auto-detects whether the target is a QEMU VM or LXC container.
+        Returns: {node, vmid, type, name, status, cpu_pct, cpus, mem_used_mb,
+        mem_max_mb, disk_read_mb, disk_write_mb, net_in_mb, net_out_mb, uptime_h,
+        pid, config_summary: {cores, mem_mb, description}}.
         """
         # Try qemu first, then lxc
         for vm_type in ("qemu", "lxc"):
@@ -142,21 +152,21 @@ def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
                     "type": vm_type,
                     "name": data.get("name", ""),
                     "status": data.get("status"),
-                    "cpu_usage_pct": round(data.get("cpu", 0) * 100, 1),
+                    "cpu_pct": round(data.get("cpu", 0) * 100, 1),
                     "cpus": data.get("cpus"),
-                    "memory_used_mb": round(data.get("mem", 0) / 1048576, 0),
-                    "memory_max_mb": round(data.get("maxmem", 0) / 1048576, 0),
+                    "mem_used_mb": round(data.get("mem", 0) / 1048576, 0),
+                    "mem_max_mb": round(data.get("maxmem", 0) / 1048576, 0),
                     "disk_read_mb": round(data.get("diskread", 0) / 1048576, 1),
                     "disk_write_mb": round(data.get("diskwrite", 0) / 1048576, 1),
                     "net_in_mb": round(data.get("netin", 0) / 1048576, 1),
                     "net_out_mb": round(data.get("netout", 0) / 1048576, 1),
-                    "uptime_hours": round(data.get("uptime", 0) / 3600, 1),
+                    "uptime_h": round(data.get("uptime", 0) / 3600, 1),
                     "pid": data.get("pid"),
                 }
                 if isinstance(config_data, dict) and "error" not in config_data:
                     result["config_summary"] = {
                         "cores": config_data.get("cores"),
-                        "memory_mb": config_data.get("memory"),
+                        "mem_mb": config_data.get("memory"),
                         "description": config_data.get("description", ""),
                     }
                 return result
@@ -213,20 +223,22 @@ def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
 
         Use to check what operations have been running or to investigate failed tasks.
         Omit 'node' to list tasks from all configured nodes.
-        Returns task type, status, user, and timing for each.
+        Returns: {"tasks": {"<node>": [{upid, type, status, user, starttime,
+        endtime}]}, "total": N}. Per-node errors appear as {"error": "..."}
+        entries in that node's list.
         """
         target_nodes = [node] if node else client.configured_nodes
-        all_tasks: list[dict[str, Any]] = []
+        by_node: dict[str, list[dict[str, Any]]] = {}
+        total = 0
 
         for n in target_nodes:
+            entries: list[dict[str, Any]] = []
             data = client.get(n, f"nodes/{n}/tasks", limit=limit)
             if isinstance(data, dict) and "error" in data:
-                all_tasks.append({"node": n, "error": data["error"]})
-                continue
-            if isinstance(data, list):
+                entries.append({"error": data["error"]})
+            elif isinstance(data, list):
                 for t in data:
-                    all_tasks.append({
-                        "node": n,
+                    entries.append({
                         "upid": t.get("upid"),
                         "type": t.get("type"),
                         "status": t.get("status"),
@@ -234,5 +246,7 @@ def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
                         "starttime": t.get("starttime"),
                         "endtime": t.get("endtime"),
                     })
+            by_node[n] = entries
+            total += sum(1 for e in entries if "upid" in e)
 
-        return {"tasks": all_tasks, "total": len(all_tasks)}
+        return {"tasks": by_node, "total": total}

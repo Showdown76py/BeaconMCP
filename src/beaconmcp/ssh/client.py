@@ -188,7 +188,7 @@ class SSHClient:
                 "host": s.host,
                 "command": s.command,
                 "status": s.status,
-                "elapsed_seconds": round(time.time() - s.started_at),
+                "elapsed_s": round(time.time() - s.started_at),
             }
             for s in _ssh_sessions.values()
         ]

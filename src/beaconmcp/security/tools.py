@@ -28,7 +28,7 @@ def register_security_tools(mcp: FastMCP) -> None:
         if revoke_current_token():
             return {
                 "revoked": True,
-                "grace_seconds": 8,
+                "grace_s": 8,
                 "message": (
                     "Bearer token scheduled for revocation. It remains valid "
                     "for ~8s so this response can reach the client; after "

@@ -149,20 +149,20 @@ def test_proxmox_monitoring(runner: TestRunner, tools: dict) -> None:
     has_cpu = isinstance(result, dict) and "cpu_cores" in result
     runner.record(
         "proxmox_node_status returns CPU/RAM/disk info",
-        has_cpu and "memory_total_gb" in result and "rootfs_total_gb" in result,
-        "Expected cpu_cores, memory_total_gb, rootfs_total_gb",
+        has_cpu and "mem_total_gb" in result and "rootfs_total_gb" in result,
+        "Expected cpu_cores, mem_total_gb, rootfs_total_gb",
         result,
     )
     if has_cpu:
         runner.record(
             "CPU usage is a percentage (0-100)",
-            0 <= result.get("cpu_usage_pct", -1) <= 100,
-            f"cpu_usage_pct = {result.get('cpu_usage_pct')}",
+            0 <= result.get("cpu_pct", -1) <= 100,
+            f"cpu_pct = {result.get('cpu_pct')}",
         )
         runner.record(
             "Uptime is positive",
-            result.get("uptime_hours", 0) > 0,
-            f"uptime_hours = {result.get('uptime_hours')}",
+            result.get("uptime_h", 0) > 0,
+            f"uptime_h = {result.get('uptime_h')}",
         )
         runner.record(
             "PVE version is present",
@@ -176,11 +176,18 @@ def test_proxmox_monitoring(runner: TestRunner, tools: dict) -> None:
     runner.record(
         "proxmox_list_vms returns VM list",
         has_vms,
-        "Expected a 'vms' key with a list",
+        "Expected a 'vms' key with a dict keyed by node",
         result,
     )
-    if has_vms and len(result["vms"]) > 0:
-        first_vm = result["vms"][0]
+    # New shape: {"vms": {"pve1": [...]}, "total": N}
+    all_vm_entries = []
+    if has_vms and isinstance(result["vms"], dict):
+        for _node, entries in result["vms"].items():
+            for e in entries:
+                if "vmid" in e:
+                    all_vm_entries.append(e)
+    if all_vm_entries:
+        first_vm = all_vm_entries[0]
         runner.record(
             "VMs have required fields (vmid, name, status, type)",
             all(k in first_vm for k in ("vmid", "name", "status", "type")),
@@ -189,15 +196,13 @@ def test_proxmox_monitoring(runner: TestRunner, tools: dict) -> None:
         )
 
     # T4: VM status (use first running VM found)
-    running_vm = None
-    if has_vms:
-        running_vm = next((v for v in result["vms"] if v.get("status") == "running"), None)
+    running_vm = next((v for v in all_vm_entries if v.get("status") == "running"), None)
     if running_vm:
         result = call_tool(tools, "proxmox_vm_status", node="pve1", vmid=running_vm["vmid"])
         runner.record(
             f"proxmox_vm_status for VMID {running_vm['vmid']} returns details",
-            isinstance(result, dict) and "status" in result and "cpu_usage_pct" in result,
-            "Expected status, cpu_usage_pct, memory fields",
+            isinstance(result, dict) and "status" in result and "cpu_pct" in result,
+            "Expected status, cpu_pct, memory fields",
             result,
         )
     else:
@@ -237,9 +242,13 @@ def test_proxmox_monitoring(runner: TestRunner, tools: dict) -> None:
 def test_proxmox_system(runner: TestRunner, tools: dict) -> None:
     runner.section("Proxmox System")
 
-    # T7: Storage status
+    # T7: Storage status -- new shape: {"storage": {"pve1": [{name, type, ...}]}}
     result = call_tool(tools, "proxmox_storage_status", node="pve1")
-    has_storage = isinstance(result, dict) and "storage" in result and len(result.get("storage", [])) > 0
+    storage_entries = []
+    if isinstance(result, dict) and isinstance(result.get("storage"), dict):
+        for _node, entries in result["storage"].items():
+            storage_entries.extend(e for e in entries if "name" in e)
+    has_storage = len(storage_entries) > 0
     runner.record(
         "proxmox_storage_status returns storage list",
         has_storage,
@@ -247,10 +256,10 @@ def test_proxmox_system(runner: TestRunner, tools: dict) -> None:
         result,
     )
     if has_storage:
-        first = result["storage"][0]
+        first = storage_entries[0]
         runner.record(
             "Storage entries have name/type/usage fields",
-            all(k in first for k in ("storage", "type", "used_gb", "total_gb")),
+            all(k in first for k in ("name", "type", "used_gb", "total_gb")),
             f"First storage keys: {list(first.keys())}",
             first,
         )
@@ -276,15 +285,17 @@ def test_proxmox_system(runner: TestRunner, tools: dict) -> None:
 def test_proxmox_exec(runner: TestRunner, tools: dict) -> None:
     runner.section("Proxmox Command Execution (QEMU Guest Agent)")
 
-    # Find a running QEMU VM with guest agent
+    # Find a running QEMU VM with guest agent (new vms shape: dict-by-node)
     vms_result = call_tool(tools, "proxmox_list_vms", node="pve1")
-    running_qemu = None
-    if isinstance(vms_result, dict) and "vms" in vms_result:
-        running_qemu = next(
-            (v for v in vms_result["vms"]
-             if v.get("status") == "running" and v.get("type") == "qemu"),
-            None,
-        )
+    all_entries = []
+    if isinstance(vms_result, dict) and isinstance(vms_result.get("vms"), dict):
+        for _n, entries in vms_result["vms"].items():
+            all_entries.extend(e for e in entries if "vmid" in e)
+    running_qemu = next(
+        (v for v in all_entries
+         if v.get("status") == "running" and v.get("type") == "qemu"),
+        None,
+    )
 
     if not running_qemu:
         runner.record(
@@ -367,13 +378,15 @@ def test_proxmox_exec_lxc(runner: TestRunner, tools: dict) -> None:
     runner.section("Proxmox Command Execution (LXC)")
 
     vms_result = call_tool(tools, "proxmox_list_vms", node="pve1")
-    running_lxc = None
-    if isinstance(vms_result, dict) and "vms" in vms_result:
-        running_lxc = next(
-            (v for v in vms_result["vms"]
-             if v.get("status") == "running" and v.get("type") == "lxc"),
-            None,
-        )
+    all_entries = []
+    if isinstance(vms_result, dict) and isinstance(vms_result.get("vms"), dict):
+        for _n, entries in vms_result["vms"].items():
+            all_entries.extend(e for e in entries if "vmid" in e)
+    running_lxc = next(
+        (v for v in all_entries
+         if v.get("status") == "running" and v.get("type") == "lxc"),
+        None,
+    )
 
     if not running_lxc:
         runner.record(
@@ -481,7 +494,7 @@ def test_proxmox_vm_lifecycle(runner: TestRunner, tools: dict, test_vmid: int | 
                        updates={"description": "BeaconMCP test VM - safe to delete"})
     runner.record(
         f"proxmox_vm_config (update description) VMID {test_vmid}",
-        isinstance(result, dict) and ("updates_applied" in result or "error" in result),
+        isinstance(result, dict) and ("applied" in result or "error" in result),
         f"Result: {result}",
         result,
     )
