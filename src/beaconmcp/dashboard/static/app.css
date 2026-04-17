@@ -559,6 +559,57 @@ a.sidebar-link { cursor: pointer; }
   letter-spacing: 0.01em;
 }
 
+/* Streaming indicator: "Generating…" shimmer with a pulsing dot.
+   Pinned to the bottom of the assistant row during the whole turn; removed
+   when the SSE stream closes. Gives feedback during long thinking pauses
+   and between tool calls. */
+.generating-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--fg-faint);
+  user-select: none;
+}
+
+.generating-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: generating-dot-pulse 1.2s ease-in-out infinite;
+}
+
+.generating-label {
+  background: linear-gradient(
+    90deg,
+    var(--fg-faint) 0%,
+    var(--fg) 50%,
+    var(--fg-faint) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: generating-shimmer 2.2s linear infinite;
+}
+
+@keyframes generating-dot-pulse {
+  0%, 100% { opacity: 0.3; transform: scale(0.85); }
+  50%      { opacity: 1;   transform: scale(1); }
+}
+
+@keyframes generating-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .generating-dot { animation: none; opacity: 0.7; }
+  .generating-label { animation: none; color: var(--fg-faint); background: none; -webkit-text-fill-color: currentColor; }
+}
+
 .msg-body.md {
   line-height: 1.55;
   font-size: 0.95rem;
