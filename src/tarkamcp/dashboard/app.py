@@ -36,6 +36,7 @@ from .chat import (
     ToolCallStart,
     ToolConfirmRequired,
     TurnInput,
+    UsageAccumulated,
 )
 from .confirmations import ConfirmationStore
 from .conversations import (
@@ -47,6 +48,7 @@ from .conversations import (
 )
 from .db import Database
 from .session import SESSION_TTL_SECONDS, Session, SessionStore
+from .usage import UsageMeter, UsageStore
 
 
 SESSION_COOKIE = "tarkamcp_session"
@@ -73,6 +75,9 @@ class DashboardDeps:
     conversations: ConversationStore | None = None
     engine: ChatEngine | None = None
     confirmations: ConfirmationStore | None = None
+    # Optional usage accounting + per-client budget. When unset, the
+    # dashboard runs without any cost tracking or quota enforcement.
+    usage: UsageStore | None = None
     # Public URL used by Gemini's backend to call this MCP server in
     # "remote" mode. Falls back to the request's Host header at call time
     # when unset. Ignored in "local" mode.
@@ -602,6 +607,24 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             return _json({"error": "not_found"}, status=404)
         return Response(status_code=204)
 
+    async def api_usage(request: Request) -> Response:
+        session = _require_active_session(request, deps)
+        if isinstance(session, Response):
+            return session
+        if deps.usage is None:
+            # Return a disabled snapshot so the UI can render "usage
+            # tracking off" without a 404/error path.
+            return _json({
+                "usage": {
+                    "spent_5h_usd": 0.0, "limit_5h_usd": 0.0,
+                    "session_5h_started_at": None, "session_5h_reset_at": None,
+                    "spent_week_usd": 0.0, "limit_week_usd": 0.0,
+                },
+            })
+        return _json({
+            "usage": deps.usage.snapshot(session.client_id).to_json(),
+        })
+
     async def api_chat_confirm(request: Request) -> Response:
         session = _require_active_session(request, deps)
         if isinstance(session, Response):
@@ -661,6 +684,20 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                 yield _sse("session_expired", {})
                 return
 
+            # Budget pre-check. Refuse the turn BEFORE we hit Google so
+            # we never burn tokens on a user who is already over-cap.
+            if deps.usage is not None:
+                block = deps.usage.check_budget(session.client_id)
+                if block is not None:
+                    yield _sse("error", {
+                        "code": "quota_exceeded",
+                        "message": _format_quota_message(block),
+                    })
+                    yield _sse("usage_update", deps.usage.snapshot(
+                        session.client_id,
+                    ).to_json())
+                    return
+
             # History = everything prior to this turn. The engine appends
             # the user message itself via TurnInput.user_text.
             history = store.list_messages(conv.id)
@@ -668,6 +705,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             store.add_user_message(conv.id, user_text)
 
             collected: list[Any] = []
+            usage_event: UsageAccumulated | None = None
 
             confirmations = deps.confirmations
             issued_call_ids: list[str] = []
@@ -719,6 +757,12 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                             "id": event.id, "status": event.status,
                             "preview": event.preview, "duration_ms": event.duration_ms,
                         })
+                    elif isinstance(event, UsageAccumulated):
+                        # Engine-internal event: keep the last one the
+                        # engine emitted (it always sends exactly one
+                        # at end-of-turn) and skip SSE forwarding.
+                        usage_event = event
+                        continue
                     elif isinstance(event, ErrorEvent):
                         yield _sse("error", {
                             "code": event.code, "message": event.message,
@@ -750,6 +794,34 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                 effort=effort,
             )
             yield _sse("done", {"message_id": msg.id})
+
+            # Bill the client now that the assistant message has an id.
+            # Swallow DB failures here -- a billing blip shouldn't break
+            # a turn the user has already seen complete.
+            if deps.usage is not None and usage_event is not None:
+                try:
+                    cost = UsageMeter.cost_usd(
+                        usage_event.model,
+                        prompt_tokens=usage_event.prompt_tokens,
+                        cached_tokens=usage_event.cached_tokens,
+                        output_tokens=usage_event.output_tokens,
+                    )
+                    deps.usage.record_turn(
+                        client_id=session.client_id,
+                        conversation_id=conv.id,
+                        message_id=msg.id,
+                        model=usage_event.model,
+                        prompt_tokens=usage_event.prompt_tokens,
+                        cached_tokens=usage_event.cached_tokens,
+                        output_tokens=usage_event.output_tokens,
+                        cost_usd=cost,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                yield _sse(
+                    "usage_update",
+                    deps.usage.snapshot(session.client_id).to_json(),
+                )
 
             if is_first_turn and deps.engine is not None:
                 title = await deps.engine.title(model=model, user_text=user_text)
@@ -788,6 +860,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         Route("/app/api/conversations/{conv_id}", api_conv_delete, methods=["DELETE"]),
         Route("/app/api/chat/stream", api_chat_stream, methods=["POST"]),
         Route("/app/api/chat/confirm", api_chat_confirm, methods=["POST"]),
+        Route("/app/api/usage", api_usage, methods=["GET"]),
         Route("/", index, methods=["GET"]),
         Mount(
             "/app/static",
@@ -915,3 +988,34 @@ def _resolve_mcp_url(request: Request, deps: DashboardDeps) -> str:
 def _sse(event: str, data: Any) -> bytes:
     payload = json.dumps(data, ensure_ascii=False)
     return f"event: {event}\ndata: {payload}\n\n".encode("utf-8")
+
+
+def _format_quota_message(block: Any) -> str:
+    """Build a French user-facing sentence for a :class:`BudgetBlock`.
+
+    Kept here (rather than on ``BudgetBlock``) so the usage module stays
+    locale-agnostic and UI-agnostic.
+    """
+    spent = f"${block.spent_usd:.2f}"
+    limit = f"${block.limit_usd:.2f}"
+    if block.window == "5h":
+        reset_at = block.reset_at
+        if reset_at:
+            # Format in local time, HH:MM
+            import datetime as _dt
+            tail = _dt.datetime.fromtimestamp(reset_at).strftime("%Hh%M")
+            reset_txt = f"La session se remet à zéro à {tail}."
+        else:
+            reset_txt = (
+                "La session se remettra à zéro après 5h d'inactivité."
+            )
+        return (
+            f"Limite de {limit} par session 5h atteinte "
+            f"(dépensé {spent}). {reset_txt}"
+        )
+    # weekly
+    return (
+        f"Limite hebdomadaire de {limit} atteinte "
+        f"(dépensé {spent} sur les 7 derniers jours glissants). "
+        "Réessaie plus tard."
+    )

@@ -298,12 +298,40 @@ L'allow-list est hardcodée dans `src/tarkamcp/dashboard/chat.py` (`_NEEDS_CONFI
 
 ### Données stockées
 
-SQLite à `/opt/tarkamcp/dashboard.db` (WAL). Trois tables :
+SQLite à `/opt/tarkamcp/dashboard.db` (WAL). Cinq tables :
 - `sessions` — cookie → client_id + client_secret chiffré AES-GCM + bearer courant.
 - `conversations` — titre, modèle, effort, client propriétaire.
 - `messages` — user/assistant, contenu, tool_calls JSON, thinking résumé.
+- `usage_events` — ledger per-turn : client_id, tokens (prompt/cached/output), coût USD, horodatage.
+- `usage_5h_sessions` — une ligne par client avec la session 5h courante (matérialisée pour éviter un `GROUP BY` à chaque pré-check).
 
 Tout est scopé par `client_id` ; tu peux avoir plusieurs sessions actives (téléphone + PC) pour un même client.
+
+### Limites d'usage & coût
+
+Chaque tour du chat calcule son coût USD à partir du `usage_metadata` renvoyé par Gemini (tokens input facturés au tarif cache-réduit quand `cachedContentTokenCount` est non-nul, ce que Gemini 2.5+ applique automatiquement via l'implicit caching dès que le prompt dépasse 1024 tokens pour Flash / 4096 pour Pro — zéro code à écrire côté client).
+
+Deux fenêtres sont appliquées **par client OAuth** :
+
+| Fenêtre | Semantique | Variable d'env | Défaut |
+|---------|-----------|----------------|--------|
+| **5h** | Session Anthropic-style : ouvre au 1er message après ≥5h d'inactivité, dure 5h pile, puis ferme | `TARKAMCP_DASHBOARD_LIMIT_5H_USD` | `2.0` |
+| **Semaine** | Somme rolling sur les 7 derniers jours glissants | `TARKAMCP_DASHBOARD_LIMIT_WEEK_USD` | `10.0` |
+
+Poser la variable à `0` désactive la fenêtre correspondante. Au dépassement, la prochaine requête est rejetée **avant** d'être envoyée à Gemini, avec un message précisant l'heure de reset pour la fenêtre 5h.
+
+Le panel chat affiche en footer une ligne discrète `5h $X.XX / $Y.YY · reset HHhMM · 7j $X.XX / $Y.YY`, mise à jour après chaque tour via SSE `usage_update`.
+
+Tarifs utilisés (USD / 1M tokens, alignés sur le tarif public Google AI Studio au 2026-04-17) :
+
+| Modèle | Input | Cached | Output |
+|--------|-------|--------|--------|
+| `gemini-2.5-flash` | $0.30 | $0.03 | $2.50 |
+| `gemini-2.5-pro` (≤200k / >200k) | $1.25 / $2.50 | $0.125 / $0.25 | $10.00 / $15.00 |
+| `gemini-3-flash-preview` | $0.50 | $0.05 | $3.00 |
+| `gemini-3.1-pro-preview` (≤200k / >200k) | $2.00 / $4.00 | $0.20 / $0.40 | $12.00 / $18.00 |
+
+Les constantes vivent dans `src/tarkamcp/dashboard/usage.py` — mettre à jour si Google ajuste ses prix.
 
 ### Architecture MCP interne
 

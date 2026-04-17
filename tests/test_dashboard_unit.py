@@ -629,9 +629,9 @@ def test_migration_v1_to_v2_renames_gemini_models(tmp_path):
     msg = db.conn().execute("SELECT model FROM messages WHERE id='m1'").fetchone()
     assert msg["model"] == "gemini-3-flash-preview"
 
-    # user_version reflects the migration.
+    # user_version reflects the migration (latest schema version).
     ver = db.conn().execute("PRAGMA user_version").fetchone()[0]
-    assert ver == 2
+    assert ver == 3
 
 
 def test_short_ciphertext_decryption_returns_none(store):
