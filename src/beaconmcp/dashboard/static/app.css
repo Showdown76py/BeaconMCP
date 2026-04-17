@@ -1229,137 +1229,348 @@ a.sidebar-link { cursor: pointer; }
 .btn-primary-link:hover { filter: brightness(1.08); }
 .btn-primary-link:active { filter: brightness(0.95); }
 
-/* Tabbed views on /app/tokens (CSS-only toggle via sibling radios). */
-.views { margin-top: 1.5rem; }
+/* ----------------------------------------------------------------
+ * /app/tokens redesign — nested CSS-only tabs, hero endpoint,
+ * platform/method cards with logo pills and snippet gallery.
+ * ---------------------------------------------------------------- */
+
+.mcp-endpoint-hero {
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent, #e57000) 8%, var(--bg)) 0%,
+    var(--bg-soft) 100%
+  );
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.25rem;
+  margin: 1.5rem 0;
+}
+.mcp-endpoint-hero-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  margin-bottom: 0.4rem;
+}
+.mcp-endpoint-hero-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+.mcp-endpoint-hero-row code {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  font-weight: 500;
+  overflow-x: auto;
+  white-space: nowrap;
+  padding: 0.45rem 0.6rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+/* Outer view switch (Method / Platform) */
+.views { margin-top: 1.5rem; position: relative; }
 .views > input[type=radio] {
   position: absolute;
   opacity: 0;
   pointer-events: none;
 }
-.view-tabs {
+.view-switch {
   display: inline-flex;
   gap: 0.25rem;
-  padding: 0.25rem;
+  padding: 0.3rem;
   background: var(--bg-soft);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  margin-bottom: 1rem;
+  border-radius: 999px;
+  margin-bottom: 1.25rem;
 }
 .view-tab {
-  padding: 0.4rem 0.9rem;
+  padding: 0.5rem 1.1rem;
   font-size: 0.9rem;
-  border-radius: calc(var(--radius-sm) - 2px);
+  font-weight: 500;
+  border-radius: 999px;
   cursor: pointer;
   color: var(--fg-muted);
   user-select: none;
-  transition: color 120ms ease, background 120ms ease;
+  transition: color 120ms ease, background 120ms ease, box-shadow 120ms ease;
 }
 .view-tab:hover { color: var(--fg); }
 .views .view { display: none; }
 #view-method:checked ~ .view-by-method { display: block; }
 #view-platform:checked ~ .view-by-platform { display: block; }
-#view-method:checked ~ .view-tabs [for=view-method],
-#view-platform:checked ~ .view-tabs [for=view-platform] {
+#view-method:checked ~ .view-switch [for=view-method],
+#view-platform:checked ~ .view-switch [for=view-platform] {
   background: var(--bg);
   color: var(--fg);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
 }
 
-/* Auth-method cards */
-.method-card { }
-.method-head {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  margin-bottom: 0.5rem;
+/* Inner tabs (OAuth / DCR / Bearer or per-platform) */
+.view > input[type=radio] {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
 }
-.method-head h2 { margin: 0; }
-.method-badge {
+.inner-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 1.25rem;
+  padding-bottom: 0;
+}
+.inner-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.9rem;
+  font-size: 0.9rem;
+  color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 2px solid transparent;
+  transition: color 120ms ease, border-color 120ms ease;
+  margin-bottom: -1px;
+}
+.inner-tab:hover { color: var(--fg); }
+.tab-badge {
   display: inline-block;
-  padding: 0.15rem 0.55rem;
-  font-size: 0.72rem;
-  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.68rem;
+  font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   border-radius: 999px;
+  border: 1px solid currentColor;
+  background: transparent;
+  line-height: 1.4;
+}
+.tab-badge-oauth  { color: #5c93db; }
+.tab-badge-dcr    { color: #e57000; }
+.tab-badge-bearer { color: var(--fg-muted); }
+
+/* Panels (hidden until their radio is checked) */
+.tab-panel { display: none; }
+#tab-oauth:checked  ~ .tab-panel[data-panel=oauth],
+#tab-dcr:checked    ~ .tab-panel[data-panel=dcr],
+#tab-bearer:checked ~ .tab-panel[data-panel=bearer],
+#p-claude:checked      ~ .tab-panel[data-panel=claude],
+#p-chatgpt:checked     ~ .tab-panel[data-panel=chatgpt],
+#p-gemini-web:checked  ~ .tab-panel[data-panel=gemini-web],
+#p-gemini-cli:checked  ~ .tab-panel[data-panel=gemini-cli],
+#p-antigravity:checked ~ .tab-panel[data-panel=antigravity],
+#p-other:checked       ~ .tab-panel[data-panel=other] {
+  display: block;
+}
+
+/* Active-tab underline + color */
+#tab-oauth:checked  ~ .inner-tabs [for=tab-oauth],
+#tab-dcr:checked    ~ .inner-tabs [for=tab-dcr],
+#tab-bearer:checked ~ .inner-tabs [for=tab-bearer],
+#p-claude:checked      ~ .inner-tabs [for=p-claude],
+#p-chatgpt:checked     ~ .inner-tabs [for=p-chatgpt],
+#p-gemini-web:checked  ~ .inner-tabs [for=p-gemini-web],
+#p-gemini-cli:checked  ~ .inner-tabs [for=p-gemini-cli],
+#p-antigravity:checked ~ .inner-tabs [for=p-antigravity],
+#p-other:checked       ~ .inner-tabs [for=p-other] {
+  color: var(--fg);
+  border-bottom-color: var(--accent, #e57000);
+  font-weight: 600;
+}
+
+/* Card layout shared by method and platform panels */
+.card {
+  background: var(--bg);
   border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+.card-head {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+.card-title h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1.15rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.card-title p { margin: 0; font-size: 0.9rem; }
+.card-logos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+.logo-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.3rem 0.65rem;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.82rem;
   color: var(--fg-muted);
 }
-.method-badge-oauth   { background: rgba(92, 147, 219, 0.14); border-color: rgba(92, 147, 219, 0.45); color: #5c93db; }
-.method-badge-dcr     { background: rgba(229, 112, 0, 0.14); border-color: rgba(229, 112, 0, 0.45); color: #e57000; }
-.method-badge-bearer  { background: rgba(140, 140, 140, 0.14); color: var(--fg-muted); }
-.method-subhead {
-  margin: 1.25rem 0 0.5rem;
-  font-size: 0.95rem;
-  color: var(--fg-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+.logo-pill svg { flex-shrink: 0; }
+.logo-pill-plus {
+  font-style: italic;
+  background: transparent;
+  border-style: dashed;
 }
-.method-howto {
+
+/* Step list for OAuth how-to */
+.steps {
+  padding-left: 1.3rem;
+  margin: 0;
+  counter-reset: step;
+}
+.steps li {
+  margin: 0.75rem 0;
+  padding-left: 0.25rem;
+  line-height: 1.5;
+}
+.steps pre {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.55rem 0.75rem;
+  overflow-x: auto;
+  font-size: 0.85rem;
+  margin: 0.5rem 0;
+}
+.steps pre code { background: none; padding: 0; }
+
+/* Bearer card split layout: form on the left, token list on the right */
+.card-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
   margin-top: 1rem;
-  border-top: 1px solid var(--border);
-  padding-top: 0.75rem;
 }
-.method-howto > summary {
+@media (max-width: 760px) {
+  .card-split { grid-template-columns: 1fr; }
+}
+.subhead {
+  margin: 0 0 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.counter {
+  font-size: 0.75rem;
+  padding: 0.1rem 0.45rem;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg-muted);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* Success banner for just-created tokens */
+.alert {
+  padding: 1rem 1.1rem;
+  border-radius: var(--radius-sm);
+  margin-bottom: 1rem;
+}
+.alert strong { display: block; font-size: 0.95rem; }
+.alert p { margin: 0.25rem 0 0.75rem; font-size: 0.9rem; }
+.alert-success {
+  background: color-mix(in srgb, #2a9d5a 14%, var(--bg));
+  border: 1px solid color-mix(in srgb, #2a9d5a 45%, var(--border));
+}
+
+/* Snippets gallery */
+.howto {
+  margin-top: 1.25rem;
+  border-top: 1px dashed var(--border);
+  padding-top: 1rem;
+}
+.howto > summary {
   cursor: pointer;
   color: var(--fg-muted);
   font-size: 0.9rem;
   list-style: none;
+  user-select: none;
 }
-.method-howto > summary::-webkit-details-marker { display: none; }
-.method-howto > summary::before {
+.howto > summary::-webkit-details-marker { display: none; }
+.howto > summary::before {
   content: "▸ ";
   display: inline-block;
   transition: transform 120ms ease;
+  margin-right: 0.25rem;
 }
-.method-howto[open] > summary::before { transform: rotate(90deg); }
-.method-howto ol { padding-left: 1.2rem; margin: 0.75rem 0; }
-.method-howto li { margin: 0.5rem 0; }
-.method-howto h4 {
-  margin: 1rem 0 0.35rem;
-  font-size: 0.9rem;
-  color: var(--fg-muted);
+.howto[open] > summary::before { transform: rotate(90deg); }
+.snippets {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.25rem;
+  margin-top: 1rem;
+}
+@media (max-width: 760px) {
+  .snippets { grid-template-columns: 1fr; }
+}
+.snippet h4 {
+  margin: 0 0 0.4rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  color: var(--fg-muted);
 }
-.method-howto pre {
+.snippet p { margin: 0; font-size: 0.9rem; }
+.snippet pre {
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 0.55rem 0.75rem;
+  padding: 0.6rem 0.8rem;
   overflow-x: auto;
-  font-size: 0.85rem;
-  margin: 0.3rem 0;
+  font-size: 0.82rem;
+  margin: 0.35rem 0 0;
 }
-.method-howto pre code { background: none; padding: 0; }
+.snippet pre code { background: none; padding: 0; }
 
-/* Platform view */
-.platform-card h2 {
-  display: flex;
-  align-items: baseline;
-  gap: 0.6rem;
-  margin-bottom: 0.5rem;
-}
-.platform-method {
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+/* Method tag on platform cards */
+.method-tag {
+  display: inline-block;
+  padding: 0.18rem 0.55rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
-  padding: 0.15rem 0.55rem;
   border-radius: 999px;
-  background: var(--bg-soft);
-  color: var(--fg-muted);
-  border: 1px solid var(--border);
+  border: 1px solid currentColor;
+  vertical-align: middle;
 }
-.platform-card pre {
+.method-tag-oauth  { color: #5c93db; }
+.method-tag-dcr    { color: #e57000; }
+.method-tag-bearer { color: var(--fg-muted); }
+
+.card pre {
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 0.55rem 0.75rem;
+  padding: 0.6rem 0.8rem;
   overflow-x: auto;
   font-size: 0.85rem;
 }
-.platform-card pre code { background: none; padding: 0; }
+.card pre code { background: none; padding: 0; }
 .token-endpoint code {
   flex: 1;
   font-family: var(--font-mono);
