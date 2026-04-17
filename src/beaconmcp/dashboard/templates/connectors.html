@@ -1,20 +1,22 @@
 {% extends "base.html" %}
-{% block title %}ChatGPT connector · BeaconMCP{% endblock %}
+{% block title %}OAuth connectors · BeaconMCP{% endblock %}
 {% block body_class %}tokens-page{% endblock %}
 {% block body %}
 <div class="tokens-wrap">
   <header class="tokens-header">
     <a href="/app/tokens" class="back-link">
       <svg width="16" height="16" aria-hidden="true"><use href="#i-chev-r" style="transform: rotate(180deg); transform-origin: center"/></svg>
-      Back to tokens
+      Back to API access
     </a>
     <div>
-      <h1>ChatGPT connector</h1>
+      <h1>OAuth connectors</h1>
       <p class="muted">
-        Signed in as <strong>{{ client_name }}</strong>. ChatGPT needs OAuth
-        Dynamic Client Registration; mint a one-off URL below, paste it into
-        ChatGPT's <em>Add connector</em> dialog, and complete the 2FA prompt
-        in-app. Each URL is single-use and expires after {{ slug_ttl_minutes }} min.
+        Signed in as <strong>{{ client_name }}</strong>. Clients that use
+        OAuth Dynamic Client Registration (RFC 7591) — ChatGPT, OpenCode,
+        and similar — can't accept a pre-provisioned <code>client_id</code>
+        or a bearer header. Mint a single-use bootstrap URL here, paste it
+        into the client, and complete the 2FA prompt in-app. Each URL is
+        single-use and expires after {{ slug_ttl_minutes }} min.
       </p>
     </div>
   </header>
@@ -23,8 +25,10 @@
   <section class="tokens-section token-just-created">
     <h2>Connector URL ready</h2>
     <p>
-      Paste this URL in ChatGPT (Settings → Connectors → Add custom). It can
-      be used once and dies in {{ slug_ttl_minutes }} min.
+      Paste this URL in your OAuth-DCR client (ChatGPT: <em>Settings →
+      Connectors → Add custom</em>; OpenCode: <code>opencode.json</code>
+      with <code>"oauth": true</code>). Single-use, dies in
+      {{ slug_ttl_minutes }} min.
     </p>
     <div class="token-value-wrap">
       <code class="token-value">{{ just_created.url }}</code>
@@ -46,7 +50,7 @@
       <label>
         <span>Label (shown in your list of active connectors)</span>
         <input type="text" name="label" required maxlength="60"
-               placeholder="ChatGPT iPhone, ChatGPT macOS…"
+               placeholder="ChatGPT iPhone, OpenCode laptop…"
                value="{{ form_label or '' }}"
                {% if locked %}disabled{% endif %}>
       </label>
@@ -115,7 +119,7 @@
       {% endfor %}
     </ul>
     {% else %}
-    <p class="muted">No active ChatGPT connectors.</p>
+    <p class="muted">No active OAuth connectors.</p>
     {% endif %}
   </section>
 </div>

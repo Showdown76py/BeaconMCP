@@ -97,6 +97,7 @@
             </div>
             <div class="card-logos">
               <span class="logo-pill">ChatGPT</span>
+              <span class="logo-pill">OpenCode</span>
             </div>
           </header>
           <p>
@@ -105,7 +106,7 @@
             a leaked client can't authorize anything without your phone.
           </p>
           <a href="/app/connectors" class="btn-primary-link">
-            Open ChatGPT connectors
+            Open OAuth connectors
             <svg width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
           </a>
         </article>
@@ -125,7 +126,6 @@
               <span class="logo-pill">Mistral</span>
               <span class="logo-pill">VS Code</span>
               <span class="logo-pill">Cursor</span>
-              <span class="logo-pill">OpenCode</span>
               <span class="logo-pill logo-pill-plus">+ REST</span>
             </div>
           </header>
@@ -432,30 +432,17 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
           <header class="card-head">
             <div class="card-title">
               <h2>OpenCode</h2>
-              <span class="method-tag method-tag-bearer">Bearer or OAuth DCR</span>
+              <span class="method-tag method-tag-dcr">OAuth + DCR</span>
             </div>
           </header>
-          <p>Add the server to <code>opencode.json</code> (or <code>~/.config/opencode/opencode.json</code>):</p>
-<pre><code>{
-  "mcp": {
-    "beaconmcp": {
-      "type": "remote",
-      "url": "{{ mcp_url }}",
-      "enabled": true,
-      "headers": {
-        "Authorization": "Bearer &lt;token&gt;"
-      }
-    }
-  }
-}</code></pre>
-          {% if dcr_enabled %}
           <p>
-            <strong>OAuth alternative:</strong> OpenCode implements full
-            OAuth with Dynamic Client Registration. You can skip the bearer
-            by pointing it at a slug URL instead — it will auto-register
-            and prompt for your TOTP on first use.
+            OpenCode natively handles OAuth with Dynamic Client Registration.
+            Point it at a connector URL minted from the dashboard and it
+            auto-registers + prompts for your TOTP the first time.
           </p>
-<pre><code>{
+          {% if dcr_enabled %}
+<pre><code>// opencode.json (or ~/.config/opencode/opencode.json)
+{
   "mcp": {
     "beaconmcp": {
       "type": "remote",
@@ -465,10 +452,19 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
     }
   }
 }</code></pre>
-          <p class="muted small">
-            Mint the slug from <a href="/app/connectors">the ChatGPT
-            connectors page</a> — same flow, different client. Tokens land
-            in <code>~/.local/share/opencode/mcp-auth.json</code>.
+          <a href="/app/connectors" class="btn-primary-link">
+            Mint a connector URL
+            <svg width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
+          </a>
+          <p class="muted small" style="margin-top:0.75rem">
+            Auth tokens land in <code>~/.local/share/opencode/mcp-auth.json</code>.
+            Connector URLs are single-use and expire in 15 min — mint a
+            fresh one per install.
+          </p>
+          {% else %}
+          <p class="muted">
+            Enable <code>server.allow_dynamic_registration: true</code> in
+            <code>beaconmcp.yaml</code> and restart the server to use OpenCode.
           </p>
           {% endif %}
         </article>

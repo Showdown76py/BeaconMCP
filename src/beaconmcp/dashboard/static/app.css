@@ -1453,11 +1453,21 @@ a.sidebar-link { cursor: pointer; }
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
-/* Hide inline radios used by sub-tabs */
-.tab-panel > input[type=radio] {
-  position: absolute;
-  opacity: 0;
-  pointer-events: none;
+/* Hide inline radios used by every tab layer (outer, inner, sub). The
+   visually-hidden pattern keeps them focusable for keyboard users but
+   invisible; prior version relied on opacity:0 alone which left some
+   browsers rendering the native control outline. */
+.views input[type=radio] {
+  position: absolute !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  clip: rect(0 0 0 0) !important;
+  overflow: hidden !important;
 }
 
 /* Card layout shared by method and platform panels */
