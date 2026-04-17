@@ -260,7 +260,7 @@ def _run_http(mcp, host: str, port: int):
         # protects the /mcp resource. We act as our own authorization server.
         issuer = _issuer(request)
         return JSONResponse({
-            "resource": issuer,
+            "resource": f"{issuer}/mcp",
             "authorization_servers": [issuer],
             "bearer_methods_supported": ["header"],
         })
