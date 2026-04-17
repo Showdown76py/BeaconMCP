@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}2FA code · BeaconMCP{% endblock %}
+{% block body_class %}centered-page{% endblock %}
+{% block body %}
+<div class="auth-card">
+  <h1>BeaconMCP</h1>
+  <p class="muted">Session active for <strong>{{ client_name }}</strong></p>
+  <p class="muted small">The MCP token expired. Enter the 2FA code to renew it.</p>
+
+  {% if banner %}
+    <div class="banner banner-{{ banner_kind|default('error') }}">{{ banner }}</div>
+  {% endif %}
+
+  <form method="POST" action="/app/refresh">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+
+    <label>
+      <span>2FA code</span>
+      <input type="text" name="totp" inputmode="numeric"
+             pattern="\d{6}" maxlength="6"
+             autocomplete="one-time-code" required autofocus
+             placeholder="000000" {% if locked %}disabled{% endif %}>
+    </label>
+
+    <button type="submit" {% if locked %}disabled{% endif %}>Renew</button>
+  </form>
+
+  <form method="POST" action="/app/logout" class="secondary-action">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="link">Sign out completely</button>
+  </form>
+</div>
+{% endblock %}

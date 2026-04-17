@@ -1,0 +1,15 @@
+[Unit]
+Description=BeaconMCP - Proxmox MCP Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/beaconmcp
+EnvironmentFile=/opt/beaconmcp/.env
+ExecStart=/opt/beaconmcp/.venv/bin/python -m beaconmcp serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,38 +1,35 @@
-# Dépannage
+# Troubleshooting
 
-## Erreurs courantes
+## Common errors
 
-| Erreur | Cause | Solution |
-|--------|-------|----------|
-| `PVE1_HOST ... required` | `.env` non chargé | Vérifier `/opt/tarkamcp/.env` |
-| `Node 'pveX' is unreachable` | API Proxmox down | `curl -sk https://pve1:8006/api2/json/version` |
-| `QEMU Guest Agent may not be running` | Agent non installé | Voir [README#installer-le-qemu-guest-agent](../README.md#installer-le-qemu-guest-agent) |
-| `iLO ... unreachable` | pve1 down ou iLO injoignable | Vérifier pve1 d'abord |
-| `SSH connection failed` | Auth SSH désactivée | `grep PasswordAuthentication /etc/ssh/sshd_config` |
-| `invalid_client` | Mauvais Client ID/Secret | `tarkamcp auth list` pour vérifier |
-| `421 Misdirected Request` | Hostname public absent de l'allowlist | Ajouter le domaine à `TARKAMCP_ALLOWED_HOSTS` dans `.env` puis redémarrer |
-| `{"error":"unauthorized"}` sur `/authorize` | Client ID inexistant côté serveur | Créer le client avec `tarkamcp auth create`, puis recoller l'ID dans le connecteur |
-| `invalid_grant` + `missing or invalid totp` | Code 2FA faux, expiré (>30 s), ou déjà utilisé | Générer un nouveau code dans l'app. Vérifier l'horloge du serveur vs celle du téléphone (`timedatectl`). |
-| Page 2FA affiche "Trop de tentatives" | 5 codes faux consécutifs → lockout 5 min | Attendre. Le compteur se réinitialise à la prochaine validation correcte. |
-| Clients silencieusement révoqués après update | Migration 2FA : les anciens clients sans TOTP sont rejetés au démarrage | Regarder `journalctl -u tarkamcp` pour la liste, recréer via `tarkamcp auth create` |
-| Dashboard boucle entre `/app/refresh` et `/app/chat` | Bearer wipe après redémarrage du service | Taper le code TOTP sur la page de refresh pour regénérer un bearer |
-| Clients MCP externes déconnectés après un restart | `TokenStore` en mémoire, wipé au restart | Recréer les tokens dans `/app/tokens` (max 3, expire 24 h) |
-| `event: error ... "code": "remote_mode_disabled"` dans le chat | `TARKAMCP_DASHBOARD_MCP_MODE=remote` dans `.env` | Retirer la ligne du `.env` et redémarrer — seul le mode local est supporté |
-| Chat bloqué sur une card SSH / exec avec deux boutons | Confirmation obligatoire pour `ssh_exec_command*` et `proxmox_exec_command*` | Cliquer **Autoriser** ou **Refuser**. Timeout à 5 min sinon auto-reject |
-| Tokens API : "Limite atteinte : maximum 3 tokens" | 3 tokens nommés déjà actifs pour ce client | Révoquer un token existant dans la liste avant d'en créer un nouveau |
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `ERROR: No configuration file found.` | No `beaconmcp.yaml` in the working directory and `BEACONMCP_CONFIG` unset | Copy `beaconmcp.yaml.example`, fill in the topology, point `BEACONMCP_CONFIG` at it or place it at `/opt/beaconmcp/beaconmcp.yaml`. |
+| `environment variable ${X} referenced at '...' is not set` | YAML references a secret that is not in the environment | Add the variable to `.env` (or export it in the systemd unit), then restart. |
+| `Node 'X' is unreachable` | Proxmox API is down on that node | `curl -sk https://<node>:8006/api2/json/version` to confirm. |
+| `QEMU Guest Agent may not be running` | Agent not installed or VM not restarted after enabling the option | `apt install qemu-guest-agent && systemctl enable --now qemu-guest-agent`, then reboot the VM. |
+| `Failed to open SSH tunnel to BMC ... via X` | Jump host is down or SSH credentials missing | Confirm the Proxmox node is reachable with `proxmox_list_nodes`; make sure `ssh:` is configured in `beaconmcp.yaml`. |
+| `ipmitool is not installed on this host` | IPMI backend configured but binary missing | Install `ipmitool` on the BeaconMCP host (`apt install ipmitool`, `dnf install ipmitool`, …). |
+| `SSH connection to 'X' failed` | SSH auth disabled or firewall dropping the connection | `grep PasswordAuthentication /etc/ssh/sshd_config` on the target; check firewall rules. |
+| `invalid_client` | Wrong client id or secret | `beaconmcp auth list` to confirm the id, re-check the secret (or revoke + recreate). |
+| `421 Misdirected Request` | Public hostname missing from the DNS-rebinding allowlist | Add the FQDN under `server.allowed_hosts` in `beaconmcp.yaml` (or `BEACONMCP_ALLOWED_HOSTS` in `.env`), then restart. |
+| `{"error":"unauthorized"}` on `/authorize` | Client id not registered server-side | Create the client with `beaconmcp auth create`, then paste the returned id into the connector. |
+| `invalid_grant` with `missing or invalid totp` | 2FA code wrong, expired (>30 s), or already used | Generate a fresh code. Compare the server clock against the phone (`timedatectl` vs. authenticator). |
+| `Too many attempts` on the 2FA page | 5 consecutive failed TOTP codes triggered a 5-minute lockout | Wait. The counter resets on the next valid code. |
+| Clients silently rejected after upgrade | 2FA migration: clients without a TOTP secret are refused at startup | Inspect `journalctl -u beaconmcp` for the list, recreate them with `beaconmcp auth create`. |
+| Dashboard loops between `/app/refresh` and `/app/chat` | Bearer wiped by a service restart while the session cookie is still valid | Enter the TOTP code on the refresh page to mint a new bearer. |
+| External MCP clients disconnected after a restart | `TokenStore` is in-memory and wiped on restart | Recreate tokens from `/app/tokens` (max 3, 24 h expiry). |
+| `remote_mode_disabled` error event in the chat | `BEACONMCP_DASHBOARD_MCP_MODE=remote` is set | Remove the variable; only `local` mode is supported. |
+| Chat blocked on an SSH/exec card with two buttons | Mandatory confirmation for `ssh_exec_command*` / `proxmox_exec_command*` | Click **Approve** or **Reject**. The card auto-rejects after 5 minutes of inactivity. |
+| `Limit reached: max 3 tokens` on the tokens page | 3 named tokens already active for this client | Revoke one before creating a new one. |
+| `Unknown BMC type 'X'` at startup | `bmc.devices[].type` set to an unsupported value | Valid types: `hp_ilo`, `ipmi`, `idrac` (stub), `supermicro` (stub). |
 
-## Exemples d'utilisation
+## Usage patterns
 
-> **"pve2 ne répond plus, qu'est-ce qui se passe ?"**
+> **"pve2 is not responding, what is happening?"**
 >
-> L'IA va : `proxmox_list_nodes` → voit pve2 offline → `ilo_power_status` → vérifie si allumé → `ilo_health_status` → checker le hardware → proposer un diagnostic
+> The model runs: `proxmox_list_nodes` → sees pve2 offline → `bmc_list_devices` → `bmc_power_status` on the matching device → confirms power state → `bmc_health_status` → surfaces hardware anomalies → proposes a diagnosis.
 
-> **"Mets à jour les paquets sur tous les conteneurs"**
+> **"Upgrade packages on every container."**
 >
-> L'API Proxmox n'expose pas d'endpoint `exec` pour les LXC. L'IA utilise
-> donc `proxmox_list_vms` → liste les CTs → `ssh_exec_command_async` sur le
-> nœud hôte avec `pct exec <vmid> -- sh -c 'apt update && apt upgrade -y'`
-> pour chacun → poll les résultats. Chaque appel `ssh_exec_command*` et
-> `proxmox_exec_command*` **exige une approbation manuelle** dans le chat
-> intégré ; les clients MCP externes (Claude, ChatGPT, Gemini) doivent faire
-> pareil si l'auto-approve n'est pas désactivé.
+> The Proxmox API does not expose an `exec` endpoint for LXCs, so the model falls back to `proxmox_list_vms` → filters containers → `ssh_exec_command_async` on the host node with `pct exec <vmid> -- sh -c 'apt update && apt upgrade -y'` per container → polls the results. Every `ssh_exec_command*` and `proxmox_exec_command*` call requires manual approval in the integrated chat; external MCP clients must enable equivalent per-call approval.

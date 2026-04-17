@@ -1,5 +1,5 @@
 """
-TarkaMCP -- Integration test suite
+BeaconMCP -- Integration test suite
 ===================================
 
 Run against real infrastructure once services are back online.
@@ -12,7 +12,7 @@ Usage:
     # Run a specific section
     python tests/test_integration.py --section proxmox
     python tests/test_integration.py --section ssh
-    python tests/test_integration.py --section ilo
+    python tests/test_integration.py --section bmc
 
     # Run with a test VM (for destructive tests: start/stop/clone)
     python tests/test_integration.py --test-vmid 9999
@@ -99,7 +99,7 @@ class TestRunner:
 
 def get_tools() -> dict:
     """Import and return all registered MCP tools."""
-    from tarkamcp.server import mcp
+    from beaconmcp.server import mcp
     return mcp._tool_manager._tools
 
 
@@ -299,11 +299,11 @@ def test_proxmox_exec(runner: TestRunner, tools: dict) -> None:
 
     # T9: Sync exec -- simple command
     result = call_tool(tools, "proxmox_exec_command", node="pve1", vmid=vmid,
-                       command="echo TarkaMCP-test", timeout=30)
+                       command="echo BeaconMCP-test", timeout=30)
     runner.record(
         f"proxmox_exec_command 'echo' in VM {vmid}",
-        isinstance(result, dict) and "TarkaMCP-test" in result.get("stdout", ""),
-        f"Expected stdout containing 'TarkaMCP-test', got: {result}",
+        isinstance(result, dict) and "BeaconMCP-test" in result.get("stdout", ""),
+        f"Expected stdout containing 'BeaconMCP-test', got: {result}",
         result,
     )
 
@@ -478,7 +478,7 @@ def test_proxmox_vm_lifecycle(runner: TestRunner, tools: dict, test_vmid: int | 
 
     # T18: Modify config (change description, harmless)
     result = call_tool(tools, "proxmox_vm_config", node="pve1", vmid=test_vmid,
-                       updates={"description": "TarkaMCP test VM - safe to delete"})
+                       updates={"description": "BeaconMCP test VM - safe to delete"})
     runner.record(
         f"proxmox_vm_config (update description) VMID {test_vmid}",
         isinstance(result, dict) and ("updates_applied" in result or "error" in result),
@@ -489,7 +489,7 @@ def test_proxmox_vm_lifecycle(runner: TestRunner, tools: dict, test_vmid: int | 
     # T19: Clone (to VMID test_vmid+1000)
     clone_id = test_vmid + 1000
     result = call_tool(tools, "proxmox_vm_clone", node="pve1", vmid=test_vmid,
-                       newid=clone_id, name="tarkamcp-test-clone")
+                       newid=clone_id, name="beaconmcp-test-clone")
     runner.record(
         f"proxmox_vm_clone {test_vmid} -> {clone_id}",
         isinstance(result, dict) and ("upid" in result or "error" in result),
@@ -504,7 +504,7 @@ def test_proxmox_vm_lifecycle(runner: TestRunner, tools: dict, test_vmid: int | 
         # Stop clone if running, then delete
         call_tool(tools, "proxmox_vm_stop", node="pve1", vmid=clone_id, force=True)
         time.sleep(5)
-        from tarkamcp.server import proxmox_client
+        from beaconmcp.server import proxmox_client
         proxmox_client.delete("pve1", f"nodes/pve1/{vm_type}/{clone_id}")
         print(f"  Cleaned up clone VMID {clone_id}")
 
@@ -558,7 +558,7 @@ def test_ssh(runner: TestRunner, tools: dict) -> None:
     )
 
     # T24: SSH host resolution -- VMID format
-    from tarkamcp.server import ssh_client
+    from beaconmcp.server import ssh_client
     resolved = ssh_client.resolve_host("101")
     runner.record(
         "SSH host resolution: VMID '101' -> 192.168.1.101",
@@ -610,46 +610,46 @@ def test_ssh(runner: TestRunner, tools: dict) -> None:
     )
 
 
-def test_ilo(runner: TestRunner, tools: dict) -> None:
-    runner.section("iLO Module")
+def test_bmc(runner: TestRunner, tools: dict) -> None:
+    runner.section("BMC Module")
 
-    if "ilo_server_info" not in tools:
+    if "bmc_server_info" not in tools:
         runner.record(
-            "iLO tests (skipped: iLO not configured)",
+            "BMC tests (skipped: no BMC device configured)",
             True,
-            "Set ILO_HOST, ILO_USER, ILO_PASSWORD in .env to enable iLO tests",
+            "Add at least one entry to bmc.devices[] in beaconmcp.yaml to enable BMC tests.",
         )
         return
 
     # T27: Server info
-    result = call_tool(tools, "ilo_server_info")
+    result = call_tool(tools, "bmc_server_info")
     runner.record(
-        "ilo_server_info returns server details",
-        isinstance(result, dict) and ("product_name" in result or "error" in result),
+        "bmc_server_info returns server details",
+        isinstance(result, dict) and ("product_name" in result or "fru" in result or "error" in result),
         f"Result: {json.dumps(result, default=str)[:200]}",
         result,
     )
     if isinstance(result, dict) and "error" in result:
         runner.record(
-            "iLO tests aborted: cannot reach iLO",
+            "BMC tests aborted: cannot reach BMC",
             False,
             result["error"],
         )
         return
 
     # T28: Health status
-    result = call_tool(tools, "ilo_health_status")
+    result = call_tool(tools, "bmc_health_status")
     runner.record(
-        "ilo_health_status returns health data",
+        "bmc_health_status returns health data",
         isinstance(result, dict) and "error" not in result,
         f"Result type: {type(result).__name__}, keys: {list(result.keys())[:5] if isinstance(result, dict) else 'N/A'}",
         result if isinstance(result, dict) and "error" in result else None,
     )
 
     # T29: Power status
-    result = call_tool(tools, "ilo_power_status")
+    result = call_tool(tools, "bmc_power_status")
     runner.record(
-        "ilo_power_status returns ON/OFF",
+        "bmc_power_status returns ON/OFF",
         isinstance(result, dict) and "power_status" in result,
         f"Result: {result}",
         result,
@@ -657,32 +657,32 @@ def test_ilo(runner: TestRunner, tools: dict) -> None:
     if isinstance(result, dict) and "power_status" in result:
         runner.record(
             "Server power is ON",
-            result["power_status"].upper() == "ON",
+            str(result["power_status"]).upper() == "ON",
             f"power_status = {result['power_status']}",
         )
 
     # T30: Event log
-    result = call_tool(tools, "ilo_get_event_log", limit=10)
+    result = call_tool(tools, "bmc_get_event_log", limit=10)
     runner.record(
-        "ilo_get_event_log returns events",
+        "bmc_get_event_log returns events",
         isinstance(result, dict) and ("events" in result or "error" in result),
         f"Total events: {result.get('total', '?')}",
         result if isinstance(result, dict) and "error" in result else None,
     )
 
-    # NOTE: We do NOT test power_on/power_off/power_reset in automated tests
-    # as these are destructive operations. Test them manually.
+    # NOTE: power_on / power_off / power_reset are destructive; skipped in
+    # automated runs. Test them manually if needed.
     runner.record(
-        "ilo_power_on/off/reset (not tested: destructive)",
+        "bmc_power_on/off/reset (not tested: destructive)",
         True,
-        "Manual testing required. Use: ilo_power_status to verify state first.",
+        "Manual testing required. Use bmc_power_status to verify state first.",
     )
 
 
 def test_mcp_resources(runner: TestRunner) -> None:
     runner.section("MCP Resources & Prompts")
 
-    from tarkamcp.server import mcp, config
+    from beaconmcp.server import mcp, config
 
     # T31: Infrastructure resource
     resource_fn = None
@@ -692,7 +692,7 @@ def test_mcp_resources(runner: TestRunner) -> None:
             break
 
     runner.record(
-        "tarkamcp://infrastructure resource is registered",
+        "beaconmcp://infrastructure resource is registered",
         resource_fn is not None,
         "Expected a resource matching 'infrastructure'",
     )
@@ -707,8 +707,8 @@ def test_mcp_resources(runner: TestRunner) -> None:
     # T33: Prompt is registered
     prompts = mcp._prompt_manager._prompts
     runner.record(
-        "tarkamcp_context prompt is registered",
-        "tarkamcp_context" in prompts,
+        "beaconmcp_context prompt is registered",
+        "beaconmcp_context" in prompts,
         f"Available prompts: {list(prompts.keys())}",
     )
 
@@ -770,8 +770,8 @@ def test_error_handling(runner: TestRunner, tools: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="TarkaMCP integration tests")
-    parser.add_argument("--section", choices=["proxmox", "ssh", "ilo", "all"], default="all",
+    parser = argparse.ArgumentParser(description="BeaconMCP integration tests")
+    parser.add_argument("--section", choices=["proxmox", "ssh", "bmc", "all"], default="all",
                         help="Which section to test")
     parser.add_argument("--test-vmid", type=int, default=None,
                         help="VMID of a sacrificial test VM for lifecycle tests (start/stop/clone)")
@@ -780,7 +780,7 @@ def main() -> None:
     runner = TestRunner()
     tools = get_tools()
 
-    print(f"\nTarkaMCP Integration Tests")
+    print(f"\nBeaconMCP Integration Tests")
     print(f"Tools registered: {len(tools)}")
     print(f"Section: {args.section}")
     if args.test_vmid:
@@ -799,8 +799,8 @@ def main() -> None:
     if sections in ("ssh", "all"):
         test_ssh(runner, tools)
 
-    if sections in ("ilo", "all"):
-        test_ilo(runner, tools)
+    if sections in ("bmc", "all"):
+        test_bmc(runner, tools)
 
     if sections == "all":
         test_mcp_resources(runner)

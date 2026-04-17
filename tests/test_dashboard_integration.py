@@ -19,15 +19,15 @@ from starlette.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from tarkamcp.dashboard.app import (
+from beaconmcp.dashboard.app import (
     BEARER_TTL_SECONDS,
     DashboardDeps,
     SESSION_COOKIE,
     build_dashboard_routes,
 )
-from tarkamcp.dashboard.csrf import CSRF_COOKIE
-from tarkamcp.dashboard.db import Database
-from tarkamcp.dashboard.session import SessionStore
+from beaconmcp.dashboard.csrf import CSRF_COOKIE
+from beaconmcp.dashboard.db import Database
+from beaconmcp.dashboard.session import SessionStore
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +37,7 @@ from tarkamcp.dashboard.session import SessionStore
 class FakeClientStore:
     def __init__(self):
         self.clients = {
-            "tarkamcp_test": {
+            "beaconmcp_test": {
                 "secret": "sk_test",
                 "name": "Test Client",
                 "totp": "123456",
@@ -85,7 +85,7 @@ class FakeTokenStore:
 
 @pytest.fixture()
 def deps(tmp_path, monkeypatch):
-    monkeypatch.setenv("TARKAMCP_DASHBOARD_DB", str(tmp_path / "dashboard.db"))
+    monkeypatch.setenv("BEACONMCP_DASHBOARD_DB", str(tmp_path / "dashboard.db"))
     db = Database(tmp_path / "dashboard.db")
     session_store = SessionStore(db, key=os.urandom(32))
     failures: dict[str, tuple[int, float]] = {}
@@ -164,7 +164,7 @@ def tokens_only_client(tmp_path):
 def _login_form(csrf_token: str, **overrides) -> dict:
     data = {
         "csrf_token": csrf_token,
-        "client_id": "tarkamcp_test",
+        "client_id": "beaconmcp_test",
         "client_secret": "sk_test",
         "totp": "123456",
         "remember": "on",
@@ -191,7 +191,7 @@ def test_index_redirects_to_login(client):
 def test_login_page_renders(client):
     r = client.get("/app/login")
     assert r.status_code == 200
-    assert "Connexion" in r.text
+    assert "Sign in" in r.text
     assert "Client ID" in r.text
     assert r.cookies.get(CSRF_COOKIE)
 
@@ -200,7 +200,7 @@ def test_login_post_csrf_required(client):
     r = client.post(
         "/app/login",
         data={
-            "client_id": "tarkamcp_test",
+            "client_id": "beaconmcp_test",
             "client_secret": "sk_test",
             "totp": "123456",
         },
@@ -216,7 +216,7 @@ def test_login_post_wrong_credentials(client):
         data=_login_form(token, client_secret="wrong"),
     )
     assert r.status_code == 401
-    assert "Identifiants invalides" in r.text
+    assert "Invalid credentials" in r.text
 
 
 def test_login_post_wrong_totp(client):
@@ -226,7 +226,7 @@ def test_login_post_wrong_totp(client):
         data=_login_form(token, totp="000000"),
     )
     assert r.status_code == 401
-    assert "Code 2FA invalide" in r.text
+    assert "Invalid 2FA code" in r.text
 
 
 def test_login_post_success(client, deps):
@@ -236,9 +236,9 @@ def test_login_post_success(client, deps):
     assert r.headers["location"] == "/app/chat"
     assert r.cookies.get(SESSION_COOKIE)
     # Session persisted
-    sessions = deps.session_store.list_for_client("tarkamcp_test")
+    sessions = deps.session_store.list_for_client("beaconmcp_test")
     assert len(sessions) == 1
-    assert sessions[0].mcp_bearer.startswith("bearer_tarkamcp_test_")
+    assert sessions[0].mcp_bearer.startswith("bearer_beaconmcp_test_")
 
 
 def test_chat_requires_session(client):
@@ -252,13 +252,13 @@ def test_chat_accessible_after_login(client):
     client.post("/app/login", data=_login_form(token))
     r = client.get("/app/chat")
     assert r.status_code == 200
-    assert "tarkamcp_test" in r.text
+    assert "beaconmcp_test" in r.text
 
 
 def test_logout_revokes_bearer(client, deps):
     token = _csrf(client)
     client.post("/app/login", data=_login_form(token))
-    sessions = deps.session_store.list_for_client("tarkamcp_test")
+    sessions = deps.session_store.list_for_client("beaconmcp_test")
     bearer = sessions[0].mcp_bearer
 
     # CSRF cookie is rotated on login, fetch the fresh one.
@@ -267,7 +267,7 @@ def test_logout_revokes_bearer(client, deps):
     assert r.status_code == 303
     assert r.headers["location"] == "/app/login"
     assert bearer in deps.token_store.revoked
-    assert deps.session_store.list_for_client("tarkamcp_test") == []
+    assert deps.session_store.list_for_client("beaconmcp_test") == []
 
 
 def test_refresh_requires_session(client):
@@ -287,7 +287,7 @@ def test_refresh_when_bearer_still_valid_redirects_to_chat(client):
 def test_refresh_when_bearer_expired_renders_form(client, deps):
     token = _csrf(client)
     client.post("/app/login", data=_login_form(token))
-    sessions = deps.session_store.list_for_client("tarkamcp_test")
+    sessions = deps.session_store.list_for_client("beaconmcp_test")
     deps.session_store._db.conn().execute(
         "UPDATE sessions SET mcp_bearer_expires_at = ? WHERE session_id = ?",
         (0, sessions[0].session_id),
@@ -296,13 +296,13 @@ def test_refresh_when_bearer_expired_renders_form(client, deps):
     r = client.get("/app/refresh")
     assert r.status_code == 200
     assert "Test Client" in r.text
-    assert "Code 2FA" in r.text
+    assert "2FA code" in r.text
 
 
 def test_refresh_post_re_issues_bearer(client, deps):
     token = _csrf(client)
     client.post("/app/login", data=_login_form(token))
-    sessions = deps.session_store.list_for_client("tarkamcp_test")
+    sessions = deps.session_store.list_for_client("beaconmcp_test")
     sid = sessions[0].session_id
     old_bearer = sessions[0].mcp_bearer
     deps.session_store._db.conn().execute(
@@ -327,7 +327,7 @@ def test_refresh_post_re_issues_bearer(client, deps):
 def test_refresh_wrong_totp(client, deps):
     token = _csrf(client)
     client.post("/app/login", data=_login_form(token))
-    sessions = deps.session_store.list_for_client("tarkamcp_test")
+    sessions = deps.session_store.list_for_client("beaconmcp_test")
     deps.session_store._db.conn().execute(
         "UPDATE sessions SET mcp_bearer_expires_at = ? WHERE session_id = ?",
         (0, sessions[0].session_id),
@@ -339,7 +339,7 @@ def test_refresh_wrong_totp(client, deps):
         data={"csrf_token": new_token, "totp": "999999"},
     )
     assert r.status_code == 401
-    assert "Code 2FA invalide" in r.text
+    assert "Invalid 2FA code" in r.text
 
 
 def test_login_after_5_failed_totp_locks_out(client, deps):
@@ -350,7 +350,7 @@ def test_login_after_5_failed_totp_locks_out(client, deps):
 
     r = client.post("/app/login", data=_login_form(token))
     assert r.status_code == 429
-    assert "Trop de tentatives" in r.text
+    assert "Too many attempts" in r.text
 
 
 def test_logout_csrf_required(client):
@@ -369,7 +369,7 @@ def test_existing_session_skips_login_page(client):
 def test_existing_session_with_stale_bearer_redirects_to_refresh(client, deps):
     token = _csrf(client)
     client.post("/app/login", data=_login_form(token))
-    sessions = deps.session_store.list_for_client("tarkamcp_test")
+    sessions = deps.session_store.list_for_client("beaconmcp_test")
     deps.session_store._db.conn().execute(
         "UPDATE sessions SET mcp_bearer_expires_at = ? WHERE session_id = ?",
         (0, sessions[0].session_id),
@@ -401,7 +401,7 @@ def test_tokens_only_login_lands_on_tokens(tokens_only_client):
         "/app/login",
         data={
             "csrf_token": token,
-            "client_id": "tarkamcp_test",
+            "client_id": "beaconmcp_test",
             "client_secret": "sk_test",
             "totp": "123456",
             "remember": "on",
@@ -418,7 +418,7 @@ def test_tokens_only_chat_redirects_to_tokens(tokens_only_client):
         "/app/login",
         data={
             "csrf_token": token,
-            "client_id": "tarkamcp_test",
+            "client_id": "beaconmcp_test",
             "client_secret": "sk_test",
             "totp": "123456",
             "remember": "on",
@@ -436,7 +436,7 @@ def test_tokens_only_login_page_redirects_when_authenticated(tokens_only_client)
         "/app/login",
         data={
             "csrf_token": token,
-            "client_id": "tarkamcp_test",
+            "client_id": "beaconmcp_test",
             "client_secret": "sk_test",
             "totp": "123456",
             "remember": "on",

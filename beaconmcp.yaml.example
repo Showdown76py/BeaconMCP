@@ -1,0 +1,103 @@
+# BeaconMCP configuration file.
+#
+# Path resolution: --config flag > BEACONMCP_CONFIG env > ./beaconmcp.yaml
+#                  > /etc/beaconmcp/config.yaml.
+#
+# Secrets use ${VAR_NAME} references resolved against the process environment
+# at load time. Put them in a .env file next to this one (loaded by the CLI)
+# or export them through your init system. Missing references fail fast with
+# the offending YAML path.
+
+version: 1
+
+server:
+  host: 0.0.0.0
+  port: 8420
+  # Host header allowlist for DNS-rebinding protection. Include the public
+  # FQDN behind the reverse proxy; 127.0.0.1 and localhost are already safe.
+  allowed_hosts:
+    - mcp.example.com
+    - "127.0.0.1:*"
+    - "localhost:*"
+    - "[::1]:*"
+  # CORS origin allowlist.
+  allowed_origins:
+    - https://claude.ai
+    - https://chat.openai.com
+    - https://gemini.google.com
+  clients_file: /opt/beaconmcp/clients.json
+  session_key: ${BEACONMCP_SESSION_KEY}   # optional, generated if omitted
+
+proxmox:
+  verify_ssl: false
+  # One entry per Proxmox node. N nodes supported; the first one is not special.
+  # Each node needs an API token (Datacenter > Permissions > API Tokens).
+  #
+  # Recommended deployment: install BeaconMCP directly on one of your
+  # Proxmox nodes (typically pve1). That node is then addressable as
+  # "localhost" — the API on :8006 and SSH on :22 are both reachable
+  # without traversing a reverse proxy or tunnel, which also lets the
+  # BMC-over-SSH-tunnel feature work out of the box. Remote nodes use
+  # their public FQDN (with a reverse-proxy port if applicable).
+  nodes:
+    - name: pve1
+      host: localhost                          # node BeaconMCP runs on
+      token_id: "root@pam!beaconmcp"           # quotes required: '!' and '@' are YAML-reserved
+      token_secret: ${PVE1_TOKEN_SECRET}
+
+    - name: pve2
+      host: pve2.example.com:443               # reachable remote node (reverse-proxied API)
+      token_id: "root@pam!beaconmcp"
+      token_secret: ${PVE2_TOKEN_SECRET}
+
+ssh:
+  user: root
+  password: ${SSH_PASSWORD}
+  # Template used to resolve bare numeric IDs (VMIDs) to IP addresses in
+  # ssh_* tools, e.g. "192.168.1.{id}". Omit or set to null to disable the
+  # numeric-ID fallback — callers must then supply a hostname or IP directly.
+  vmid_to_ip: "192.168.1.{id}"
+
+bmc:
+  # N BMC (Baseboard Management Controller) devices, typed by backend:
+  #   hp_ilo      -> HP iLO 4/5 (via python-hpilo, optionally SSH-tunneled)
+  #   ipmi        -> generic IPMI 2.0 via ipmitool (requires ipmitool installed)
+  #   idrac       -> Dell iDRAC (stub; TODO)
+  #   supermicro  -> Supermicro BMC (stub; TODO)
+  devices:
+    - id: rack1-ilo
+      type: hp_ilo
+      host: 192.168.10.10
+      user: Administrator
+      password: ${RACK1_ILO_PASSWORD}
+      jump_host: pve1           # optional; references proxmox.nodes[].name
+
+    - id: rack2-bmc
+      type: ipmi
+      host: 192.168.10.11
+      user: admin
+      password: ${RACK2_IPMI_PASSWORD}
+      # no jump_host = direct connection
+
+features:
+  dashboard:
+    enabled: true
+    gemini_api_key: ${GEMINI_API_KEY}     # empty disables the chat panel
+    limits:
+      per_5h_usd: 2.0
+      per_week_usd: 10.0
+    public_url: https://mcp.example.com   # used to generate MCP URLs in the UI
+    mcp_mode: local                       # "local" (default) or "remote"
+  ssh:
+    enabled: true
+
+# Free-form infrastructure context exposed as an MCP resource. Edit freely:
+# the LLM reads this to understand your topology, naming conventions, and
+# operational notes.
+infrastructure:
+  conventions:
+    vmid_to_ip: "VMIDs map 1:1 to 192.168.1.{VMID}"
+    naming: "VMs are prefixed by role (web-101, db-102)"
+  notes:
+    - "API tokens must be created on each Proxmox node before use."
+    - "BMC devices are reachable on a private management VLAN."

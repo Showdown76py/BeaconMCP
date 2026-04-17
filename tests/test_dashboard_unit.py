@@ -1,4 +1,4 @@
-"""Unit tests for the TarkaMCP dashboard module.
+"""Unit tests for the BeaconMCP dashboard module.
 
 Run with::
 
@@ -16,8 +16,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from tarkamcp.dashboard.db import Database
-from tarkamcp.dashboard.session import (
+from beaconmcp.dashboard.db import Database
+from beaconmcp.dashboard.session import (
     SESSION_TTL_SECONDS,
     SessionStore,
     load_session_key,
@@ -40,13 +40,13 @@ def store(db):
 # ---------------------------------------------------------------------------
 
 def test_load_session_key_missing(monkeypatch):
-    monkeypatch.delenv("TARKAMCP_SESSION_KEY", raising=False)
-    with pytest.raises(RuntimeError, match="TARKAMCP_SESSION_KEY"):
+    monkeypatch.delenv("BEACONMCP_SESSION_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="BEACONMCP_SESSION_KEY"):
         load_session_key()
 
 
 def test_load_session_key_invalid_base64(monkeypatch):
-    monkeypatch.setenv("TARKAMCP_SESSION_KEY", "not!!!base64@@@")
+    monkeypatch.setenv("BEACONMCP_SESSION_KEY", "not!!!base64@@@")
     with pytest.raises(RuntimeError, match="not valid base64"):
         load_session_key()
 
@@ -54,7 +54,7 @@ def test_load_session_key_invalid_base64(monkeypatch):
 def test_load_session_key_wrong_length(monkeypatch):
     import base64
 
-    monkeypatch.setenv("TARKAMCP_SESSION_KEY", base64.b64encode(b"too short").decode())
+    monkeypatch.setenv("BEACONMCP_SESSION_KEY", base64.b64encode(b"too short").decode())
     with pytest.raises(RuntimeError, match="32 bytes"):
         load_session_key()
 
@@ -63,7 +63,7 @@ def test_load_session_key_ok(monkeypatch):
     import base64
 
     raw = os.urandom(32)
-    monkeypatch.setenv("TARKAMCP_SESSION_KEY", base64.b64encode(raw).decode())
+    monkeypatch.setenv("BEACONMCP_SESSION_KEY", base64.b64encode(raw).decode())
     assert load_session_key() == raw
 
 
@@ -73,14 +73,14 @@ def test_load_session_key_ok(monkeypatch):
 
 def test_create_and_load(store):
     s = store.create(
-        client_id="tarkamcp_abc",
+        client_id="beaconmcp_abc",
         client_secret="sk_supersecret",
         mcp_bearer="bearer_xyz",
         bearer_ttl_seconds=3600,
         user_agent="pytest",
     )
     assert s.session_id
-    assert s.client_id == "tarkamcp_abc"
+    assert s.client_id == "beaconmcp_abc"
     assert s.mcp_bearer == "bearer_xyz"
     assert s.bearer_valid()
     assert not s.is_expired()
@@ -88,7 +88,7 @@ def test_create_and_load(store):
     loaded = store.load(s.session_id)
     assert loaded is not None
     assert loaded.session_id == s.session_id
-    assert loaded.client_id == "tarkamcp_abc"
+    assert loaded.client_id == "beaconmcp_abc"
 
 
 def test_load_unknown_returns_none(store):
@@ -221,14 +221,14 @@ def test_cleanup_expired(store):
 
 
 def test_unwrap_exception_single():
-    from tarkamcp.dashboard.chat import _unwrap_exception
+    from beaconmcp.dashboard.chat import _unwrap_exception
 
     err = ValueError("boom")
     assert _unwrap_exception(err) is err
 
 
 def test_unwrap_exception_simple_group():
-    from tarkamcp.dashboard.chat import _unwrap_exception
+    from beaconmcp.dashboard.chat import _unwrap_exception
 
     inner = RuntimeError("real cause")
     group = ExceptionGroup("task group", [inner])
@@ -236,7 +236,7 @@ def test_unwrap_exception_simple_group():
 
 
 def test_unwrap_exception_nested_groups():
-    from tarkamcp.dashboard.chat import _unwrap_exception
+    from beaconmcp.dashboard.chat import _unwrap_exception
 
     inner = ConnectionError("network")
     nested = ExceptionGroup("inner", [inner])
@@ -245,7 +245,7 @@ def test_unwrap_exception_nested_groups():
 
 
 def test_unwrap_exception_prefers_leaf_over_group():
-    from tarkamcp.dashboard.chat import _unwrap_exception
+    from beaconmcp.dashboard.chat import _unwrap_exception
 
     leaf = TypeError("t")
     sibling_group = ExceptionGroup("sibling", [RuntimeError("deep")])
@@ -254,7 +254,7 @@ def test_unwrap_exception_prefers_leaf_over_group():
 
 
 def test_classify_error_preview_model_permission_denied():
-    from tarkamcp.dashboard.chat import _classify_error
+    from beaconmcp.dashboard.chat import _classify_error
 
     err = Exception(
         "403 PERMISSION_DENIED. The caller does not have permission"
@@ -266,7 +266,7 @@ def test_classify_error_preview_model_permission_denied():
 
 
 def test_classify_error_stable_model_permission_denied():
-    from tarkamcp.dashboard.chat import _classify_error
+    from beaconmcp.dashboard.chat import _classify_error
 
     err = Exception("403 PERMISSION_DENIED. caller issue")
     code, msg = _classify_error(err, "gemini-2.5-flash")
@@ -275,7 +275,7 @@ def test_classify_error_stable_model_permission_denied():
 
 
 def test_classify_error_model_not_found():
-    from tarkamcp.dashboard.chat import _classify_error
+    from beaconmcp.dashboard.chat import _classify_error
 
     err = Exception("404 NOT_FOUND. models/foo is not found")
     code, msg = _classify_error(err, "foo")
@@ -283,7 +283,7 @@ def test_classify_error_model_not_found():
 
 
 def test_classify_error_rate_limit():
-    from tarkamcp.dashboard.chat import _classify_error
+    from beaconmcp.dashboard.chat import _classify_error
 
     err = Exception("429 RESOURCE_EXHAUSTED. Quota exceeded")
     code, _msg = _classify_error(err, "gemini-2.5-flash")
@@ -291,7 +291,7 @@ def test_classify_error_rate_limit():
 
 
 def test_classify_error_generic():
-    from tarkamcp.dashboard.chat import _classify_error
+    from beaconmcp.dashboard.chat import _classify_error
 
     err = RuntimeError("boom")
     code, msg = _classify_error(err, "gemini-2.5-flash")
@@ -300,7 +300,7 @@ def test_classify_error_generic():
 
 
 def test_classify_error_upstream_internal():
-    from tarkamcp.dashboard.chat import _classify_error
+    from beaconmcp.dashboard.chat import _classify_error
 
     err = Exception(
         "500 INTERNAL. {'error': {'code': 500, 'message': 'Internal error encountered.', 'status': 'INTERNAL'}}"
@@ -312,7 +312,7 @@ def test_classify_error_upstream_internal():
 
 
 def test_classify_error_upstream_unavailable():
-    from tarkamcp.dashboard.chat import _classify_error
+    from beaconmcp.dashboard.chat import _classify_error
 
     err = Exception("503 UNAVAILABLE. The service is temporarily unavailable")
     code, _msg = _classify_error(err, "gemini-2.5-flash")
@@ -320,7 +320,7 @@ def test_classify_error_upstream_unavailable():
 
 
 def test_classify_error_upstream_timeout():
-    from tarkamcp.dashboard.chat import _classify_error
+    from beaconmcp.dashboard.chat import _classify_error
 
     err = Exception("504 DEADLINE_EXCEEDED")
     code, _msg = _classify_error(err, "gemini-2.5-flash")
@@ -328,7 +328,7 @@ def test_classify_error_upstream_timeout():
 
 
 def test_token_store_named_issue_and_list():
-    from tarkamcp.auth import TokenStore
+    from beaconmcp.auth import TokenStore
 
     ts = TokenStore()
     t1, _ = ts.issue("cid", name="Gemini Web")
@@ -347,7 +347,7 @@ def test_token_store_named_issue_and_list():
 
 
 def test_token_store_cap_is_three():
-    from tarkamcp.auth import TokenCapExceeded, TokenStore
+    from beaconmcp.auth import TokenCapExceeded, TokenStore
 
     ts = TokenStore()
     for i in range(3):
@@ -359,7 +359,7 @@ def test_token_store_cap_is_three():
 
 
 def test_token_store_cap_frees_after_revoke():
-    from tarkamcp.auth import TokenStore
+    from beaconmcp.auth import TokenStore
 
     ts = TokenStore()
     t1, _ = ts.issue("cid", name="a")
@@ -375,7 +375,7 @@ def test_token_store_cap_frees_after_revoke():
 
 
 def test_token_store_revoke_named_by_prefix_scoped_to_client():
-    from tarkamcp.auth import TokenStore
+    from beaconmcp.auth import TokenStore
 
     ts = TokenStore()
     t_mine, _ = ts.issue("me", name="Mine")
@@ -389,7 +389,7 @@ def test_token_store_revoke_named_by_prefix_scoped_to_client():
 
 
 def test_token_store_revoke_named_requires_min_prefix():
-    from tarkamcp.auth import TokenStore
+    from beaconmcp.auth import TokenStore
 
     ts = TokenStore()
     ts.issue("cid", name="a")
@@ -399,7 +399,7 @@ def test_token_store_revoke_named_requires_min_prefix():
 def test_mcp_tool_to_declaration_passes_input_schema():
     from google.genai import types
 
-    from tarkamcp.dashboard.chat import _mcp_tool_to_declaration
+    from beaconmcp.dashboard.chat import _mcp_tool_to_declaration
 
     class FakeMCPTool:
         name = "proxmox_list_vms"
@@ -419,7 +419,7 @@ def test_mcp_tool_to_declaration_passes_input_schema():
 def test_mcp_tool_to_declaration_defaults_schema_when_missing():
     from google.genai import types
 
-    from tarkamcp.dashboard.chat import _mcp_tool_to_declaration
+    from beaconmcp.dashboard.chat import _mcp_tool_to_declaration
 
     class FakeMCPTool:
         name = "ping"
@@ -433,7 +433,7 @@ def test_mcp_tool_to_declaration_defaults_schema_when_missing():
 
 
 def test_mcp_call_result_to_response_flattens_text_content():
-    from tarkamcp.dashboard.chat import _mcp_call_result_to_response
+    from beaconmcp.dashboard.chat import _mcp_call_result_to_response
 
     class FakeText:
         text = "hello"
@@ -448,7 +448,7 @@ def test_mcp_call_result_to_response_flattens_text_content():
 
 
 def test_mcp_call_result_to_response_marks_error():
-    from tarkamcp.dashboard.chat import _mcp_call_result_to_response
+    from beaconmcp.dashboard.chat import _mcp_call_result_to_response
 
     class FakeText:
         text = "boom"
@@ -463,7 +463,7 @@ def test_mcp_call_result_to_response_marks_error():
 
 
 def test_is_transient_error_matches_5xx():
-    from tarkamcp.dashboard.chat import _is_transient_error
+    from beaconmcp.dashboard.chat import _is_transient_error
 
     assert _is_transient_error(Exception("500 INTERNAL. Internal error"))
     assert _is_transient_error(Exception("503 UNAVAILABLE"))
@@ -475,8 +475,8 @@ def test_is_transient_error_matches_5xx():
 def _run_retry_scenario(monkeypatch, fake_run):
     """Helper: swap in ``fake_run`` on a GeminiChatEngine and drain events."""
     import asyncio as _asyncio
-    from tarkamcp.dashboard import chat as chat_mod
-    from tarkamcp.dashboard.chat import GeminiChatEngine, TurnInput
+    from beaconmcp.dashboard import chat as chat_mod
+    from beaconmcp.dashboard.chat import GeminiChatEngine, TurnInput
 
     async def _noop_sleep(_):
         return None
@@ -497,7 +497,7 @@ def _run_retry_scenario(monkeypatch, fake_run):
 
 def test_gemini_retry_recovers_from_transient_500(monkeypatch):
     """run() retries transient 5xx errors before surfacing them."""
-    from tarkamcp.dashboard.chat import TextDelta
+    from beaconmcp.dashboard.chat import TextDelta
 
     attempts = {"n": 0}
 
@@ -517,7 +517,7 @@ def test_gemini_retry_recovers_from_transient_500(monkeypatch):
 
 
 def test_gemini_retry_surfaces_after_max_attempts(monkeypatch):
-    from tarkamcp.dashboard.chat import ErrorEvent
+    from beaconmcp.dashboard.chat import ErrorEvent
 
     attempts = {"n": 0}
 
@@ -535,7 +535,7 @@ def test_gemini_retry_surfaces_after_max_attempts(monkeypatch):
 
 
 def test_gemini_retry_skips_on_non_transient(monkeypatch):
-    from tarkamcp.dashboard.chat import ErrorEvent
+    from beaconmcp.dashboard.chat import ErrorEvent
 
     attempts = {"n": 0}
 
@@ -551,7 +551,7 @@ def test_gemini_retry_skips_on_non_transient(monkeypatch):
 
 
 def test_thinking_config_for_gemini_3():
-    from tarkamcp.dashboard.chat import GeminiChatEngine
+    from beaconmcp.dashboard.chat import GeminiChatEngine
 
     cfg = GeminiChatEngine._build_thinking_config("gemini-3-flash-preview", "high")
     assert cfg.thinking_level is not None
@@ -560,7 +560,7 @@ def test_thinking_config_for_gemini_3():
 
 
 def test_thinking_config_for_gemini_2_5():
-    from tarkamcp.dashboard.chat import GeminiChatEngine
+    from beaconmcp.dashboard.chat import GeminiChatEngine
 
     cfg = GeminiChatEngine._build_thinking_config("gemini-2.5-flash", "medium")
     assert cfg.thinking_level is None
@@ -569,7 +569,7 @@ def test_thinking_config_for_gemini_2_5():
 
 def test_thinking_config_clamps_gemini_2_5_pro_minimum():
     """2.5 Pro cannot disable thinking; budget must clamp to 128+."""
-    from tarkamcp.dashboard.chat import GeminiChatEngine
+    from beaconmcp.dashboard.chat import GeminiChatEngine
 
     cfg = GeminiChatEngine._build_thinking_config("gemini-2.5-pro", "minimal")
     assert cfg.thinking_budget == 128  # clamped up from 0
@@ -580,7 +580,7 @@ def test_thinking_config_clamps_gemini_2_5_pro_minimum():
 
 
 def test_thinking_config_unknown_effort_defaults_to_low():
-    from tarkamcp.dashboard.chat import GeminiChatEngine
+    from beaconmcp.dashboard.chat import GeminiChatEngine
 
     cfg3 = GeminiChatEngine._build_thinking_config("gemini-3.1-pro-preview", "nonsense")
     # Enum repr contains LOW
