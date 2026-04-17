@@ -771,7 +771,7 @@ async function streamTurn(userText) {
   const indicator = document.createElement("div");
   indicator.className = "generating-indicator";
   indicator.innerHTML =
-    '<span class="generating-dot"></span><span class="generating-label">Generating…</span>';
+    '<span class="generating-dot"></span><span class="generating-label">Thinking…</span>';
   row.append(indicator);
   scrollToBottom();
 

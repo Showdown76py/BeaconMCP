@@ -578,7 +578,7 @@ a.sidebar-link { cursor: pointer; }
   height: 7px;
   border-radius: 50%;
   background: currentColor;
-  animation: generating-dot-pulse 1.2s ease-in-out infinite;
+  animation: generating-dot-pulse 2.4s ease-in-out infinite;
 }
 
 .generating-label {
@@ -592,7 +592,7 @@ a.sidebar-link { cursor: pointer; }
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: generating-shimmer 2.2s linear infinite;
+  animation: generating-shimmer 4s linear infinite;
 }
 
 @keyframes generating-dot-pulse {
