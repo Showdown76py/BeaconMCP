@@ -5,8 +5,8 @@ auth paths the dashboard helps you drive:
 
 - **OAuth 2.1 (pre-registered client)** — Claude only. See the main
   [README](../README.md#connecting-clients) for that flow.
-- **OAuth + Dynamic Client Registration** — ChatGPT, OpenCode. Requires
-  `server.allow_dynamic_registration: true` in `beaconmcp.yaml`.
+- **OAuth + Dynamic Client Registration** — ChatGPT, Perplexity, OpenCode.
+  Requires `server.allow_dynamic_registration: true` in `beaconmcp.yaml`.
 - **Static bearer token** — Gemini (Web/CLI/Antigravity), Mistral, VS Code,
   Cursor, any HTTP-only MCP client.
 
@@ -58,6 +58,29 @@ phone; the derived client has no TOTP seed of its own.
 **Revocation:** `https://<your-host>/app/connectors` lists every active derived client. Revoke one and ChatGPT loses access immediately. Revoking your human account cascades to every derived client automatically.
 
 **Why not a static bearer?** ChatGPT's connector UI has no "Authorization header" field — only "No authentication" or "OAuth" — and the OAuth path strictly requires DCR. The slug-gated bootstrap is the narrow, audit-friendly way to let it in while keeping your TOTP on your phone.
+
+---
+
+## Perplexity (OAuth + DCR)
+
+Perplexity's custom connector auto-discovers the auth method from the MCP
+server's `.well-known` metadata. With
+`server.allow_dynamic_registration: true`, point it at a slug URL and
+Perplexity completes DCR + the OAuth consent flow automatically.
+
+Requires Perplexity **Pro**, **Max**, or **Enterprise** — custom connectors
+aren't on the free tier.
+
+1. Mint a connector URL from `https://<your-host>/app/connectors` (single-use, 15 min TTL).
+2. In Perplexity: **Settings → Connectors → Add custom**. Tick *"I understand custom connectors can introduce risks"*.
+3. Fill in:
+   - **Name:** BeaconMCP
+   - **Description:** (optional)
+   - **MCP Server URL:** paste the `/mcp/c/<slug>` URL.
+4. Perplexity auto-detects OAuth, runs DCR against the slug-gated `/oauth/register/c/<slug>`, then redirects you to BeaconMCP's authorization page. Type your TOTP from your phone.
+5. Bearer lifetime: 24 h. Perplexity refreshes via the authorization code flow on its own — you re-type the TOTP each rotation.
+
+Revoke from `https://<your-host>/app/connectors` like any other DCR-derived client.
 
 ---
 

@@ -150,7 +150,7 @@ On first use (and after each 24-hour token expiry) Claude redirects to the Beaco
 
 ### Other clients
 
-Full setup for **ChatGPT**, **Gemini** (CLI / Web / Antigravity / API), **Mistral** (Le Chat + Vibe), **OpenCode**, **VS Code**, and **Cursor** lives in [docs/clients.md](docs/clients.md). The dashboard's `/app/tokens` page shows the same snippets interactively.
+Full setup for **ChatGPT**, **Perplexity**, **Gemini** (CLI / Web / Antigravity / API), **Mistral** (Le Chat + Vibe), **OpenCode**, **VS Code**, and **Cursor** lives in [docs/clients.md](docs/clients.md). The dashboard's `/app/tokens` page shows the same snippets interactively.
 
 ---
 

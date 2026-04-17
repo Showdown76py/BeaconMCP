@@ -98,6 +98,7 @@
             <div class="card-logos">
               <span class="logo-pill">ChatGPT</span>
               <span class="logo-pill">OpenCode</span>
+              <span class="logo-pill">Perplexity</span>
             </div>
           </header>
           <p>
@@ -221,6 +222,7 @@
     <div class="view view-by-platform" role="tabpanel">
       <input type="radio" name="platform-tab" id="p-claude" checked>
       {% if dcr_enabled %}<input type="radio" name="platform-tab" id="p-chatgpt">{% endif %}
+      <input type="radio" name="platform-tab" id="p-perplexity">
       <input type="radio" name="platform-tab" id="p-gemini">
       <input type="radio" name="platform-tab" id="p-mistral">
       <input type="radio" name="platform-tab" id="p-opencode">
@@ -230,6 +232,7 @@
       <nav class="inner-tabs" role="tablist">
         <label for="p-claude" class="inner-tab">Claude</label>
         {% if dcr_enabled %}<label for="p-chatgpt" class="inner-tab">ChatGPT</label>{% endif %}
+        <label for="p-perplexity" class="inner-tab">Perplexity</label>
         <label for="p-gemini" class="inner-tab">Gemini</label>
         <label for="p-mistral" class="inner-tab">Mistral</label>
         <label for="p-opencode" class="inner-tab">OpenCode</label>
@@ -337,6 +340,50 @@
         </article>
       </div>
       {% endif %}
+
+      {# ---- Perplexity ---- #}
+      <div class="tab-panel" data-panel="perplexity">
+        <article class="card">
+          <header class="card-head">
+            <div class="card-title">
+              <h2>Perplexity</h2>
+              <span class="method-tag method-tag-dcr">OAuth + DCR</span>
+            </div>
+          </header>
+          <p>
+            Perplexity's custom connector auto-discovers the auth method
+            from the MCP server's <code>.well-known</code> metadata. Paste
+            a slug URL and Perplexity handles DCR, then runs you through
+            the OAuth consent flow (where you type your TOTP).
+          </p>
+          {% if dcr_enabled %}
+          <ol class="steps">
+            <li>Mint a connector URL from <a href="/app/connectors">OAuth connectors</a> (single-use, 15 min).</li>
+            <li>In Perplexity: <em>Settings → Connectors → Add custom</em>. Tick "I understand custom connectors can introduce risks".</li>
+            <li>Fill in:
+              <ul>
+                <li><strong>Name:</strong> BeaconMCP</li>
+                <li><strong>Description:</strong> (optional)</li>
+                <li><strong>MCP Server URL:</strong> paste the <code>/mcp/c/&lt;slug&gt;</code> URL</li>
+              </ul>
+            </li>
+            <li>Perplexity detects OAuth, runs DCR, then redirects you to BeaconMCP's authorization page. Type your TOTP.</li>
+          </ol>
+          <p class="muted small">
+            Requires Perplexity Pro, Max, or Enterprise — custom connectors aren't on the free tier.
+          </p>
+          <a href="/app/connectors" class="btn-primary-link">
+            Mint a connector URL
+            <svg width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
+          </a>
+          {% else %}
+          <p class="muted">
+            Enable <code>server.allow_dynamic_registration: true</code> in
+            <code>beaconmcp.yaml</code> and restart the server to use Perplexity.
+          </p>
+          {% endif %}
+        </article>
+      </div>
 
       {# ---- Gemini (sub-tabs: Web, CLI, Antigravity) ---- #}
       <div class="tab-panel" data-panel="gemini">
