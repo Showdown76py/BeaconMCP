@@ -765,6 +765,16 @@ async function streamTurn(userText) {
   const body = row.querySelector(".msg-body");
   const toolCardMap = new Map();
 
+  // "Generating…" indicator, pinned to the bottom of the turn so the user
+  // sees something alive during thinking and between tool calls. Removed
+  // in the finally block below.
+  const indicator = document.createElement("div");
+  indicator.className = "generating-indicator";
+  indicator.innerHTML =
+    '<span class="generating-dot"></span><span class="generating-label">Generating…</span>';
+  row.append(indicator);
+  scrollToBottom();
+
   try {
     const res = await fetch("/app/api/chat/stream", {
       method: "POST",
@@ -813,6 +823,7 @@ async function streamTurn(userText) {
       row.append(errDiv);
     }
   } finally {
+    indicator.remove();
     state.streaming = false;
     state.abortController = null;
     el.send.classList.remove("stop");
