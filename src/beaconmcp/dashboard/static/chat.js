@@ -1016,7 +1016,7 @@ async function streamTurn(userText, inner) {
 
   const indicator = h("div", { class: "typing" }, [
     h("div", { class: "typing-dots" }, [h("span"), h("span"), h("span")]),
-    h("span", { text: "Thinking…" }),
+    h("span", { class: "typing-label", text: "Thinking…" }),
   ]);
   row.append(indicator);
   scrollToBottom();

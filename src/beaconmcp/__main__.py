@@ -336,39 +336,268 @@ def _run_http(mcp, host: str, port: int):
             f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(v)}">'
             for k, v in normalized.items()
         )
+
         banner = ""
         if locked:
             banner = (
-                '<p class="error">Too many attempts. Try again in 5 minutes.</p>'
+                '<div class="banner banner-error">Too many attempts. '
+                "Try again in 5 minutes.</div>"
             )
         elif error:
-            banner = f'<p class="error">{html.escape(error)}</p>'
+            banner = f'<div class="banner banner-error">{html.escape(error)}</div>'
 
         disabled = "disabled" if locked else ""
+        # Self-contained page: /oauth/authorize is reachable even when the
+        # dashboard (and its /app/static bundle) is disabled. Styles/JS live
+        # inline; same design tokens as the dashboard auth pages.
         page = f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<title>BeaconMCP - Two-factor authentication</title>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BeaconMCP · Two-factor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-  body {{ font-family: -apple-system, system-ui, sans-serif; background:#111; color:#eee; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; }}
-  .card {{ background:#1c1c1c; padding:2rem; border-radius:12px; max-width:380px; width:100%; box-shadow:0 4px 16px rgba(0,0,0,0.4); }}
-  h1 {{ font-size:1.25rem; margin:0 0 0.5rem; }}
-  p {{ color:#aaa; font-size:0.9rem; margin:0.25rem 0 1rem; }}
-  .error {{ color:#ff6b6b; }}
-  input[type=text] {{ width:100%; box-sizing:border-box; padding:0.75rem; font-size:1.5rem; text-align:center; letter-spacing:0.5rem; border:1px solid #333; background:#0d0d0d; color:#fff; border-radius:8px; }}
-  button {{ margin-top:1rem; width:100%; padding:0.75rem; border:none; border-radius:8px; background:#e57000; color:#fff; font-size:1rem; cursor:pointer; }}
-  button:disabled {{ background:#555; cursor:not-allowed; }}
-</style></head>
-<body><div class="card">
-<h1>BeaconMCP</h1>
-<p>Two-factor authentication for <strong>{html.escape(client_name)}</strong>.</p>
-{banner}
-<form method="POST" action="/oauth/authorize">
+:root {{
+  --accent: oklch(0.68 0.17 48);
+  --accent-soft: oklch(0.68 0.17 48 / 0.12);
+  --accent-softer: oklch(0.68 0.17 48 / 0.06);
+  --accent-border: oklch(0.68 0.17 48 / 0.35);
+  --accent-hover: oklch(0.62 0.18 48);
+  --accent-fg: #fff;
+  --bg: oklch(0.99 0.004 70);
+  --bg-soft: oklch(0.975 0.005 70);
+  --bg-elev: #fff;
+  --fg: oklch(0.22 0.01 70);
+  --fg-mid: oklch(0.42 0.008 70);
+  --fg-muted: oklch(0.55 0.008 70);
+  --fg-faint: oklch(0.7 0.006 70);
+  --border: oklch(0.92 0.006 70);
+  --border-strong: oklch(0.86 0.008 70);
+  --border-subtle: oklch(0.95 0.005 70);
+  --danger: oklch(0.58 0.19 25);
+  --danger-soft: oklch(0.58 0.19 25 / 0.1);
+  --shadow: 0 1px 2px rgba(20,14,8,0.04), 0 4px 20px rgba(20,14,8,0.06);
+  --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+}}
+[data-theme="dark"] {{
+  --bg: oklch(0.16 0.008 60);
+  --bg-soft: oklch(0.19 0.008 60);
+  --bg-elev: oklch(0.21 0.009 60);
+  --fg: oklch(0.95 0.006 70);
+  --fg-mid: oklch(0.78 0.008 70);
+  --fg-muted: oklch(0.62 0.01 70);
+  --fg-faint: oklch(0.45 0.008 70);
+  --border: oklch(0.28 0.009 60);
+  --border-strong: oklch(0.36 0.01 60);
+  --border-subtle: oklch(0.24 0.008 60);
+  --accent: oklch(0.75 0.17 50);
+  --accent-soft: oklch(0.75 0.17 50 / 0.16);
+  --accent-softer: oklch(0.75 0.17 50 / 0.08);
+  --accent-border: oklch(0.75 0.17 50 / 0.4);
+  --accent-hover: oklch(0.82 0.17 50);
+  --accent-fg: oklch(0.12 0.008 60);
+  --danger: oklch(0.68 0.19 25);
+  --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 4px 20px rgba(0,0,0,0.4);
+}}
+* {{ box-sizing: border-box; }}
+html, body {{
+  margin: 0; padding: 0;
+  font-family: var(--font);
+  font-size: 15px;
+  color: var(--fg);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}}
+body {{
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}}
+.auth-card {{
+  width: 100%; max-width: 380px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 32px;
+  box-shadow: var(--shadow);
+  animation: rise 400ms var(--ease-out) both;
+}}
+@keyframes rise {{
+  from {{ opacity: 0; transform: translateY(6px); }}
+  to {{ opacity: 1; transform: translateY(0); }}
+}}
+.auth-brand {{ display: flex; align-items: center; margin-bottom: 26px; }}
+.auth-brand .name {{ font-weight: 600; font-size: 15px; letter-spacing: -0.01em; }}
+h1 {{ margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015em; }}
+.sub {{ margin: 0 0 18px; font-size: 13.5px; color: var(--fg-muted); }}
+.sub strong {{ color: var(--fg); font-weight: 600; }}
+.banner {{
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  margin: 0 0 14px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  border: 1px solid color-mix(in oklab, var(--danger) 35%, var(--border));
+}}
+.toast-banner {{
+  background: var(--accent-softer);
+  border: 1px solid var(--accent-border);
+  color: var(--fg);
+  border-radius: 10px;
+  padding: 9px 12px;
+  font-size: 12.5px;
+  margin-bottom: 16px;
+  display: flex; align-items: center; gap: 8px;
+}}
+.toast-banner .dot {{
+  width: 6px; height: 6px;
+  border-radius: 50%; background: var(--accent);
+  flex-shrink: 0;
+}}
+.toast-banner b {{ font-family: var(--font-mono); margin-left: 2px; }}
+.totp-inputs {{
+  display: flex; gap: 8px; justify-content: space-between;
+  margin: 8px 0 18px;
+}}
+.totp-inputs input {{
+  width: 100%; aspect-ratio: 1 / 1.15;
+  text-align: center;
+  font-size: 24px; font-weight: 600;
+  font-family: var(--font-mono);
+  background: var(--bg-soft);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  color: var(--fg);
+  outline: none;
+  transition: border-color 160ms var(--ease-out), box-shadow 160ms var(--ease-out);
+}}
+.totp-inputs input:focus {{
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}}
+.totp-inputs input.filled {{
+  background: var(--accent-softer);
+  border-color: var(--accent-border);
+}}
+.btn-primary {{
+  width: 100%;
+  padding: 12px 16px;
+  border: 0; border-radius: 10px;
+  background: var(--accent); color: var(--accent-fg);
+  font-family: var(--font); font-weight: 600; font-size: 14.5px;
+  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  transition: background 180ms var(--ease-out), transform 100ms var(--ease-out);
+  box-shadow: 0 4px 14px oklch(0.68 0.17 48 / 0.28), inset 0 1px 0 rgba(255,255,255,0.2);
+}}
+.btn-primary:hover:not(:disabled) {{ background: var(--accent-hover); }}
+.btn-primary:active:not(:disabled) {{ transform: translateY(1px); }}
+.btn-primary:disabled {{ opacity: 0.6; cursor: not-allowed; }}
+</style>
+<script>
+(function() {{
+  try {{
+    var raw = localStorage.getItem("beaconmcp-ui-state");
+    var s = raw ? JSON.parse(raw) : {{}};
+    var t = s.theme || "auto";
+    var dark = t === "dark" || (t === "auto" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+  }} catch (e) {{}}
+}})();
+</script>
+</head>
+<body>
+<div class="auth-card">
+  <div class="auth-brand"><span class="name">BeaconMCP</span></div>
+  <h1>Authorize access</h1>
+  <p class="sub">Enter the 6-digit code from your authenticator to grant access to <strong>{html.escape(client_name)}</strong>.</p>
+  {banner}
+  <div class="toast-banner">
+    <span class="dot"></span>
+    Client: <b>{html.escape(normalized["client_id"])}</b>
+  </div>
+  <form method="POST" action="/oauth/authorize" id="authorize-form">
 {hidden}
-<input type="text" name="totp" inputmode="numeric" pattern="\\d{{6}}" maxlength="6" autocomplete="one-time-code" autofocus required placeholder="000000" {disabled}>
-<button type="submit" {disabled}>Submit</button>
-</form>
-</div></body></html>
+    <div class="totp-inputs" id="totp-inputs">
+      <input maxlength="1" inputmode="numeric" aria-label="Digit 1" {disabled}>
+      <input maxlength="1" inputmode="numeric" aria-label="Digit 2" {disabled}>
+      <input maxlength="1" inputmode="numeric" aria-label="Digit 3" {disabled}>
+      <input maxlength="1" inputmode="numeric" aria-label="Digit 4" {disabled}>
+      <input maxlength="1" inputmode="numeric" aria-label="Digit 5" {disabled}>
+      <input maxlength="1" inputmode="numeric" aria-label="Digit 6" {disabled}>
+    </div>
+    <input type="hidden" name="totp" id="totp" pattern="\\d{{6}}" required>
+    <button type="submit" class="btn-primary" id="verify-btn" {disabled} disabled>
+      Verify and authorize
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>
+    </button>
+  </form>
+</div>
+<script>
+(function() {{
+  var container = document.getElementById("totp-inputs");
+  if (!container) return;
+  var form = container.closest("form");
+  var totpHidden = document.getElementById("totp");
+  var verifyBtn = document.getElementById("verify-btn");
+  var inputs = container.querySelectorAll("input");
+  if (!form || !totpHidden || !verifyBtn || !inputs.length) return;
+
+  function collectTotp() {{
+    var s = "";
+    inputs.forEach(function(i) {{ s += (i.value || "").replace(/\\D/g, ""); }});
+    return s;
+  }}
+  function refresh() {{
+    var v = collectTotp();
+    totpHidden.value = v;
+    verifyBtn.disabled = v.length !== 6;
+  }}
+
+  inputs.forEach(function(inp, i) {{
+    inp.addEventListener("input", function(e) {{
+      var v = (e.target.value || "").replace(/\\D/g, "");
+      e.target.value = v.slice(0, 1);
+      if (v) {{
+        e.target.classList.add("filled");
+        if (inputs[i + 1]) inputs[i + 1].focus();
+      }} else {{
+        e.target.classList.remove("filled");
+      }}
+      refresh();
+    }});
+    inp.addEventListener("keydown", function(e) {{
+      if (e.key === "Backspace" && !e.target.value && inputs[i - 1]) {{
+        inputs[i - 1].focus();
+        inputs[i - 1].value = "";
+        inputs[i - 1].classList.remove("filled");
+        refresh();
+      }}
+    }});
+    inp.addEventListener("paste", function(e) {{
+      e.preventDefault();
+      var src = e.clipboardData || window.clipboardData;
+      var pasted = ((src && src.getData("text")) || "").replace(/\\D/g, "").slice(0, 6);
+      pasted.split("").forEach(function(ch, k) {{
+        if (inputs[k]) {{ inputs[k].value = ch; inputs[k].classList.add("filled"); }}
+      }});
+      if (inputs[Math.min(pasted.length, 5)]) inputs[Math.min(pasted.length, 5)].focus();
+      refresh();
+    }});
+  }});
+
+  if (inputs[0] && !inputs[0].disabled) inputs[0].focus();
+}})();
+</script>
+</body>
+</html>
 """
         return HTMLResponse(page)
 

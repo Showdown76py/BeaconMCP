@@ -1315,6 +1315,18 @@ body.chat-page {
   color: var(--fg-muted);
   margin-top: 4px;
 }
+.typing-label {
+  background: linear-gradient(90deg,
+    var(--fg-muted) 0%,
+    var(--accent) 50%,
+    var(--fg-muted) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 3s linear infinite;
+  font-weight: 500;
+}
 .typing-dots { display: inline-flex; gap: 3px; }
 .typing-dots span {
   width: 5px; height: 5px;
