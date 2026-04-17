@@ -217,19 +217,23 @@ def _bearer_live(deps: DashboardDeps, session: Session) -> bool:
 def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
     """Return Starlette routes for the dashboard, ready to mount."""
 
+    def _default_landing() -> str:
+        """Post-login destination: chat if Gemini is configured, else tokens."""
+        return "/app/chat" if deps.engine is not None else "/app/tokens"
+
     async def index(request: Request) -> Response:
         session = _load_session(request, deps)
         if session and _bearer_live(deps, session):
-            return RedirectResponse("/app/chat", status_code=302)
+            return RedirectResponse(_default_landing(), status_code=302)
         if session:
             return RedirectResponse("/app/refresh", status_code=302)
         return RedirectResponse("/app/login", status_code=302)
 
     async def login_get(request: Request) -> Response:
-        # If a valid session already exists, send straight to chat.
+        # If a valid session already exists, send to the default landing.
         session = _load_session(request, deps)
         if session and _bearer_live(deps, session):
-            return RedirectResponse("/app/chat", status_code=302)
+            return RedirectResponse(_default_landing(), status_code=302)
         if session:
             # Session valid but bearer stale -> refresh page is the right one.
             return RedirectResponse("/app/refresh", status_code=302)
@@ -256,16 +260,16 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         client_id = _v("client_id").strip()
         client_secret = _v("client_secret")
         totp = _v("totp").strip()
-        next_url = _v("next").strip() or "/app/chat"
-        if not (next_url.startswith("/app/") or next_url == "/app/chat"):
-            next_url = "/app/chat"
+        next_url = _v("next").strip() or _default_landing()
+        if not next_url.startswith("/app/"):
+            next_url = _default_landing()
 
         def _fail(message: str, *, status: int = 400, locked: bool = False) -> Response:
             return _render(
                 "login.html",
                 request,
                 client_id=client_id,
-                next=next_url if next_url != "/app/chat" else "",
+                next=next_url if next_url != _default_landing() else "",
                 banner=message,
                 locked=locked,
                 status_code=status,
@@ -315,7 +319,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         if not session:
             return RedirectResponse("/app/login", status_code=302)
         if _bearer_live(deps, session):
-            return RedirectResponse("/app/chat", status_code=302)
+            return RedirectResponse(_default_landing(), status_code=302)
 
         client_name = (
             deps.client_store.get_name(session.client_id)  # type: ignore[attr-defined]
@@ -345,7 +349,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         next_value = form.get("next", "")
         next_url = next_value.strip() if isinstance(next_value, str) else ""
         if not (next_url.startswith("/app/")):
-            next_url = "/app/chat"
+            next_url = _default_landing()
 
         client_name = (
             deps.client_store.get_name(session.client_id)  # type: ignore[attr-defined]
@@ -358,7 +362,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                 request,
                 client_id=session.client_id,
                 client_name=client_name,
-                next=next_url if next_url != "/app/chat" else "",
+                next=next_url if next_url != _default_landing() else "",
                 banner=message,
                 locked=locked,
                 status_code=status,
@@ -517,6 +521,10 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             return RedirectResponse("/app/login", status_code=302)
         if not _bearer_live(deps, session):
             return RedirectResponse("/app/refresh", status_code=302)
+        # No Gemini key configured: the chat panel has nothing to drive,
+        # but the Tokens page is still useful. Redirect there.
+        if deps.engine is None:
+            return RedirectResponse("/app/tokens", status_code=302)
         return _render(
             "chat.html",
             request,
@@ -955,6 +963,7 @@ def _render_tokens_page(
         just_created=just_created,
         mcp_url=mcp_url,
         locked=deps.totp_locked(session.client_id),
+        chat_enabled=deps.engine is not None,
     )
 
 
