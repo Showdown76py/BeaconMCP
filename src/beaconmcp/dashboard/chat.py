@@ -419,6 +419,7 @@ class GeminiChatEngine:
         usage_total_prompt = 0
         usage_total_cached = 0
         usage_total_output = 0
+        emitted_visible_text = False
 
         contents = self._build_contents(turn.history, turn.user_text)
         thinking = self._build_thinking_config(turn.model, turn.effort)
@@ -590,6 +591,7 @@ class GeminiChatEngine:
 
                         model_parts: list = []
                         fc_invocations: list = []  # (fc_part, fc, fc_id, args)
+                        emitted_visible_text_this_round = False
                         last_usage: Any = None
                         async for chunk in stream:
                             um = getattr(chunk, "usage_metadata", None)
@@ -605,7 +607,16 @@ class GeminiChatEngine:
                                     if getattr(part, "thought", False):
                                         yield ThinkingDelta(summary=text)
                                     else:
+                                        if emitted_visible_text and not emitted_visible_text_this_round:
+                                            # Tool rounds often produce a short
+                                            # sentence before each call; insert
+                                            # a paragraph break so they don't
+                                            # visually collapse into one blob.
+                                            yield TextDelta(text="\n\n")
+                                            model_parts.append(types.Part(text="\n\n"))
                                         yield TextDelta(text=text)
+                                        emitted_visible_text = True
+                                        emitted_visible_text_this_round = True
                                     model_parts.append(
                                         types.Part(
                                             text=text,
@@ -864,9 +875,9 @@ class GeminiChatEngine:
 
 # Max rounds of function_call / function_response before we give up.
 # Each round is one generate_content_stream + one tool call.
-# 10 is comfortably above realistic orchestration depth while still
+# 50 leaves room for longer orchestrations while still
 # bounding run-away loops.
-_MAX_TOOL_ROUNDS = 10
+_MAX_TOOL_ROUNDS = 50
 
 # Keep MCP tool orchestration conversational: one tool at a time lets
 # the model add a short sentence between calls (Copilot/Claude style).
