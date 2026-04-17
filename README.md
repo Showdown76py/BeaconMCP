@@ -121,13 +121,26 @@ The install script creates a `beaconmcp` system user, installs the package in ed
 
 ### 2. Configure
 
+Two ways to produce `beaconmcp.yaml`:
+
+**Guided (TUI wizard).** A terminal UI walks you through each capability (Proxmox nodes, SSH, BMC, server) with a live YAML preview on the right and adds `${VAR}` placeholders to `.env` for the secrets you'll fill in after:
+
+```bash
+pip install 'beaconmcp[wizard]'   # pulls the optional textual dep
+beaconmcp init                    # writes beaconmcp.yaml + extends .env
+```
+
+Arrow keys to browse sections, `enter` to open forms, `ctrl+s` to save without quitting, `q` to exit.
+
+**Manual.** Copy the example and edit:
+
 ```bash
 cp beaconmcp.yaml.example /opt/beaconmcp/beaconmcp.yaml
 cp .env.example /opt/beaconmcp/.env
 # Edit both: YAML defines the topology, .env holds the secrets.
 ```
 
-The YAML declares Proxmox nodes, BMC devices, SSH credentials, the dashboard configuration, and DNS-rebinding allowlists. Secrets are referenced via `${ENV_VAR}` placeholders resolved at startup against the `.env` file. Validate the result without starting the server:
+Either way, the YAML declares Proxmox nodes, BMC devices, SSH credentials, the dashboard configuration, and DNS-rebinding allowlists. Secrets are referenced via `${ENV_VAR}` placeholders resolved at startup against the `.env` file. Validate the result without starting the server:
 
 ```bash
 beaconmcp validate-config

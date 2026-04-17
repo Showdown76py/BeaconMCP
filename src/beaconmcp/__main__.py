@@ -59,6 +59,20 @@ def main():
         help="Path to beaconmcp.yaml (overrides BEACONMCP_CONFIG and the default search)",
     )
 
+    # --- init (interactive TUI wizard) ---
+    init_parser = sub.add_parser(
+        "init",
+        help="Interactive TUI to build a beaconmcp.yaml (needs 'beaconmcp[wizard]')",
+    )
+    init_parser.add_argument(
+        "--config", type=Path, default=None,
+        help="Output path (default: ./beaconmcp.yaml)",
+    )
+    init_parser.add_argument(
+        "--env", type=Path, default=Path(".env"),
+        help="Path to .env where referenced ${VAR} names are appended",
+    )
+
     # --- auth ---
     auth_parser = sub.add_parser("auth", help="Manage OAuth client credentials")
     auth_sub = auth_parser.add_subparsers(dest="auth_command")
@@ -82,6 +96,16 @@ def main():
         _cmd_auth(args)
     elif args.command == "validate-config":
         _cmd_validate_config(args)
+    elif args.command == "init":
+        _cmd_init(args)
+
+
+def _cmd_init(args):
+    from .wizard import run_wizard
+
+    yaml_path = args.config if args.config else Path(os.environ.get("BEACONMCP_CONFIG", "beaconmcp.yaml"))
+    env_path = args.env
+    sys.exit(run_wizard(yaml_path=yaml_path, env_path=env_path))
 
 
 def _cmd_validate_config(args):
