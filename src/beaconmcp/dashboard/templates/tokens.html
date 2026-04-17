@@ -71,12 +71,19 @@
     {# ============================================================ #}
     <div class="view view-by-method" role="tabpanel">
       <input type="radio" name="method-tab" id="tab-oauth" checked>
+      {% if dcr_enabled %}<input type="radio" name="method-tab" id="tab-dcr">{% endif %}
       <input type="radio" name="method-tab" id="tab-bearer">
       <nav class="inner-tabs" role="tablist">
         <label for="tab-oauth" class="inner-tab">
           <span class="tab-badge tab-badge-oauth">OAuth 2.1</span>
-          Browser auth
+          Pre-registered client
         </label>
+        {% if dcr_enabled %}
+        <label for="tab-dcr" class="inner-tab">
+          <span class="tab-badge tab-badge-dcr">OAuth + DCR</span>
+          Auto-registered
+        </label>
+        {% endif %}
         <label for="tab-bearer" class="inner-tab">
           <span class="tab-badge tab-badge-bearer">Bearer</span>
           Static token
@@ -88,62 +95,77 @@
         <article class="card">
           <header class="card-head">
             <div class="card-title">
-              <h2>OAuth 2.1</h2>
-              <p class="muted">The default MCP auth flow. The client opens a browser, BeaconMCP prompts for your TOTP, token lasts 24 h.</p>
+              <h2>OAuth 2.1 with a pre-registered client</h2>
+              <p class="muted">
+                The path most clients take: provision
+                <code>client_id</code> / <code>client_secret</code> here,
+                paste them into the client, and let the client run
+                authorization code + PKCE against BeaconMCP. TOTP prompt
+                lives on BeaconMCP's authorization page; tokens last 24 h.
+              </p>
             </div>
             <div class="card-logos">
               <span class="logo-pill">Claude</span>
-              <span class="logo-pill">ChatGPT</span>
               <span class="logo-pill">Codex</span>
               <span class="logo-pill">Le Chat</span>
               <span class="logo-pill">Gemini CLI</span>
+              <span class="logo-pill">Antigravity</span>
               <span class="logo-pill">OpenCode</span>
               <span class="logo-pill">Cursor</span>
               <span class="logo-pill">VS Code</span>
             </div>
           </header>
-          <p>Two flavours, same user experience from your phone's point of view:</p>
-
-          <h3 class="subhead">Manual client (Claude only)</h3>
-          <p>
-            Claude is the one client that asks you to paste a
-            <code>client_id</code> / <code>client_secret</code>.
-            Provision them once via the CLI:
-          </p>
+          <h3 class="subhead">1. Provision credentials on the server</h3>
+          <p>One client per install so you can revoke granularly:</p>
           <pre><code>beaconmcp auth create --name "Claude iPhone"</code></pre>
-          <p>Then <em>Settings → Integrations → Add custom connector</em>. URL: <code>{{ mcp_url }}</code>.</p>
-
-          <h3 class="subhead">Auto-discovery (every other client)</h3>
           <p>
-            ChatGPT, Codex, Le Chat, Gemini CLI, OpenCode, Cursor, and
-            VS Code don't ask for credentials. They read BeaconMCP's
-            <code>.well-known</code> metadata and register themselves
-            on their own. On our side this rides on Dynamic Client
-            Registration, so
-            <code>server.allow_dynamic_registration: true</code> must be
-            set in <code>beaconmcp.yaml</code>.
+            The CLI prints a <code>client_id</code>, a
+            <code>client_secret</code>, and a TOTP QR code (scan it
+            immediately — the secret is shown once).
           </p>
-          {% if dcr_enabled %}
+          <h3 class="subhead">2. Paste credentials into the client</h3>
           <p>
-            Mint a one-off connector URL from the button below. Paste it
-            into the client; it auto-registers and redirects you to
-            BeaconMCP's TOTP page. The URL is single-use and dies in 15
-            min.
+            Every client has its own config file or UI panel. Switch to
+            the <strong>By platform</strong> view above for the exact
+            snippet per client. The MCP URL is always
+            <code>{{ mcp_url }}</code>.
+          </p>
+        </article>
+      </div>
+
+      {# ---------- Panel: OAuth + DCR ---------- #}
+      {% if dcr_enabled %}
+      <div class="tab-panel" data-panel="dcr">
+        <article class="card">
+          <header class="card-head">
+            <div class="card-title">
+              <h2>OAuth with Dynamic Client Registration</h2>
+              <p class="muted">
+                Reserved for clients whose UI won't let you paste
+                <code>client_id</code> / <code>client_secret</code> — they
+                read BeaconMCP's <code>.well-known</code> metadata and
+                register themselves. On our side that needs a single-use
+                bootstrap slug to gate the registration.
+              </p>
+            </div>
+            <div class="card-logos">
+              <span class="logo-pill">ChatGPT</span>
+            </div>
+          </header>
+          <p>
+            Mint a one-off connector URL, paste it into the client, it
+            auto-registers. The slug is single-use, expires in 15 min,
+            and the derived client is bound to your account — 2FA at
+            <code>/oauth/authorize</code> delegates to your TOTP seed, so
+            a leaked client can't mint a token without your phone.
           </p>
           <a href="/app/connectors" class="btn-primary-link">
             Open OAuth connectors
             <svg width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
           </a>
-          {% else %}
-          <p class="muted">
-            Auto-discovery is currently <strong>disabled</strong> on this
-            server. Set <code>server.allow_dynamic_registration: true</code>
-            in <code>beaconmcp.yaml</code> and restart to enable these
-            clients.
-          </p>
-          {% endif %}
         </article>
       </div>
+      {% endif %}
 
       {# ---------- Panel: Bearer ---------- #}
       <div class="tab-panel" data-panel="bearer">
@@ -333,59 +355,76 @@
           <header class="card-head">
             <div class="card-title">
               <h2>ChatGPT</h2>
-              <span class="method-tag method-tag-oauth">OAuth 2.1</span>
+              <span class="method-tag method-tag-dcr">OAuth + DCR</span>
             </div>
           </header>
-          <p class="muted">
-            ChatGPT's Developer Mode connector UI only exposes "No auth" and
-            "OAuth", and the OAuth path requires Dynamic Client Registration.
-            Mint a single-use bootstrap URL to pin DCR to your account.
-          </p>
-          <a href="/app/connectors" class="btn-primary-link">
-            Mint a connector URL
-            <svg width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
-          </a>
 
           <input type="radio" name="chatgpt-variant" id="gv-web" checked>
           <input type="radio" name="chatgpt-variant" id="gv-mobile">
           <input type="radio" name="chatgpt-variant" id="gv-codex">
-          <nav class="sub-tabs" style="margin-top:1rem">
+          <nav class="sub-tabs">
             <label for="gv-web" class="sub-tab">Web / Desktop</label>
             <label for="gv-mobile" class="sub-tab">iOS / Android</label>
             <label for="gv-codex" class="sub-tab">Codex CLI</label>
           </nav>
           <div class="sub-panel" data-sub="chatgpt-web">
+            <p class="muted">
+              ChatGPT's Developer Mode connector UI only exposes "No auth"
+              and "OAuth" — no field for <code>client_id</code> /
+              <code>client_secret</code>. The OAuth path strictly requires
+              Dynamic Client Registration, so you have to mint a
+              single-use bootstrap URL.
+            </p>
             <ol class="steps">
+              <li>Mint a connector URL from <a href="/app/connectors">OAuth connectors</a> (single-use, 15 min).</li>
               <li><em>Settings → Connectors → Developer Mode → Add custom connector</em>.</li>
-              <li>Paste the slug URL you minted above. Auth: OAuth.</li>
+              <li>Paste the <code>/mcp/c/&lt;slug&gt;</code> URL. Auth: OAuth.</li>
               <li>ChatGPT runs DCR, then redirects you — type your TOTP.</li>
             </ol>
+            <a href="/app/connectors" class="btn-primary-link">
+              Mint a connector URL
+              <svg width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
+            </a>
           </div>
           <div class="sub-panel" data-sub="chatgpt-mobile">
+            <p class="muted">Same DCR flow as Web/Desktop — ChatGPT's mobile UI has no credentials field either.</p>
             <ol class="steps">
+              <li>Mint a connector URL from <a href="/app/connectors">OAuth connectors</a>.</li>
               <li>ChatGPT app → profile → <em>Settings → Connectors → Add custom</em>.</li>
-              <li>Same slug URL, same OAuth toggle, same TOTP prompt in the in-app browser.</li>
-              <li>Mint a fresh slug per device if you want independent revocation.</li>
+              <li>Paste the <code>/mcp/c/&lt;slug&gt;</code> URL. OAuth. TOTP in the in-app browser.</li>
             </ol>
+            <p class="muted small">Mint a fresh slug per device if you want independent revocation.</p>
+            <a href="/app/connectors" class="btn-primary-link">
+              Mint a connector URL
+              <svg width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
+            </a>
           </div>
           <div class="sub-panel" data-sub="chatgpt-codex">
+            <p><span class="method-tag method-tag-oauth">OAuth 2.1</span></p>
             <p>
-              Codex is OpenAI's terminal/IDE MCP client. It speaks full
-              OAuth 2.1 and catches the redirect on an ephemeral local
-              port — your TOTP prompt opens in your default browser.
+              Unlike the web connector, Codex (OpenAI's terminal/IDE MCP
+              client) lets you pre-register credentials via its
+              <code>config.toml</code>. It catches the OAuth redirect on
+              an ephemeral local port and opens your default browser for
+              the TOTP prompt.
             </p>
             <ol class="steps">
               <li>
-                Add BeaconMCP to your Codex <code>config.toml</code>:
-<pre><code>[mcp_servers.beaconmcp]
-url = "https://&lt;your-host&gt;/mcp/c/&lt;slug&gt;"</code></pre>
+                Provision a client on the server:
+                <pre><code>beaconmcp auth create --name "Codex"</code></pre>
               </li>
-              <li>Run <code>codex mcp login beaconmcp</code>. Codex spins up a loopback listener, opens your browser on BeaconMCP's authorization page.</li>
-              <li>Type your TOTP. Token cached locally; Codex refreshes on its own.</li>
+              <li>
+                Add BeaconMCP to your Codex config:
+<pre><code>[mcp_servers.beaconmcp]
+url = "{{ mcp_url }}"
+client_id = "beaconmcp_..."
+client_secret = "sk_..."</code></pre>
+              </li>
+              <li>Run <code>codex mcp login beaconmcp</code>. Your browser opens on BeaconMCP's authorization page — type your TOTP.</li>
             </ol>
             <p class="muted small">
-              If Codex runs in a remote devbox (Codespaces, SSH container),
-              set <code>mcp_oauth_callback_url</code> in config.toml to your
+              Remote devbox (Codespaces, SSH container)? Set
+              <code>mcp_oauth_callback_url</code> in config.toml to your
               ingress URL so the redirect hits the right host.
             </p>
           </div>
@@ -412,30 +451,49 @@ url = "https://&lt;your-host&gt;/mcp/c/&lt;slug&gt;"</code></pre>
           <div class="sub-panel" data-sub="gem-cli">
             <p><span class="method-tag method-tag-oauth">OAuth 2.1</span> <span class="method-tag method-tag-bearer">Bearer</span></p>
             <p>
-              Gemini CLI speaks full OAuth 2.1 with DCR — drop a remote
-              URL in <code>settings.json</code> and run
-              <code>/mcp auth beaconmcp</code> to trigger the browser
-              flow (TOTP prompt in your default browser).
+              Gemini CLI accepts a pre-registered <code>client_id</code> /
+              <code>client_secret</code> in <code>settings.json</code>, so
+              you don't need a DCR slug — just provision a client via the
+              CLI and paste the credentials. <code>/mcp auth beaconmcp</code>
+              then runs the browser flow with your TOTP prompt.
             </p>
-            {% if dcr_enabled %}
-            <p><strong>Recommended — OAuth 2.1:</strong></p>
-<pre><code>// ~/.gemini/settings.json
-{
+            <p><strong>Recommended — OAuth 2.1 (pre-registered):</strong></p>
+            <ol class="steps">
+              <li><pre><code>beaconmcp auth create --name "Gemini CLI"</code></pre></li>
+              <li>Drop the credentials into <code>~/.gemini/settings.json</code>:
+<pre><code>{
   "mcpServers": {
     "beaconmcp": {
-      "httpUrl": "https://&lt;your-host&gt;/mcp/c/&lt;slug&gt;"
+      "httpUrl": "{{ mcp_url }}",
+      "oauth": {
+        "clientId": "beaconmcp_...",
+        "clientSecret": "sk_..."
+      }
     }
   }
 }</code></pre>
-            <p>Then in the CLI: <code>/mcp auth beaconmcp</code>. Mint the slug from <a href="/app/connectors">OAuth connectors</a>.</p>
+              </li>
+              <li>In the CLI: <code>/mcp auth beaconmcp</code>. Type your TOTP in the browser that opens.</li>
+            </ol>
             <p><strong>Alternative — Bearer:</strong></p>
-            {% endif %}
 <pre><code>gemini mcp add beaconmcp \
   --url {{ mcp_url }} \
   --header "Authorization: Bearer &lt;token&gt;"</code></pre>
           </div>
           <div class="sub-panel" data-sub="gem-antigravity">
-            <p><span class="method-tag method-tag-bearer">Bearer</span></p>
+            <p><span class="method-tag method-tag-oauth">OAuth 2.1</span> <span class="method-tag method-tag-bearer">Bearer</span></p>
+            <p>
+              Antigravity's visual connection manager handles both paths.
+              OAuth keeps the TOTP prompt on BeaconMCP's side; Bearer is a
+              quick fallback when the OAuth flow misbehaves.
+            </p>
+            <p><strong>Recommended — OAuth 2.1 (pre-registered):</strong></p>
+            <ol class="steps">
+              <li><pre><code>beaconmcp auth create --name "Antigravity"</code></pre></li>
+              <li>In Antigravity: <em>Customizations → Connections → Add MCP server</em>. Paste the URL and the OAuth client credentials.</li>
+              <li>Authorize in the browser popup — your TOTP prompt shows up on BeaconMCP's page.</li>
+            </ol>
+            <p><strong>Alternative — Bearer:</strong></p>
             <p>Edit <code>~/.gemini/antigravity/mcp_config.json</code> (macOS / Linux) or <code>%USERPROFILE%\.gemini\antigravity\mcp_config.json</code> (Windows):</p>
 <pre><code>{
   "mcpServers": {
@@ -448,10 +506,9 @@ url = "https://&lt;your-host&gt;/mcp/c/&lt;slug&gt;"</code></pre>
   }
 }</code></pre>
             <p class="muted small">
-              Antigravity uses <code>serverUrl</code> (not <code>url</code>) and
-              the top-level key is <code>mcpServers</code>. Reload the IDE
-              after editing. If the native HTTP transport misbehaves, fall
-              back to <code>npx mcp-remote</code> with <code>--header</code>.
+              Antigravity uses <code>serverUrl</code> (not <code>url</code>).
+              If the native HTTP transport misbehaves, fall back to
+              <code>npx mcp-remote</code> with <code>--header</code>.
             </p>
           </div>
           <div class="sub-panel" data-sub="gem-web">
@@ -522,16 +579,40 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
             <div class="card-title">
               <h2>OpenCode</h2>
               <span class="method-tag method-tag-oauth">OAuth 2.1</span>
+              <span class="method-tag method-tag-bearer">Bearer</span>
             </div>
           </header>
           <p>
-            OpenCode natively handles OAuth with Dynamic Client Registration.
-            Point it at a connector URL minted from the dashboard and it
-            auto-registers + prompts for your TOTP the first time.
+            OpenCode supports three flavours in <code>opencode.json</code>:
+            pre-registered OAuth (recommended), auto-registration via DCR,
+            or a plain bearer token. Tokens land in
+            <code>~/.local/share/opencode/mcp-auth.json</code> and refresh on their own.
           </p>
+
+          <p><strong>Recommended — OAuth 2.1 (pre-registered):</strong></p>
+          <ol class="steps">
+            <li><pre><code>beaconmcp auth create --name "OpenCode"</code></pre></li>
+            <li>Add to <code>opencode.json</code>:
+<pre><code>{
+  "mcp": {
+    "beaconmcp": {
+      "type": "remote",
+      "url": "{{ mcp_url }}",
+      "enabled": true,
+      "oauth": {
+        "clientId": "beaconmcp_...",
+        "clientSecret": "sk_..."
+      }
+    }
+  }
+}</code></pre>
+            </li>
+            <li>Run <code>opencode mcp auth beaconmcp</code>. Type your TOTP in the browser.</li>
+          </ol>
+
           {% if dcr_enabled %}
-<pre><code>// opencode.json (or ~/.config/opencode/opencode.json)
-{
+          <p><strong>Alternative — DCR (no credentials to paste):</strong></p>
+<pre><code>{
   "mcp": {
     "beaconmcp": {
       "type": "remote",
@@ -545,17 +626,22 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
             Mint a connector URL
             <svg width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
           </a>
-          <p class="muted small" style="margin-top:0.75rem">
-            Auth tokens land in <code>~/.local/share/opencode/mcp-auth.json</code>.
-            Connector URLs are single-use and expire in 15 min — mint a
-            fresh one per install.
-          </p>
-          {% else %}
-          <p class="muted">
-            Enable <code>server.allow_dynamic_registration: true</code> in
-            <code>beaconmcp.yaml</code> and restart the server to use OpenCode.
-          </p>
           {% endif %}
+
+          <p style="margin-top:1.25rem"><strong>Alternative — Bearer:</strong></p>
+<pre><code>{
+  "mcp": {
+    "beaconmcp": {
+      "type": "remote",
+      "url": "{{ mcp_url }}",
+      "enabled": true,
+      "oauth": false,
+      "headers": {
+        "Authorization": "Bearer &lt;token&gt;"
+      }
+    }
+  }
+}</code></pre>
         </article>
       </div>
 
@@ -577,10 +663,32 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
             <code>vscode-insiders://</code>), and stores tokens in the OS
             keychain.
           </p>
+
+          <p><strong>Recommended — OAuth 2.1 (pre-registered):</strong></p>
+          <ol class="steps">
+            <li><pre><code>beaconmcp auth create --name "VS Code"</code></pre></li>
+            <li>Add to <code>.vscode/mcp.json</code> (or <code>settings.json → "mcp.servers"</code>):
+<pre><code>{
+  "inputs": [
+    { "type": "promptString", "id": "beaconmcp-client-id", "description": "client_id" },
+    { "type": "promptString", "id": "beaconmcp-client-secret", "description": "client_secret", "password": true }
+  ],
+  "servers": {
+    "beaconmcp": {
+      "type": "http",
+      "url": "{{ mcp_url }}",
+      "clientId": "${input:beaconmcp-client-id}",
+      "clientSecret": "${input:beaconmcp-client-secret}"
+    }
+  }
+}</code></pre>
+            </li>
+            <li>VS Code prompts you on first use — OS keychain stores the tokens after your TOTP.</li>
+          </ol>
+
           {% if dcr_enabled %}
-          <p><strong>Recommended — OAuth 2.1:</strong></p>
-<pre><code>// .vscode/mcp.json (or settings.json → "mcp.servers")
-{
+          <p><strong>Alternative — DCR:</strong></p>
+<pre><code>{
   "servers": {
     "beaconmcp": {
       "type": "http",
@@ -588,9 +696,13 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
     }
   }
 }</code></pre>
-          <p>Mint the slug from <a href="/app/connectors">OAuth connectors</a>. VS Code prompts you on first use.</p>
-          <p><strong>Alternative — Bearer:</strong></p>
+          <a href="/app/connectors" class="btn-primary-link">
+            Mint a connector URL
+            <svg width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
+          </a>
           {% endif %}
+
+          <p style="margin-top:1.25rem"><strong>Alternative — Bearer:</strong></p>
 <pre><code>{
   "servers": {
     "beaconmcp": {
@@ -621,26 +733,46 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
             </div>
           </header>
           <p>
-            Cursor is a first-class OAuth 2.1 client since v1.0. Drop a
-            remote URL in <code>mcp.json</code>, Cursor surfaces a blue
-            <em>Connect</em> button in <em>Settings → Tools &amp; MCP</em>,
-            and catches the redirect via the <code>cursor://</code>
-            scheme (or a local loopback fallback). PKCE + DCR are
-            automatic.
+            Cursor is a first-class OAuth 2.1 client since v1.0. It
+            surfaces a blue <em>Connect</em> button in
+            <em>Settings → Tools &amp; MCP</em> and catches the redirect
+            via the <code>cursor://</code> scheme (or a loopback fallback).
+            PKCE runs in-app.
           </p>
+
+          <p><strong>Recommended — OAuth 2.1 (pre-registered):</strong></p>
+          <ol class="steps">
+            <li><pre><code>beaconmcp auth create --name "Cursor"</code></pre></li>
+            <li>Add to <code>~/.cursor/mcp.json</code> (global) or <code>.cursor/mcp.json</code> (per project):
+<pre><code>{
+  "mcpServers": {
+    "beaconmcp": {
+      "url": "{{ mcp_url }}",
+      "clientId": "${env:BEACONMCP_CLIENT_ID}",
+      "clientSecret": "${env:BEACONMCP_CLIENT_SECRET}"
+    }
+  }
+}</code></pre>
+            </li>
+            <li>Export the credentials in your shell (<code>BEACONMCP_CLIENT_ID</code> / <code>BEACONMCP_CLIENT_SECRET</code>). Reload Cursor; click <em>Connect</em>.</li>
+          </ol>
+
           {% if dcr_enabled %}
-          <p><strong>Recommended — OAuth 2.1:</strong></p>
-<pre><code>// ~/.cursor/mcp.json (global) or .cursor/mcp.json (per project)
-{
+          <p><strong>Alternative — DCR:</strong></p>
+<pre><code>{
   "mcpServers": {
     "beaconmcp": {
       "url": "https://&lt;your-host&gt;/mcp/c/&lt;slug&gt;"
     }
   }
 }</code></pre>
-          <p>Mint the slug from <a href="/app/connectors">OAuth connectors</a>. Click <em>Connect</em> in Cursor settings when it surfaces the "Needs authentication" state.</p>
-          <p><strong>Alternative — Bearer:</strong></p>
+          <a href="/app/connectors" class="btn-primary-link">
+            Mint a connector URL
+            <svg width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
+          </a>
           {% endif %}
+
+          <p style="margin-top:1.25rem"><strong>Alternative — Bearer:</strong></p>
 <pre><code>{
   "mcpServers": {
     "beaconmcp": {

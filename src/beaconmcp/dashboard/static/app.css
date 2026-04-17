@@ -1428,12 +1428,14 @@ a.sidebar-link { cursor: pointer; }
 /* Panels (hidden until their radio is checked) */
 .tab-panel { display: none; }
 #tab-oauth:checked  ~ .tab-panel[data-panel=oauth],
+#tab-dcr:checked    ~ .tab-panel[data-panel=dcr],
 #tab-bearer:checked ~ .tab-panel[data-panel=bearer] {
   display: block;
 }
 
 /* Active-tab underline + color (inner: method or platform) */
 #tab-oauth:checked  ~ .inner-tabs [for=tab-oauth],
+#tab-dcr:checked    ~ .inner-tabs [for=tab-dcr],
 #tab-bearer:checked ~ .inner-tabs [for=tab-bearer],
 #p-claude:checked     ~ .inner-tabs [for=p-claude],
 #p-chatgpt:checked    ~ .inner-tabs [for=p-chatgpt],

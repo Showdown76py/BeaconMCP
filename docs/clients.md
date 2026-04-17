@@ -3,12 +3,17 @@
 BeaconMCP exposes a single MCP endpoint (`https://<your-host>/mcp`) and three
 auth paths the dashboard helps you drive:
 
-- **OAuth 2.1** — Claude (manual credentials), plus ChatGPT, Codex, Le Chat,
-  Gemini CLI, OpenCode, Cursor, and VS Code (auto-discovery). Every
-  auto-discovery client rides on Dynamic Client Registration server-side,
-  so set `server.allow_dynamic_registration: true` in `beaconmcp.yaml`.
-- **Static bearer token** — Gemini Antigravity, Mistral Vibe, any HTTP-only
-  MCP client. Fallback path when a client can't do OAuth 2.1.
+- **OAuth 2.1 (pre-registered client)** — Claude, Codex, Le Chat, Gemini
+  CLI, Antigravity, OpenCode, Cursor, VS Code. Provision a
+  `client_id` / `client_secret` pair via `beaconmcp auth create` and
+  paste them into the client's config. Standard OAuth 2.1 authorization
+  code + PKCE from there.
+- **OAuth + Dynamic Client Registration** — ChatGPT Web / Mobile. Reserved
+  for clients whose UI won't let you paste credentials. Requires
+  `server.allow_dynamic_registration: true` in `beaconmcp.yaml` and a
+  single-use bootstrap slug minted from `/app/connectors`.
+- **Static bearer token** — Mistral Vibe, any HTTP-only MCP client that
+  can't do OAuth. Fallback only.
 
 > **Security note — always type the TOTP by hand from your phone.**
 > The TOTP seed belongs in an authenticator app on a device you physically
@@ -106,18 +111,20 @@ phone; the derived client has no TOTP seed of its own.
 
 ## ChatGPT Codex (OAuth 2.1, terminal/IDE)
 
-Codex is OpenAI's terminal/IDE MCP client. It speaks full OAuth 2.1 and
-catches the redirect on an ephemeral local port.
+Codex is OpenAI's terminal/IDE MCP client. Unlike the web connector it
+lets you pre-register credentials in `config.toml`, so no slug needed.
+Codex catches the OAuth redirect on an ephemeral local port.
 
-1. Add BeaconMCP to Codex's `config.toml`:
+1. On the server: `beaconmcp auth create --name "Codex"`.
+2. Add BeaconMCP to Codex's `config.toml`:
    ```toml
    [mcp_servers.beaconmcp]
-   url = "https://<your-host>/mcp/c/<slug>"
+   url = "https://<your-host>/mcp"
+   client_id = "beaconmcp_..."
+   client_secret = "sk_..."
    ```
-2. Run `codex mcp login beaconmcp`. Codex binds a loopback listener and
-   opens your browser on BeaconMCP's authorization page.
-3. Type your TOTP. Codex caches the token locally and refreshes on its
-   own.
+3. Run `codex mcp login beaconmcp`. Codex binds a loopback listener and
+   opens your browser on BeaconMCP's authorization page — type your TOTP.
 
 **Remote dev environments** (Codespaces, SSH container): set
 `mcp_oauth_callback_url` in `config.toml` to your ingress URL so the
@@ -128,12 +135,34 @@ be pinned via `mcp_oauth_callback_port`.
 
 ## OpenCode (OAuth 2.1)
 
-OpenCode natively handles OAuth with Dynamic Client Registration. Point it
-at a slug URL minted from `/app/connectors` and it auto-registers on first
-use. Requires `server.allow_dynamic_registration: true`.
+OpenCode accepts a pre-registered `client_id` / `client_secret` in
+`opencode.json`, and also supports DCR as a fallback. Tokens live in
+`~/.local/share/opencode/mcp-auth.json` and refresh automatically.
+
+**Recommended — OAuth 2.1 (pre-registered):**
+
+1. `beaconmcp auth create --name "OpenCode"`.
+2. Add to `opencode.json` (or `~/.config/opencode/opencode.json`):
+   ```json
+   {
+     "mcp": {
+       "beaconmcp": {
+         "type": "remote",
+         "url": "https://<your-host>/mcp",
+         "enabled": true,
+         "oauth": {
+           "clientId": "beaconmcp_...",
+           "clientSecret": "sk_..."
+         }
+       }
+     }
+   }
+   ```
+3. Run `opencode mcp auth beaconmcp`. Type your TOTP in the browser.
+
+**Alternative — DCR** (requires `allow_dynamic_registration: true`):
 
 ```json
-// opencode.json (or ~/.config/opencode/opencode.json)
 {
   "mcp": {
     "beaconmcp": {
@@ -146,8 +175,21 @@ use. Requires `server.allow_dynamic_registration: true`.
 }
 ```
 
-Auth tokens land in `~/.local/share/opencode/mcp-auth.json`. Connector
-URLs are single-use and expire in 15 min — mint a fresh one per install.
+**Alternative — Bearer:**
+
+```json
+{
+  "mcp": {
+    "beaconmcp": {
+      "type": "remote",
+      "url": "https://<your-host>/mcp",
+      "enabled": true,
+      "oauth": false,
+      "headers": { "Authorization": "Bearer <token>" }
+    }
+  }
+}
+```
 
 ---
 
@@ -155,24 +197,28 @@ URLs are single-use and expire in 15 min — mint a fresh one per install.
 
 ### Gemini CLI (OAuth 2.1, recommended)
 
-Gemini CLI speaks full OAuth 2.1 with Dynamic Client Registration — drop
-a remote URL in `settings.json`, run `/mcp auth <name>`, and the CLI
-opens a browser to BeaconMCP's authorization page (TOTP prompt).
+Gemini CLI accepts a pre-registered `client_id` / `client_secret` in
+`settings.json`, so no DCR slug is needed. `/mcp auth beaconmcp` then
+opens the browser flow with your TOTP prompt on BeaconMCP's page.
 
-```json
-// ~/.gemini/settings.json
-{
-  "mcpServers": {
-    "beaconmcp": {
-      "httpUrl": "https://<your-host>/mcp/c/<slug>"
-    }
-  }
-}
-```
+1. `beaconmcp auth create --name "Gemini CLI"`.
+2. Add to `~/.gemini/settings.json`:
+   ```json
+   {
+     "mcpServers": {
+       "beaconmcp": {
+         "httpUrl": "https://<your-host>/mcp",
+         "oauth": {
+           "clientId": "beaconmcp_...",
+           "clientSecret": "sk_..."
+         }
+       }
+     }
+   }
+   ```
+3. In the CLI: `/mcp auth beaconmcp`. Type your TOTP in the browser.
 
-Then: `/mcp auth beaconmcp`. Mint the slug from `/app/connectors`.
-
-Bearer header is also supported if you prefer it:
+Bearer header is also supported as a fallback:
 
 ```bash
 gemini mcp add beaconmcp \
@@ -223,10 +269,25 @@ typing the TOTP) rather than embedding the seed.
 
 ### Google Antigravity
 
-Antigravity reads MCP servers from `~/.gemini/antigravity/mcp_config.json`
-(macOS / Linux) or `%USERPROFILE%\.gemini\antigravity\mcp_config.json`
-(Windows). The top-level key is `mcpServers` and the HTTP URL field is
-**`serverUrl`** (not `url`):
+Antigravity's visual connection manager handles both OAuth 2.1 and
+Bearer. OAuth keeps the TOTP prompt on BeaconMCP's side; Bearer is a
+quick fallback.
+
+**Recommended — OAuth 2.1 (pre-registered):**
+
+1. `beaconmcp auth create --name "Antigravity"`.
+2. In Antigravity: *Customizations → Connections → Add MCP server*. Paste
+   the URL (`https://<your-host>/mcp`) and the OAuth client credentials.
+3. Authorize in the browser popup — your TOTP prompt shows up on
+   BeaconMCP's page.
+
+**Alternative — Bearer:**
+
+Antigravity also reads MCP servers from
+`~/.gemini/antigravity/mcp_config.json` (macOS / Linux) or
+`%USERPROFILE%\.gemini\antigravity\mcp_config.json` (Windows). Top-level
+key is `mcpServers` and the HTTP URL field is **`serverUrl`** (not
+`url`):
 
 ```json
 {
@@ -241,8 +302,7 @@ Antigravity reads MCP servers from `~/.gemini/antigravity/mcp_config.json`
 }
 ```
 
-If the native HTTP transport misbehaves, fall back to the `mcp-remote`
-proxy with command-based config:
+If the native HTTP transport misbehaves, fall back to `mcp-remote`:
 
 ```json
 {
@@ -309,28 +369,33 @@ server is its own `[[mcp_servers]]` array entry.
 ## VS Code (OAuth 2.1)
 
 VS Code routes MCP authentication through its native Authentication
-Provider system — the same flow used for your GitHub / Microsoft Entra
+Provider system — the same flow used for GitHub / Microsoft Entra
 logins. It reads `WWW-Authenticate`, shows a toast to Allow, catches
 the redirect on the `vscode://` (or `vscode-insiders://`) OS URI scheme,
 and stores the resulting token in your OS keychain.
 
-**Recommended — OAuth 2.1:**
+**Recommended — OAuth 2.1 (pre-registered):**
 
-```json
-// .vscode/mcp.json  (or settings.json → "mcp.servers")
-{
-  "servers": {
-    "beaconmcp": {
-      "type": "http",
-      "url": "https://<your-host>/mcp/c/<slug>"
-    }
-  }
-}
-```
-
-Mint the slug from `/app/connectors`. VS Code prompts you to sign in the
-first time the server is used; revoke anytime from the Accounts menu
-(profile icon, bottom left).
+1. `beaconmcp auth create --name "VS Code"`.
+2. Add to `.vscode/mcp.json` (or `settings.json → "mcp.servers"`):
+   ```json
+   {
+     "inputs": [
+       { "type": "promptString", "id": "beaconmcp-client-id", "description": "client_id" },
+       { "type": "promptString", "id": "beaconmcp-client-secret", "description": "client_secret", "password": true }
+     ],
+     "servers": {
+       "beaconmcp": {
+         "type": "http",
+         "url": "https://<your-host>/mcp",
+         "clientId": "${input:beaconmcp-client-id}",
+         "clientSecret": "${input:beaconmcp-client-secret}"
+       }
+     }
+   }
+   ```
+3. VS Code prompts you on first use — TOTP on BeaconMCP's page, OS
+   keychain stores the bearer afterward.
 
 **Alternative — Bearer:**
 
@@ -340,9 +405,7 @@ first time the server is used; revoke anytime from the Accounts menu
     "beaconmcp": {
       "type": "http",
       "url": "https://<your-host>/mcp",
-      "headers": {
-        "Authorization": "Bearer <token>"
-      }
+      "headers": { "Authorization": "Bearer <token>" }
     }
   }
 }
@@ -354,27 +417,28 @@ Verify with *Command Palette → MCP: List Servers*.
 
 ## Cursor (OAuth 2.1)
 
-Cursor is a first-class OAuth 2.1 client since v1.0. Drop a remote URL
-in `mcp.json`, Cursor surfaces a blue *Connect* button in
-*Settings → Tools & MCP* when it detects the 401, pops a browser for
-consent (PKCE + DCR are automatic), and catches the redirect via the
-`cursor://` OS scheme (or a loopback fallback).
+Cursor is a first-class OAuth 2.1 client since v1.0. It surfaces a
+blue *Connect* button in *Settings → Tools & MCP* and catches the
+redirect via the `cursor://` OS scheme (or a loopback fallback).
 
-**Recommended — OAuth 2.1:**
+**Recommended — OAuth 2.1 (pre-registered):**
 
-```json
-// ~/.cursor/mcp.json (global) or .cursor/mcp.json (per project)
-{
-  "mcpServers": {
-    "beaconmcp": {
-      "url": "https://<your-host>/mcp/c/<slug>"
-    }
-  }
-}
-```
-
-Mint the slug from `/app/connectors`. Click *Connect* in Cursor's
-settings when it surfaces the "Needs authentication" state.
+1. `beaconmcp auth create --name "Cursor"`.
+2. Add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (per
+   project):
+   ```json
+   {
+     "mcpServers": {
+       "beaconmcp": {
+         "url": "https://<your-host>/mcp",
+         "clientId": "${env:BEACONMCP_CLIENT_ID}",
+         "clientSecret": "${env:BEACONMCP_CLIENT_SECRET}"
+       }
+     }
+   }
+   ```
+3. Export the credentials in your shell. Reload Cursor; click *Connect*
+   when "Needs authentication" appears.
 
 **Alternative — Bearer:**
 
@@ -383,9 +447,7 @@ settings when it surfaces the "Needs authentication" state.
   "mcpServers": {
     "beaconmcp": {
       "url": "https://<your-host>/mcp",
-      "headers": {
-        "Authorization": "Bearer ${env:BEACONMCP_TOKEN}"
-      }
+      "headers": { "Authorization": "Bearer ${env:BEACONMCP_TOKEN}" }
     }
   }
 }
