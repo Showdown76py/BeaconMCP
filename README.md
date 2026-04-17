@@ -222,7 +222,7 @@ Common keys:
 |---------|-------|
 | `server.allowed_hosts` | DNS-rebinding allowlist — **must** include the public FQDN behind your reverse proxy. |
 | `server.allowed_origins` | CORS allowlist for browser-based MCP clients. |
-| `proxmox.nodes[]` | One entry per Proxmox node. Needs an API token per node. |
+| `proxmox.nodes[]` | One entry per Proxmox node. Needs an API token per node. For the node BeaconMCP itself runs on, use `host: localhost` — both the API (`:8006`) and SSH (`:22`) are reachable locally without going through the reverse proxy or tunnel. Remote nodes can use `host: <fqdn>:443` if you have a reverse proxy in front of their API. |
 | `ssh.vmid_to_ip` | Optional template (e.g. `"192.168.1.{id}"`) used by `ssh_exec_command` when the `host` argument is a bare VMID. Omit to disable numeric-ID shortcuts. |
 | `bmc.devices[]` | Zero or more BMCs. `type` is one of `hp_ilo`, `ipmi`, `idrac` (stub), `supermicro` (stub). `jump_host` is optional — set it to the name of a `proxmox.nodes[]` entry to route the connection over an SSH tunnel. |
 | `features.dashboard.limits` | Per-5h and per-week USD caps for the Gemini chat. Set to `0` to disable a window. |
