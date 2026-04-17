@@ -247,8 +247,17 @@ const el = {
   selEffort: document.getElementById("select-effort"),
   usageBar: document.getElementById("usage-bar"),
   usage5hValue: document.getElementById("usage-5h-value"),
-  usage5hReset: document.getElementById("usage-5h-reset"),
   usageWeekValue: document.getElementById("usage-week-value"),
+  usageModal: document.getElementById("usage-modal"),
+  usageModalBackdrop: document.getElementById("usage-modal-backdrop"),
+  usageModalClose: document.querySelector(".usage-modal-close"),
+  usageModal5hPct: document.getElementById("usage-modal-5h-pct"),
+  usageModal5hReset: document.getElementById("usage-modal-5h-reset"),
+  usageModal5hFill: document.getElementById("usage-modal-5h-fill"),
+  usageModalWeekPct: document.getElementById("usage-modal-week-pct"),
+  usageModalWeekFill: document.getElementById("usage-modal-week-fill"),
+  usageModalUpdated: document.getElementById("usage-modal-updated"),
+  usageModalRefresh: document.getElementById("usage-modal-refresh"),
 };
 
 // ---------------- Sidebar ----------------
@@ -498,26 +507,50 @@ function scrollToBottom() {
   el.messages.scrollTop = el.messages.scrollHeight;
 }
 
-// ---------------- Usage footer ----------------
+// ---------------- Usage footer + modal ----------------
 
-// Formats a float dollar amount with 2 fractional digits for the footer.
-// Values above $10 drop to 1 decimal for compactness.
-function formatUsd(n) {
-  const abs = Math.abs(n);
-  if (abs >= 10) return `$${n.toFixed(1)}`;
-  return `$${n.toFixed(2)}`;
+const state_usage = { last: null, lastLoadedAt: 0 };
+
+function pctOf(spent, limit) {
+  if (!limit || limit <= 0) return 0;
+  return Math.max(0, (spent / limit) * 100);
 }
 
-// Render HH:MM for an absolute epoch-seconds timestamp in local time.
-function formatLocalTime(epochSecs) {
-  const d = new Date(epochSecs * 1000);
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  return `${hh}h${mm}`;
+function formatPct(spent, limit) {
+  if (!limit || limit <= 0) return "—";
+  const p = pctOf(spent, limit);
+  // Show 1 decimal under 10%, integer above for readability.
+  if (p < 10) return `${p.toFixed(1)}%`;
+  return `${Math.round(p)}%`;
+}
+
+function formatResetIn(resetEpoch) {
+  if (!resetEpoch) return "Pas de session active";
+  const now = Date.now() / 1000;
+  const remaining = Math.max(0, resetEpoch - now);
+  if (remaining <= 0) return "Réinitialise à la prochaine requête";
+  const hours = Math.floor(remaining / 3600);
+  const mins = Math.floor((remaining % 3600) / 60);
+  if (hours === 0) return `Réinitialise dans ${mins} min`;
+  return `Réinitialise dans ${hours} h ${String(mins).padStart(2, "0")}`;
+}
+
+function formatAgo(loadedAtMs) {
+  if (!loadedAtMs) return "—";
+  const diff = Math.max(0, Date.now() - loadedAtMs);
+  const secs = Math.floor(diff / 1000);
+  if (secs < 60) return "il y a moins d'une minute";
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `il y a ${mins} min`;
+  const hours = Math.floor(mins / 60);
+  return `il y a ${hours} h`;
 }
 
 function renderUsage(u) {
   if (!u) return;
+  state_usage.last = u;
+  state_usage.lastLoadedAt = Date.now();
+
   const hasAnyCap = (u.limit_5h_usd > 0) || (u.limit_week_usd > 0);
   if (!hasAnyCap) {
     el.usageBar.hidden = true;
@@ -525,25 +558,18 @@ function renderUsage(u) {
   }
   el.usageBar.hidden = false;
 
+  // Footer: compact percentages.
   if (u.limit_5h_usd > 0) {
-    el.usage5hValue.textContent =
-      `${formatUsd(u.spent_5h_usd)} / ${formatUsd(u.limit_5h_usd)}`;
+    el.usage5hValue.textContent = formatPct(u.spent_5h_usd, u.limit_5h_usd);
     el.usage5hValue.parentElement.classList.toggle(
       "usage-over", u.spent_5h_usd >= u.limit_5h_usd,
     );
-    if (u.session_5h_reset_at) {
-      el.usage5hReset.textContent = `· reset ${formatLocalTime(u.session_5h_reset_at)}`;
-    } else {
-      el.usage5hReset.textContent = "";
-    }
     el.usage5hValue.parentElement.hidden = false;
   } else {
     el.usage5hValue.parentElement.hidden = true;
   }
-
   if (u.limit_week_usd > 0) {
-    el.usageWeekValue.textContent =
-      `${formatUsd(u.spent_week_usd)} / ${formatUsd(u.limit_week_usd)}`;
+    el.usageWeekValue.textContent = formatPct(u.spent_week_usd, u.limit_week_usd);
     el.usageWeekValue.parentElement.classList.toggle(
       "usage-over", u.spent_week_usd >= u.limit_week_usd,
     );
@@ -551,6 +577,43 @@ function renderUsage(u) {
   } else {
     el.usageWeekValue.parentElement.hidden = true;
   }
+
+  // Modal: progress bars + reset labels.
+  renderUsageModal(u);
+}
+
+function renderUsageModal(u) {
+  if (!u) return;
+  const p5 = pctOf(u.spent_5h_usd, u.limit_5h_usd);
+  el.usageModal5hPct.textContent = formatPct(u.spent_5h_usd, u.limit_5h_usd);
+  el.usageModal5hFill.style.width = `${Math.min(100, p5)}%`;
+  el.usageModal5hReset.textContent = formatResetIn(u.session_5h_reset_at);
+  el.usageModal5hFill.parentElement.parentElement.classList.toggle(
+    "usage-over", u.limit_5h_usd > 0 && u.spent_5h_usd >= u.limit_5h_usd,
+  );
+
+  const pw = pctOf(u.spent_week_usd, u.limit_week_usd);
+  el.usageModalWeekPct.textContent = formatPct(u.spent_week_usd, u.limit_week_usd);
+  el.usageModalWeekFill.style.width = `${Math.min(100, pw)}%`;
+  el.usageModalWeekFill.parentElement.parentElement.classList.toggle(
+    "usage-over", u.limit_week_usd > 0 && u.spent_week_usd >= u.limit_week_usd,
+  );
+
+  el.usageModalUpdated.textContent =
+    `Dernière mise à jour : ${formatAgo(state_usage.lastLoadedAt)}`;
+}
+
+function openUsageModal() {
+  if (!state_usage.last) return;
+  renderUsageModal(state_usage.last);
+  el.usageModalBackdrop.hidden = false;
+  el.usageModal.hidden = false;
+  el.usageModal.focus();
+}
+
+function closeUsageModal() {
+  el.usageModalBackdrop.hidden = true;
+  el.usageModal.hidden = true;
 }
 
 async function loadUsage() {
@@ -562,6 +625,18 @@ async function loadUsage() {
     console.warn("usage load failed", err);
   }
 }
+
+el.usageBar?.addEventListener("click", openUsageModal);
+el.usageModalClose?.addEventListener("click", closeUsageModal);
+el.usageModalBackdrop?.addEventListener("click", closeUsageModal);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !el.usageModal.hidden) closeUsageModal();
+});
+el.usageModalRefresh?.addEventListener("click", async () => {
+  el.usageModalRefresh.classList.add("spinning");
+  try { await loadUsage(); }
+  finally { el.usageModalRefresh.classList.remove("spinning"); }
+});
 
 // ---------------- Conversation API ----------------
 
