@@ -16,7 +16,7 @@ the functionality of the Software. Any license notice or attribution
 required by the License must also include this Commons Clause License
 Condition notice.
 
-Software: TarkaMCP
+Software: BeaconMCP/TarkaMCP
 License: Apache License, Version 2.0 (with Commons Clause)
 Licensor: Showdown76py
 
@@ -210,7 +210,7 @@ Licensor: Showdown76py
       same "printed page" as the copyright notice for easier
       identification within third-party archives.
 
-   Copyright [yyyy] [name of copyright owner]
+   Copyright 2026 Showdown76py
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
