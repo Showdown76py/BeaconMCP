@@ -19,7 +19,7 @@ def db_path() -> Path:
     return Path(override) if override else DEFAULT_DB_PATH
 
 
-_LATEST_VERSION = 3
+_LATEST_VERSION = 4
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -124,6 +124,26 @@ def _migrate(conn: sqlite3.Connection) -> None:
               last_event_at  REAL NOT NULL,
               cost_usd       REAL NOT NULL DEFAULT 0
             );
+            """
+        )
+
+    if version < 4:
+        # OAuth Dynamic Client Registration bootstrap slugs: one row per
+        # single-use URL minted from the dashboard for a client that needs
+        # DCR (e.g. ChatGPT). See ``dashboard.dyn_reg`` for the lifecycle.
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS oauth_dynamic_slugs (
+              slug                 TEXT PRIMARY KEY,
+              label                TEXT NOT NULL,
+              owner_client_id      TEXT NOT NULL,
+              created_at           REAL NOT NULL,
+              expires_at           REAL NOT NULL,
+              used_at              REAL,
+              resulting_client_id  TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_oauth_slugs_owner
+              ON oauth_dynamic_slugs(owner_client_id, created_at DESC);
             """
         )
 

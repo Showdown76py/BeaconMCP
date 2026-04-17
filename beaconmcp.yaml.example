@@ -27,6 +27,12 @@ server:
     - https://gemini.google.com
   clients_file: /opt/beaconmcp/clients.json
   session_key: ${BEACONMCP_SESSION_KEY}   # optional, generated if omitted
+  # Enable the OAuth Dynamic Client Registration bootstrap flow used by
+  # clients that cannot accept a pre-provisioned client_id/secret pair
+  # (ChatGPT in particular). Each registration is gated by a single-use
+  # slug minted from the dashboard after you type your TOTP. Off by
+  # default — turn on only if you need ChatGPT integration.
+  allow_dynamic_registration: false
 
 proxmox:
   verify_ssl: false

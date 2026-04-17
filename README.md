@@ -150,14 +150,32 @@ On first use (and after each 24-hour token expiry) Claude redirects to the Beaco
 
 ### ChatGPT
 
-ChatGPT's MCP connector expects a static bearer header, so an OAuth redirect is not an option. Mint the bearer yourself from the dashboard (where you type the TOTP from your phone) and paste it into ChatGPT.
+ChatGPT's Developer Mode connector only accepts **OAuth with Dynamic Client Registration (RFC 7591)** — it will not take a pre-provisioned `client_id` / `client_secret` nor a static bearer header. BeaconMCP supports this by minting a one-off bootstrap URL from the dashboard: the URL lets ChatGPT register a derived OAuth client tied to your account. 2FA is preserved — at authorization time, you still type your own TOTP from your phone; the derived client has no TOTP seed of its own.
 
-1. Open `https://<your-host>/app/login` in a browser, sign in, and type your current TOTP code from your authenticator app.
-2. Go to **API Tokens**, click **Create token**, give it a name (e.g. `chatgpt`), and copy the token shown. It is displayed once.
-3. In ChatGPT: **Settings → Developer Mode → MCP Servers → Add**.
-   - **URL:** `https://<your-host>/mcp`
-   - **Authorization:** `Bearer <token>`
-4. When the token expires or you no longer need it, revoke it from the same **API Tokens** page. Issue a new one the same way — always via the dashboard, never by scripting the TOTP.
+**One-time setup:**
+
+1. Enable the feature in `beaconmcp.yaml`:
+   ```yaml
+   server:
+     allow_dynamic_registration: true
+   ```
+   Then restart `beaconmcp serve`.
+
+**To add ChatGPT (from your phone, no laptop needed):**
+
+1. In your mobile browser, open `https://<your-host>/app/connectors`, sign in with your TOTP from your authenticator app.
+2. Enter a label (e.g. `ChatGPT iPhone`), type your current TOTP, submit. You get a one-off URL of the shape `https://<your-host>/mcp/c/<slug>`. The URL is **single-use** and expires in 15 min.
+3. In the ChatGPT app: **Settings → Connectors → Add custom**.
+   - **Name:** BeaconMCP
+   - **URL:** paste the `/mcp/c/<slug>` URL.
+   - **Authentication:** OAuth.
+4. ChatGPT fetches the OAuth metadata, POSTs to the slug-gated `/oauth/register/c/<slug>` — BeaconMCP consumes the slug atomically and mints a derived client scoped to your account.
+5. ChatGPT then redirects you to BeaconMCP's authorization page. Type your TOTP from your phone. Token lifetime: 24 h.
+6. From now on, ChatGPT auto-refreshes via the authorization code flow. Every 24 h it re-prompts for your TOTP — no re-registration, no new slug.
+
+**Revocation:** `https://<your-host>/app/connectors` lists every active derived client. Revoke one and ChatGPT loses access immediately. Revoking your human account cascades to every derived client automatically.
+
+**Why not a static bearer?** ChatGPT's connector UI has no "Authorization header" field — only "No authentication" or "OAuth" — and the OAuth path strictly requires DCR. The slug-gated bootstrap is the narrow, audit-friendly way to let it in while keeping your TOTP on your phone.
 
 ### Gemini CLI
 

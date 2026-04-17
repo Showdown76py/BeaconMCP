@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %}ChatGPT connector · BeaconMCP{% endblock %}
+{% block body_class %}tokens-page{% endblock %}
+{% block body %}
+<div class="tokens-wrap">
+  <header class="tokens-header">
+    <a href="/app/tokens" class="back-link">
+      <svg width="16" height="16" aria-hidden="true"><use href="#i-chev-r" style="transform: rotate(180deg); transform-origin: center"/></svg>
+      Back to tokens
+    </a>
+    <div>
+      <h1>ChatGPT connector</h1>
+      <p class="muted">
+        Signed in as <strong>{{ client_name }}</strong>. ChatGPT needs OAuth
+        Dynamic Client Registration; mint a one-off URL below, paste it into
+        ChatGPT's <em>Add connector</em> dialog, and complete the 2FA prompt
+        in-app. Each URL is single-use and expires after {{ slug_ttl_minutes }} min.
+      </p>
+    </div>
+  </header>
+
+  {% if just_created %}
+  <section class="tokens-section token-just-created">
+    <h2>Connector URL ready</h2>
+    <p>
+      Paste this URL in ChatGPT (Settings → Connectors → Add custom). It can
+      be used once and dies in {{ slug_ttl_minutes }} min.
+    </p>
+    <div class="token-value-wrap">
+      <code class="token-value">{{ just_created.url }}</code>
+      <button type="button" class="btn-copy" data-copy="{{ just_created.url }}">
+        <svg width="14" height="14"><use href="#i-copy"/></svg>
+        Copy
+      </button>
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="tokens-section">
+    <h2>New connector</h2>
+    {% if form_error %}
+      <div class="banner banner-error">{{ form_error }}</div>
+    {% endif %}
+    <form method="POST" action="/app/connectors/slug" class="tokens-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>
+        <span>Label (shown in your list of active connectors)</span>
+        <input type="text" name="label" required maxlength="60"
+               placeholder="ChatGPT iPhone, ChatGPT macOS…"
+               value="{{ form_label or '' }}"
+               {% if locked %}disabled{% endif %}>
+      </label>
+      <label>
+        <span>2FA code</span>
+        <input type="text" name="totp" inputmode="numeric"
+               pattern="\d{6}" maxlength="6"
+               autocomplete="one-time-code" required
+               placeholder="000000" {% if locked %}disabled{% endif %}>
+      </label>
+      <button type="submit" {% if locked %}disabled{% endif %}>Mint URL</button>
+    </form>
+  </section>
+
+  <section class="tokens-section">
+    <h2>Pending URLs</h2>
+    {% if pending_slugs %}
+    <ul class="tokens-list">
+      {% for s in pending_slugs %}
+      <li class="token-row">
+        <div class="token-row-head">
+          <strong>{{ s.label }}</strong>
+          <code class="token-prefix">{{ s.slug[:10] }}…</code>
+        </div>
+        <div class="token-row-meta muted small">
+          expires in {{ s.expires_in_minutes }} min
+        </div>
+        <form method="POST" action="/app/connectors/slug/delete" class="token-revoke-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="slug" value="{{ s.slug }}">
+          <button type="submit" class="btn-danger">
+            <svg width="14" height="14"><use href="#i-trash"/></svg>
+            Cancel
+          </button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">No pending URLs.</p>
+    {% endif %}
+  </section>
+
+  <section class="tokens-section">
+    <h2>Active connectors</h2>
+    {% if derived_clients %}
+    <ul class="tokens-list">
+      {% for c in derived_clients %}
+      <li class="token-row">
+        <div class="token-row-head">
+          <strong>{{ c.name }}</strong>
+          <code class="token-prefix">{{ c.client_id }}</code>
+        </div>
+        <div class="token-row-meta muted small">
+          registered {{ c.created_at_human }}
+        </div>
+        <form method="POST" action="/app/connectors/revoke" class="token-revoke-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="client_id" value="{{ c.client_id }}">
+          <button type="submit" class="btn-danger">
+            <svg width="14" height="14"><use href="#i-trash"/></svg>
+            Revoke
+          </button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">No active ChatGPT connectors.</p>
+    {% endif %}
+  </section>
+</div>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="1.5" stroke="currentColor" stroke-width="2" fill="none"/><path d="M5 15H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v1" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
+    <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
+  </defs>
+</svg>
+
+<script type="module">
+  for (const btn of document.querySelectorAll("[data-copy]")) {
+    btn.addEventListener("click", async () => {
+      const value = btn.getAttribute("data-copy") || "";
+      try {
+        await navigator.clipboard.writeText(value);
+        const html = btn.innerHTML;
+        btn.textContent = "Copied ✓";
+        setTimeout(() => { btn.innerHTML = html; }, 1500);
+      } catch (err) {
+        console.error(err);
+      }
+    });
+  }
+</script>
+{% endblock %}

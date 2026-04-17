@@ -47,6 +47,7 @@ from .conversations import (
     ConversationStore,
 )
 from .db import Database
+from .dyn_reg import DynamicSlugStore, SLUG_TTL_SECONDS
 from .session import SESSION_TTL_SECONDS, Session, SessionStore
 from .usage import UsageMeter, UsageStore
 
@@ -86,6 +87,10 @@ class DashboardDeps:
     # any API key). "remote": pass an McpServer to Gemini with a public
     # URL so Google's backend calls MCP directly (Gemini 3 native).
     mcp_mode: str = "local"
+    # Slug store for OAuth DCR bootstrap URLs (ChatGPT). When unset, the
+    # /app/connectors page is hidden and the slug-scoped OAuth endpoints
+    # are not mounted.
+    dyn_reg: DynamicSlugStore | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -498,6 +503,168 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             just_created={"name": name, "token": token, "ttl": ttl},
         )
 
+    # --- ChatGPT connectors (OAuth DCR) ----------------------------------
+
+    def _connectors_enabled() -> bool:
+        return deps.dyn_reg is not None
+
+    def _render_connectors_page(
+        request: Request,
+        session: Session,
+        *,
+        form_error: str | None = None,
+        form_label: str = "",
+        just_created: dict[str, Any] | None = None,
+    ) -> Response:
+        store = deps.dyn_reg
+        assert store is not None  # checked by caller
+        now = time.time()
+        slugs = store.list_for_owner(session.client_id)
+        pending = [
+            {
+                "slug": s.slug,
+                "label": s.label,
+                "expires_in_minutes": max(0, round((s.expires_at - now) / 60)),
+            }
+            for s in slugs
+            if s.used_at is None and s.expires_at > now
+        ]
+        derived = deps.client_store.list_derived(session.client_id)  # type: ignore[attr-defined]
+        derived_rows = [
+            {
+                "client_id": c.client_id,
+                "name": c.name,
+                "created_at_human": _human_time(c.created_at),
+            }
+            for c in derived
+        ]
+        return _render(
+            "connectors.html",
+            request,
+            client_id=session.client_id,
+            client_name=(
+                deps.client_store.get_name(session.client_id)  # type: ignore[attr-defined]
+                or session.client_id
+            ),
+            pending_slugs=pending,
+            derived_clients=derived_rows,
+            slug_ttl_minutes=max(1, SLUG_TTL_SECONDS // 60),
+            form_error=form_error,
+            form_label=form_label,
+            just_created=just_created,
+            locked=deps.totp_locked(session.client_id),
+        )
+
+    async def connectors_get(request: Request) -> Response:
+        if not _connectors_enabled():
+            return RedirectResponse("/app/tokens", status_code=302)
+        session = _load_session(request, deps)
+        if not session:
+            return RedirectResponse("/app/login", status_code=302)
+        if not _bearer_live(deps, session):
+            return RedirectResponse(
+                "/app/refresh?next=/app/connectors", status_code=302,
+            )
+        return _render_connectors_page(request, session)
+
+    async def connectors_mint(request: Request) -> Response:
+        if not _connectors_enabled():
+            return RedirectResponse("/app/tokens", status_code=302)
+        session = _load_session(request, deps)
+        if not session:
+            return RedirectResponse("/app/login", status_code=302)
+        if not _bearer_live(deps, session):
+            return RedirectResponse(
+                "/app/refresh?next=/app/connectors", status_code=302,
+            )
+        if not await csrf.verify(request):
+            return JSONResponse({"error": "csrf"}, status_code=403)
+
+        form = await request.form()
+        label_raw = form.get("label", "")
+        label = (label_raw if isinstance(label_raw, str) else "").strip()
+        totp_raw = form.get("totp", "")
+        totp_code = (totp_raw if isinstance(totp_raw, str) else "").strip()
+
+        if not label:
+            return _render_connectors_page(
+                request, session, form_error="Label is required.", form_label=label,
+            )
+        if len(label) > 60:
+            return _render_connectors_page(
+                request, session,
+                form_error="Label cannot exceed 60 characters.",
+                form_label=label,
+            )
+        if deps.totp_locked(session.client_id):
+            return _render_connectors_page(
+                request, session,
+                form_error="Too many 2FA attempts; try again in 5 minutes.",
+                form_label=label,
+            )
+        if not deps.client_store.verify_totp(session.client_id, totp_code):  # type: ignore[attr-defined]
+            deps.totp_record_failure(session.client_id)
+            return _render_connectors_page(
+                request, session, form_error="Invalid 2FA code.", form_label=label,
+            )
+        deps.totp_record_success(session.client_id)
+
+        store = deps.dyn_reg
+        assert store is not None
+        store.prune_expired()
+        row = store.mint(owner_client_id=session.client_id, label=label)
+
+        scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+        host_hdr = request.headers.get(
+            "x-forwarded-host", request.headers.get("host", "localhost"),
+        )
+        url = f"{scheme}://{host_hdr}/mcp/c/{row.slug}"
+        return _render_connectors_page(
+            request, session,
+            just_created={"url": url},
+        )
+
+    async def connectors_slug_delete(request: Request) -> Response:
+        if not _connectors_enabled():
+            return RedirectResponse("/app/tokens", status_code=302)
+        session = _load_session(request, deps)
+        if not session:
+            return RedirectResponse("/app/login", status_code=302)
+        if not _bearer_live(deps, session):
+            return RedirectResponse(
+                "/app/refresh?next=/app/connectors", status_code=302,
+            )
+        if not await csrf.verify(request):
+            return JSONResponse({"error": "csrf"}, status_code=403)
+        form = await request.form()
+        slug_raw = form.get("slug", "")
+        slug = (slug_raw if isinstance(slug_raw, str) else "").strip()
+        if slug and deps.dyn_reg is not None:
+            deps.dyn_reg.delete_unused(slug, session.client_id)
+        return RedirectResponse("/app/connectors", status_code=303)
+
+    async def connectors_revoke(request: Request) -> Response:
+        if not _connectors_enabled():
+            return RedirectResponse("/app/tokens", status_code=302)
+        session = _load_session(request, deps)
+        if not session:
+            return RedirectResponse("/app/login", status_code=302)
+        if not _bearer_live(deps, session):
+            return RedirectResponse(
+                "/app/refresh?next=/app/connectors", status_code=302,
+            )
+        if not await csrf.verify(request):
+            return JSONResponse({"error": "csrf"}, status_code=403)
+        form = await request.form()
+        client_id_raw = form.get("client_id", "")
+        client_id = (client_id_raw if isinstance(client_id_raw, str) else "").strip()
+        if client_id:
+            target = deps.client_store.get(client_id)  # type: ignore[attr-defined]
+            # Only allow revoking clients WE own.
+            if target is not None and target.owner_client_id == session.client_id:
+                deps.client_store.revoke(client_id)  # type: ignore[attr-defined]
+        return RedirectResponse("/app/connectors", status_code=303)
+
     async def tokens_revoke(request: Request) -> Response:
         session = _load_session(request, deps)
         if not session:
@@ -861,6 +1028,10 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         Route("/app/tokens", tokens_get, methods=["GET"]),
         Route("/app/tokens", tokens_create, methods=["POST"]),
         Route("/app/tokens/revoke", tokens_revoke, methods=["POST"]),
+        Route("/app/connectors", connectors_get, methods=["GET"]),
+        Route("/app/connectors/slug", connectors_mint, methods=["POST"]),
+        Route("/app/connectors/slug/delete", connectors_slug_delete, methods=["POST"]),
+        Route("/app/connectors/revoke", connectors_revoke, methods=["POST"]),
         Route("/app/api/conversations", api_conv_list, methods=["GET"]),
         Route("/app/api/conversations", api_conv_create, methods=["POST"]),
         Route("/app/api/conversations/{conv_id}", api_conv_detail, methods=["GET"]),
@@ -997,6 +1168,12 @@ def _resolve_mcp_url(request: Request, deps: DashboardDeps) -> str:
 def _sse(event: str, data: Any) -> bytes:
     payload = json.dumps(data, ensure_ascii=False)
     return f"event: {event}\ndata: {payload}\n\n".encode("utf-8")
+
+
+def _human_time(ts: float) -> str:
+    """Render a Unix timestamp as a short human-readable date."""
+    import datetime as _dt
+    return _dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
 
 def _format_quota_message(block: Any) -> str:

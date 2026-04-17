@@ -5,8 +5,12 @@ Supports two grants on top of a pre-provisioned client store:
 - ``authorization_code`` with mandatory PKCE (S256) for browser-based clients
   such as Claude Web / mobile connectors
 
-Dynamic client registration (RFC 7591) is intentionally NOT supported: clients
-must be created out-of-band via ``beaconmcp auth create``.
+Dynamic client registration (RFC 7591) is available through a narrow,
+opt-in path: the dashboard mints a single-use bootstrap URL that lets a
+client (typically ChatGPT) self-register a derived OAuth client bound to
+its human owner. The derived client has no independent TOTP seed — 2FA at
+``/oauth/authorize`` is verified against the owner's seed so the second
+factor never leaves the owner's phone.
 """
 
 from __future__ import annotations
@@ -66,7 +70,18 @@ class Client:
     client_secret_hash: str
     name: str
     created_at: float
-    totp_secret: str  # base32-encoded TOTP seed; plaintext on purpose
+    # base32-encoded TOTP seed; plaintext on purpose. Empty string for
+    # dynamically-registered clients, which delegate TOTP verification to
+    # their owner.
+    totp_secret: str
+    # For clients born of an OAuth DCR bootstrap (e.g. ChatGPT), points at
+    # the human client whose TOTP seed guards /oauth/authorize for this
+    # client. ``None`` for CLI-provisioned clients (the common case).
+    owner_client_id: str | None = None
+    # Free-form tag describing how this client was created. ``None`` for
+    # CLI-provisioned clients; ``"chatgpt:<slug>"`` for DCR-created ones.
+    # Used by the dashboard to group and revoke derived clients.
+    registration_source: str | None = None
 
 
 @dataclass
@@ -132,17 +147,28 @@ class ClientStore:
             raise
 
         # Clients missing totp_secret predate the 2FA migration and are
-        # implicitly revoked. We log them, skip them, and rewrite the file
-        # below so they can't be re-loaded next boot.
+        # implicitly revoked UNLESS they have an owner_client_id (a derived
+        # DCR client delegates TOTP to its owner and legitimately has an
+        # empty seed). We log legacy-pre-2FA rows and drop them; we keep
+        # dynamic rows.
         revoked: list[str] = []
         for c in data.get("clients", []):
-            if not c.get("totp_secret"):
+            has_secret = bool(c.get("totp_secret"))
+            has_owner = bool(c.get("owner_client_id"))
+            if not has_secret and not has_owner:
                 revoked.append(f"{c.get('client_id', '?')} ({c.get('name', '?')})")
                 continue
             try:
-                self._clients[c["client_id"]] = Client(**c)
-            except TypeError:
-                # Unknown fields or missing required fields: treat as revoked.
+                self._clients[c["client_id"]] = Client(
+                    client_id=c["client_id"],
+                    client_secret_hash=c["client_secret_hash"],
+                    name=c["name"],
+                    created_at=c["created_at"],
+                    totp_secret=c.get("totp_secret", ""),
+                    owner_client_id=c.get("owner_client_id"),
+                    registration_source=c.get("registration_source"),
+                )
+            except (KeyError, TypeError):
                 revoked.append(f"{c.get('client_id', '?')} ({c.get('name', '?')})")
 
         if revoked:
@@ -164,6 +190,8 @@ class ClientStore:
                     "name": c.name,
                     "created_at": c.created_at,
                     "totp_secret": c.totp_secret,
+                    "owner_client_id": c.owner_client_id,
+                    "registration_source": c.registration_source,
                 }
                 for c in self._clients.values()
             ]
@@ -219,11 +247,24 @@ class ClientStore:
 
         Uses ``valid_window=1`` so a ±30 s clock drift between the server and
         the authenticator app is tolerated.
+
+        Dynamic clients (those with ``owner_client_id`` set) delegate
+        verification to the owner's seed: the human typing the code is
+        always the account owner, regardless of which client they are
+        minting a token for. The delegation chain is single-hop — an
+        owner whose own ``owner_client_id`` is set would be a bug.
         """
         client = self._clients.get(client_id)
         if not client:
             return False
         if not code or not code.isdigit() or len(code) != 6:
+            return False
+        if client.owner_client_id is not None:
+            owner = self._clients.get(client.owner_client_id)
+            if owner is None or not owner.totp_secret:
+                return False
+            return pyotp.TOTP(owner.totp_secret).verify(code, valid_window=1)
+        if not client.totp_secret:
             return False
         return pyotp.TOTP(client.totp_secret).verify(code, valid_window=1)
 
@@ -234,17 +275,72 @@ class ClientStore:
                 "client_id": c.client_id,
                 "name": c.name,
                 "created_at": c.created_at,
+                "owner_client_id": c.owner_client_id,
+                "registration_source": c.registration_source,
             }
             for c in self._clients.values()
         ]
 
+    def list_derived(self, owner_client_id: str) -> list[Client]:
+        """Return every dynamic client delegating TOTP to this owner."""
+        return [
+            c for c in self._clients.values()
+            if c.owner_client_id == owner_client_id
+        ]
+
     def revoke(self, client_id: str) -> bool:
-        """Revoke a client. Returns True if found and removed."""
-        if client_id in self._clients:
-            del self._clients[client_id]
-            self._save()
-            return True
-        return False
+        """Revoke a client. Returns True if found and removed.
+
+        Revoking an owner cascades: every derived client is dropped with
+        it (a derived client can't authenticate without the owner's TOTP
+        seed anyway — leaving orphaned rows around is pure clutter).
+        """
+        client = self._clients.get(client_id)
+        if client is None:
+            return False
+        del self._clients[client_id]
+        # Cascade to derived clients when the deleted row was an owner.
+        if client.owner_client_id is None:
+            derived = [
+                c.client_id for c in self._clients.values()
+                if c.owner_client_id == client_id
+            ]
+            for cid in derived:
+                del self._clients[cid]
+        self._save()
+        return True
+
+    def create_dynamic(
+        self,
+        *,
+        owner_client_id: str,
+        name: str,
+        registration_source: str,
+    ) -> tuple[str, str]:
+        """Provision a derived OAuth client for DCR.
+
+        Returns ``(client_id, client_secret)``. The client has no TOTP
+        seed of its own; ``verify_totp`` for this client delegates to
+        ``owner_client_id``'s seed. The owner MUST already exist.
+        """
+        if owner_client_id not in self._clients:
+            raise ValueError(f"unknown owner_client_id: {owner_client_id!r}")
+        client_id = "beaconmcp_" + secrets.token_hex(8)
+        client_secret = "sk_" + secrets.token_hex(32)
+        self._clients[client_id] = Client(
+            client_id=client_id,
+            client_secret_hash=_hash_secret(client_secret),
+            name=name,
+            created_at=time.time(),
+            totp_secret="",
+            owner_client_id=owner_client_id,
+            registration_source=registration_source,
+        )
+        self._save()
+        return client_id, client_secret
+
+    def get(self, client_id: str) -> Client | None:
+        return self._clients.get(client_id)
 
 
 class TokenCapExceeded(Exception):

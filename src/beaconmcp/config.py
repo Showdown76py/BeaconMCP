@@ -63,6 +63,12 @@ class ServerConfig:
     allowed_origins: list[str] = field(default_factory=list)
     clients_file: Path = Path("/opt/beaconmcp/clients.json")
     session_key: str | None = None
+    # Enables the OAuth Dynamic Client Registration path used by clients
+    # that cannot accept a pre-provisioned client_id/client_secret pair
+    # (notably ChatGPT). Still gated by a single-use bootstrap slug minted
+    # from the dashboard — a human with a TOTP mints every slug, and each
+    # slug can only register one client. Off by default.
+    allow_dynamic_registration: bool = False
 
 
 @dataclass
@@ -287,6 +293,9 @@ class Config:
                 srv_raw.get("clients_file", "/opt/beaconmcp/clients.json")
             ),
             session_key=srv_raw.get("session_key"),
+            allow_dynamic_registration=_bool(
+                srv_raw.get("allow_dynamic_registration", False)
+            ),
         )
 
         feat_raw = raw.get("features") or {}
@@ -360,6 +369,7 @@ class Config:
                 "allowed_origins": self.server.allowed_origins,
                 "clients_file": str(self.server.clients_file),
                 "session_key": mask(self.server.session_key or ""),
+                "allow_dynamic_registration": self.server.allow_dynamic_registration,
             },
             "proxmox": {
                 "verify_ssl": self.verify_ssl,

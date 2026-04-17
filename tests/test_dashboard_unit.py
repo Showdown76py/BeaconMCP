@@ -631,7 +631,7 @@ def test_migration_v1_to_v2_renames_gemini_models(tmp_path):
 
     # user_version reflects the migration (latest schema version).
     ver = db.conn().execute("PRAGMA user_version").fetchone()[0]
-    assert ver == 3
+    assert ver == 4
 
 
 def test_short_ciphertext_decryption_returns_none(store):

@@ -494,14 +494,31 @@ def _run_http(mcp, host: str, port: int):
         ):
             return await call_next(request)
 
+        # Slug-scoped DCR endpoints are public by design — the slug is the
+        # capability. The downstream handler rejects unknown/expired slugs.
+        if (
+            path.startswith("/.well-known/oauth-protected-resource/mcp/c/")
+            or path.startswith("/.well-known/oauth-authorization-server/as/")
+            or path.startswith("/oauth/register/c/")
+        ):
+            return await call_next(request)
+
         # Dashboard routes have their own session-based auth.
         if path.startswith("/app/"):
             return await call_next(request)
 
         # MCP 2025-06-18 + RFC 9728: point unauth'd clients at the resource
-        # metadata so they can discover the authorization server.
+        # metadata so they can discover the authorization server. For slug-
+        # scoped URLs (/mcp/c/<slug>) we point at the matching slug-scoped
+        # metadata so ChatGPT's DCR flow lands on /oauth/register/c/<slug>
+        # instead of the disabled global /oauth/register.
         issuer = _issuer(request)
-        resource_meta = f"{issuer}/.well-known/oauth-protected-resource"
+        if path.startswith("/mcp/c/") and dyn_reg_store is not None:
+            resource_meta = (
+                f"{issuer}/.well-known/oauth-protected-resource{path}"
+            )
+        else:
+            resource_meta = f"{issuer}/.well-known/oauth-protected-resource"
 
         authorization = request.headers.get("authorization", "")
         if not authorization.startswith("Bearer "):
@@ -532,20 +549,171 @@ def _run_http(mcp, host: str, port: int):
         finally:
             current_bearer_token.reset(token_var)
 
-    mcp_app = mcp.streamable_http_app()
+    # OAuth Dynamic Client Registration plumbing. Only engaged when both
+    # the feature flag is set AND the dashboard is enabled (the slug store
+    # lives in the dashboard's SQLite db).
+    from . import dashboard as _dashboard_mod
+    dyn_reg_store = None
+    shared_database = None
+    if config.server.allow_dynamic_registration:
+        if not _dashboard_mod.is_enabled():
+            print(
+                "ERROR: server.allow_dynamic_registration requires the dashboard "
+                "(BEACONMCP_DASHBOARD_ENABLED=true). DCR state lives in the "
+                "dashboard's database.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        from .dashboard.db import Database as _Database
+        from .dashboard.dyn_reg import DynamicSlugStore as _DynamicSlugStore
+        shared_database = _Database()
+        dyn_reg_store = _DynamicSlugStore(shared_database)
+
+    async def dcr_protected_resource_metadata(request: Request) -> Response:
+        # RFC 9728 resource metadata served at the slug-scoped path so
+        # ChatGPT (which uses the pasted URL as the resource) discovers
+        # the right authorization server. The issuer URL is also slug-
+        # scoped so the AS metadata can advertise a slug-specific
+        # registration_endpoint.
+        slug = request.path_params["slug"]
+        issuer = _issuer(request)
+        resource = f"{issuer}/mcp/c/{slug}"
+        return JSONResponse({
+            "resource": resource,
+            "authorization_servers": [f"{issuer}/as/{slug}"],
+            "bearer_methods_supported": ["header"],
+        })
+
+    async def dcr_oauth_metadata(request: Request) -> Response:
+        slug = request.path_params["slug"]
+        issuer = _issuer(request)
+        return JSONResponse({
+            "issuer": f"{issuer}/as/{slug}",
+            "authorization_endpoint": f"{issuer}/oauth/authorize",
+            "token_endpoint": f"{issuer}/oauth/token",
+            "registration_endpoint": f"{issuer}/oauth/register/c/{slug}",
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code"],
+            "code_challenge_methods_supported": ["S256"],
+            "token_endpoint_auth_methods_supported": ["client_secret_post"],
+        })
+
+    async def dcr_register(request: Request) -> Response:
+        if dyn_reg_store is None:
+            return JSONResponse({"error": "registration_not_supported"}, status_code=403)
+        slug = request.path_params["slug"]
+        row = dyn_reg_store.load(slug)
+        if row is None:
+            return JSONResponse(
+                {"error": "invalid_client_metadata",
+                 "error_description": "unknown bootstrap slug"},
+                status_code=404,
+            )
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        client_name = "ChatGPT connector"
+        if isinstance(body, dict):
+            candidate = body.get("client_name")
+            if isinstance(candidate, str) and candidate.strip():
+                client_name = candidate.strip()[:60]
+
+        try:
+            new_client_id, new_client_secret = client_store.create_dynamic(
+                owner_client_id=row.owner_client_id,
+                name=f"{row.label} ({client_name})"[:120],
+                registration_source=f"chatgpt:{slug}",
+            )
+        except ValueError:
+            return JSONResponse({"error": "invalid_client_metadata"}, status_code=400)
+
+        try:
+            dyn_reg_store.consume(slug, new_client_id)
+        except Exception:
+            # Lost the race or slug expired between load + consume. Roll
+            # back the just-created client to keep state consistent.
+            client_store.revoke(new_client_id)
+            return JSONResponse(
+                {"error": "invalid_client_metadata",
+                 "error_description": "bootstrap slug already used"},
+                status_code=409,
+            )
+
+        # RFC 7591 response. We advertise only the grant and methods we
+        # actually honor; clients that expected client_credentials here
+        # should not be using DCR.
+        return JSONResponse({
+            "client_id": new_client_id,
+            "client_secret": new_client_secret,
+            "client_id_issued_at": int(row.created_at),
+            "token_endpoint_auth_method": "client_secret_post",
+            "grant_types": ["authorization_code"],
+            "response_types": ["code"],
+            "redirect_uris": (
+                body.get("redirect_uris")
+                if isinstance(body, dict) and isinstance(body.get("redirect_uris"), list)
+                else []
+            ),
+        }, status_code=201)
+
+    class _McpSlugRewriteApp:
+        """ASGI shim that strips ``/mcp/c/<slug>`` down to ``/mcp`` before
+        handing off to the real MCP app. The slug serves only as a URL
+        alias for clients (ChatGPT) that pasted the bootstrap URL and
+        have no reason to call a different path after DCR."""
+
+        def __init__(self, inner):
+            self._inner = inner
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] == "http":
+                path = scope.get("path", "")
+                if path.startswith("/mcp/c/"):
+                    remainder = path[len("/mcp/c/"):]
+                    # Drop the slug segment itself; keep whatever follows.
+                    slash = remainder.find("/")
+                    suffix = remainder[slash:] if slash >= 0 else ""
+                    new_path = "/mcp" + suffix
+                    scope = dict(scope)
+                    scope["path"] = new_path
+                    raw = scope.get("raw_path")
+                    if isinstance(raw, bytes):
+                        scope["raw_path"] = new_path.encode("ascii")
+            await self._inner(scope, receive, send)
+
+    mcp_app = _McpSlugRewriteApp(mcp.streamable_http_app())
 
     # The MCP streamable-HTTP app starts its session manager task group in its
     # own lifespan. When we Mount it under a parent Starlette, only the parent
     # app's lifespan runs — so we forward the child's lifespan explicitly,
     # otherwise requests fail with "Task group is not initialized".
+    inner_mcp = mcp_app._inner
     @asynccontextmanager
     async def lifespan(_app):
-        async with mcp_app.router.lifespan_context(_app):
+        async with inner_mcp.router.lifespan_context(_app):
             yield
 
+    dcr_routes: list = []
+    if dyn_reg_store is not None:
+        dcr_routes = [
+            Route(
+                "/.well-known/oauth-protected-resource/mcp/c/{slug}",
+                dcr_protected_resource_metadata,
+            ),
+            Route(
+                "/.well-known/oauth-authorization-server/as/{slug}",
+                dcr_oauth_metadata,
+            ),
+            Route("/oauth/register/c/{slug}", dcr_register, methods=["POST"]),
+        ]
+
     # Optional dashboard routes (login + chat panels at /app/*).
-    dashboard_routes = _build_dashboard_routes(client_store, token_store, totp_locked,
-                                               totp_record_failure, totp_record_success)
+    dashboard_routes = _build_dashboard_routes(
+        client_store, token_store, totp_locked,
+        totp_record_failure, totp_record_success,
+        dyn_reg=dyn_reg_store, shared_database=shared_database,
+    )
 
     app = Starlette(
         routes=[
@@ -557,6 +725,7 @@ def _run_http(mcp, host: str, port: int):
             Route("/oauth/authorize", oauth_authorize_post, methods=["POST"]),
             Route("/oauth/token", oauth_token, methods=["POST"]),
             Route("/oauth/register", oauth_register, methods=["POST"]),
+            *dcr_routes,
             *dashboard_routes,
             Mount("/", app=mcp_app),
         ],
@@ -582,7 +751,8 @@ def _run_http(mcp, host: str, port: int):
 
 
 def _build_dashboard_routes(client_store, token_store, totp_locked,
-                             totp_record_failure, totp_record_success):
+                             totp_record_failure, totp_record_success,
+                             *, dyn_reg=None, shared_database=None):
     """Build dashboard routes if enabled. Returns [] when disabled."""
     from . import dashboard
     if not dashboard.is_enabled():
@@ -595,7 +765,7 @@ def _build_dashboard_routes(client_store, token_store, totp_locked,
     from .dashboard.session import SessionStore
     from .dashboard.usage import Budget, UsageStore
 
-    database = Database()
+    database = shared_database if shared_database is not None else Database()
     session_store = SessionStore(database)
     conversations = ConversationStore(database)
     confirmations = ConfirmationStore()
@@ -652,6 +822,7 @@ def _build_dashboard_routes(client_store, token_store, totp_locked,
         usage=usage,
         mcp_public_url=mcp_public_url,
         mcp_mode=mcp_mode,
+        dyn_reg=dyn_reg,
     )
     return build_dashboard_routes(deps)
 
