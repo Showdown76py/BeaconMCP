@@ -61,7 +61,9 @@ Clients (Claude, ChatGPT, Gemini)
 
 BeaconMCP runs on any host that can reach the Proxmox API of every declared node and the BMC management network. It speaks MCP over Streamable HTTP and is typically placed behind a reverse proxy with DNS-rebinding protection configured via `server.allowed_hosts` in the YAML.
 
-**Recommended deployment:** run BeaconMCP **directly on one of your Proxmox nodes** (the primary one, conventionally `pve1`). That node becomes addressable as `host: localhost` in the YAML — both the Proxmox API (`:8006`) and SSH (`:22`) are reachable without a reverse proxy or tunnel, which also lets the `bmc_*` SSH-jump tunnel feature (HP iLO on a private management VLAN) work without extra configuration. Remote nodes in the cluster keep using their public FQDN.
+**Recommended deployment:** put BeaconMCP on the **same local network** as your Proxmox cluster — on one of the nodes, in a dedicated LXC / VM, or in a Docker container with host networking (see *Docker* below). That way every `proxmox.nodes[].host` is a plain **LAN IP** (e.g. `10.0.0.1`, `10.0.0.2`), usable as-is for both the Proxmox API (`:8006`) and for SSH (`:22`) — including the `ssh.inherit_proxmox_nodes` shortcut and the `bmc_*` SSH-jump tunnel for HP iLO on a private management VLAN.
+
+Public FQDNs with reverse-proxy ports (`pve2.example.com:443`) pin the entry to HTTPS and break the SSH inheritance — the SSH service is on port 22 of the node, not behind the HTTPS tunnel. For a truly remote node, declare it explicitly under `ssh.hosts[]` with its real SSH address (Tailscale IP, VPN, bastion…).
 
 ---
 
@@ -77,9 +79,37 @@ BeaconMCP runs on any host that can reach the Proxmox API of every declared node
 
 ## Installation
 
-### 1. Install
+Two supported paths: **Docker** (quickest, isolated) or the **bare-metal install script** (native systemd service). Pick whichever fits your infra — they expose the same CLI and HTTP surface.
 
-SSH to the Proxmox node that will host BeaconMCP (we recommend your primary node — pve1 in typical setups), then:
+### Option A — Docker (recommended for most setups)
+
+Requires Docker Engine 20.10+ with the Compose plugin. Runs on the Proxmox node itself, inside an LXC/VM on the same LAN, or on any box that can reach every declared node's API and SSH port directly.
+
+```bash
+git clone https://github.com/Showdown76py/BeaconMCP.git
+cd BeaconMCP
+cp beaconmcp.yaml.example beaconmcp.yaml    # edit for your topology
+cp .env.example .env                        # fill in the ${VAR} secrets
+docker compose up -d
+```
+
+The bundled [`docker-compose.yml`](docker-compose.yml) uses `network_mode: host` so the container sits directly on the LAN — LAN IPs in `proxmox.nodes[].host` just work for both the Proxmox API (`:8006`) and SSH (`:22`), which is what makes the `ssh.inherit_proxmox_nodes` shortcut practical. State (OAuth clients, dashboard DB, usage history) lives in a named volume `beaconmcp-state` and survives container recreation.
+
+Initial setup (run once, while the container is up):
+
+```bash
+docker compose exec beaconmcp beaconmcp validate-config
+docker compose exec beaconmcp beaconmcp auth create --name "Claude Web"
+curl http://localhost:8420/health        # should return {"status":"ok",...}
+```
+
+The container listens on port 8420; put HTTPS + your FQDN in front with any reverse proxy (Caddy, nginx, Traefik, Cloudflare tunnel).
+
+**SSH key files.** If any of your `ssh.hosts[]` entries (or `ssh.defaults`) use `key_file:`, either copy the keys into the `beaconmcp-state` volume and reference them via `/state/keys/...`, or uncomment the `~/.ssh` bind mount in the compose file. Host paths like `~/.ssh/id_ed25519` don't exist inside the container — they're resolved against the container's filesystem.
+
+### Option B — Bare-metal install script
+
+SSH to the Proxmox node that will host BeaconMCP (we recommend your primary node — `pve1` in typical setups), then:
 
 ```bash
 git clone https://github.com/Showdown76py/BeaconMCP.git /opt/beaconmcp
@@ -182,7 +212,7 @@ Common keys:
 |---------|-------|
 | `server.allowed_hosts` | DNS-rebinding allowlist — **must** include the public FQDN behind your reverse proxy. |
 | `server.allowed_origins` | CORS allowlist for browser-based MCP clients. |
-| `proxmox.nodes[]` | One entry per Proxmox node. Needs an API token per node. For the host BeaconMCP itself runs on, use `host: localhost` — both the API (`:8006`) and SSH (`:22`) are reachable locally without going through any reverse proxy or tunnel. Remote nodes in the cluster use their FQDN (append `:443` if a reverse proxy terminates the API). |
+| `proxmox.nodes[]` | One entry per Proxmox node. Needs an API token per node. Prefer a **LAN IP** in `host:` (e.g. `10.0.0.1`) — it's the one string that works for both the Proxmox API and for SSH inheritance. `localhost` is OK when BeaconMCP runs directly on that node. Only use an FQDN with a reverse-proxy port (e.g. `:443`) for nodes you can't reach on the LAN, and declare those explicitly under `ssh.hosts[]` with their real SSH address. |
 | `ssh.hosts[]` | One entry per SSH target (VPS, Proxmox node, jump box, …). Each entry carries its own `user` + exactly one of `password` / `key_file`. Names may match `proxmox.nodes[].name`. |
 | `ssh.defaults` + `ssh.inherit_proxmox_nodes` | Homelab shortcut. Set `defaults:` (user + password/key_file) and flip `inherit_proxmox_nodes: true` — every Proxmox node becomes SSH-reachable under its own name with those defaults, no duplication. Explicit `ssh.hosts[]` entries still win when they match a node by name or address. |
 | `ssh.vmid_to_ip` | Optional template (e.g. `"192.168.1.{id}"`) used by `ssh_run` when the `host` argument is a bare VMID. The resolved IP must match an `ssh.hosts[].host` to authenticate. Omit to disable numeric-ID shortcuts. |

@@ -51,18 +51,28 @@ server:
 # -------- Proxmox capability (optional) ------------------------------------
 # Delete this section if you have no Proxmox cluster. Tools starting with
 # `proxmox_` won't be registered.
+#
+# `host:` convention — use the node's **LAN address** whenever BeaconMCP is
+# on the same local network as the cluster. It's the one string that works
+# cleanly for *both* the Proxmox API (port 8006) and SSH inheritance (port
+# 22) — same IP, two services. A `localhost` is fine when BeaconMCP runs
+# directly on that node. Avoid public FQDNs with reverse-proxy ports (e.g.
+# `pve2.example.com:443`): the port pins the API to HTTPS and breaks the
+# `ssh.inherit_proxmox_nodes` shortcut (SSH is on :22, not :443). For a
+# fully remote node, declare it explicitly under `ssh.hosts[]` with its
+# real SSH address (Tailscale IP, VPN tunnel, bastion…).
 proxmox:
   verify_ssl: false
   # One entry per Proxmox node. N nodes supported; the first one is not special.
   # Each node needs an API token (Datacenter > Permissions > API Tokens).
   nodes:
     - name: pve1
-      host: localhost                          # node BeaconMCP runs on
+      host: 10.0.0.1                           # LAN IP — works for both API and SSH
       token_id: "root@pam!beaconmcp"           # quotes required: '!' and '@' are YAML-reserved
       token_secret: ${PVE1_TOKEN_SECRET}
 
     - name: pve2
-      host: pve2.example.com:443               # reachable remote node (reverse-proxied API)
+      host: 10.0.0.2                           # LAN IP of the second node
       token_id: "root@pam!beaconmcp"
       token_secret: ${PVE2_TOKEN_SECRET}
 
@@ -110,12 +120,14 @@ ssh:
       user: admin
       password: ${VPS2_PW}
 
-    # Example override: if pve2 needs a different key than `defaults`, declare
-    # it explicitly — inheritance sees the name match and skips synthesizing.
-    # - name: pve2
-    #   host: pve2.example.com
+    # Example: a Proxmox node BeaconMCP can't reach on the LAN (remote datacenter,
+    # API behind a Cloudflare tunnel on :443, etc.) — the inherited SSH entry
+    # would point at the API URL which is wrong for SSH. Declare the node here
+    # explicitly with its real SSH address and the override wins.
+    # - name: pve-remote
+    #   host: 100.64.5.3              # Tailscale IP, VPN tunnel, bastion, …
     #   user: root
-    #   key_file: ~/.ssh/pve2_only
+    #   key_file: ~/.ssh/pve_remote
 
 # -------- BMC capability (optional) ----------------------------------------
 # Delete this section if you have no HP iLO / IPMI / iDRAC / Supermicro
