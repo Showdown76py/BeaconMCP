@@ -603,6 +603,60 @@ button.ghost.full { width: 100%; justify-content: center; }
 
 .tool-card.tool-pending svg { animation: spin 1s linear infinite; }
 
+.tool-card.tool-awaiting {
+  border-color: color-mix(in oklab, var(--accent) 55%, var(--border));
+  background: color-mix(in oklab, var(--accent) 8%, var(--bg-soft));
+}
+.tool-card.tool-awaiting svg { color: var(--accent); }
+
+.tool-card.tool-rejected {
+  border-color: color-mix(in oklab, var(--danger) 35%, var(--border));
+  opacity: 0.75;
+}
+.tool-card.tool-rejected svg { color: var(--danger); }
+
+.tool-badge {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 18%, transparent);
+  border: 1px solid color-mix(in oklab, var(--accent) 40%, var(--border));
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.tool-confirm-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+.tool-confirm-actions .btn {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s, border-color 0.15s, transform 0.05s;
+}
+.tool-confirm-actions .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.tool-confirm-actions .btn-approve {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.tool-confirm-actions .btn-approve:hover:not(:disabled) { filter: brightness(1.08); }
+.tool-confirm-actions .btn-reject {
+  background: transparent;
+  color: var(--fg);
+}
+.tool-confirm-actions .btn-reject:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--danger) 55%, var(--border));
+  color: var(--danger);
+}
+
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .tool-name {

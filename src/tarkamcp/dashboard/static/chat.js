@@ -394,8 +394,13 @@ function renderMessage(m) {
 
 function renderToolCard(tc) {
   const card = document.createElement("details");
-  card.className = `tool-card tool-${tc.status || "pending"}`;
+  const stateClass = tc.status === "awaiting_confirm"
+    ? "tool-awaiting"
+    : `tool-${tc.status || "pending"}`;
+  card.className = `tool-card ${stateClass}`;
   card.dataset.id = tc.id;
+  // Auto-expand cards waiting for approval so the user sees the args.
+  if (tc.status === "awaiting_confirm") card.open = true;
 
   const sum = document.createElement("summary");
   const icon = document.createElement("svg");
@@ -403,7 +408,10 @@ function renderToolCard(tc) {
   icon.setAttribute("height", "14");
   icon.setAttribute("aria-hidden", "true");
   const iconId = tc.status === "ok" ? "#i-check"
-    : tc.status === "error" ? "#i-warn" : "#i-spin";
+    : tc.status === "error" ? "#i-warn"
+    : tc.status === "rejected" ? "#i-x"
+    : tc.status === "awaiting_confirm" ? "#i-warn"
+    : "#i-spin";
   icon.innerHTML = `<use href="${iconId}"/>`;
   sum.append(icon);
 
@@ -411,6 +419,13 @@ function renderToolCard(tc) {
   name.className = "tool-name";
   name.textContent = tc.name;
   sum.append(name);
+
+  if (tc.status === "awaiting_confirm") {
+    const badge = document.createElement("span");
+    badge.className = "tool-badge";
+    badge.textContent = "approbation requise";
+    sum.append(badge);
+  }
 
   if (tc.duration_ms != null) {
     const dur = document.createElement("span");
@@ -435,8 +450,44 @@ function renderToolCard(tc) {
     resBlock.textContent = `result: ${tc.preview}`;
     detail.append(resBlock);
   }
+
+  if (tc.status === "awaiting_confirm") {
+    const actions = document.createElement("div");
+    actions.className = "tool-confirm-actions";
+
+    const approve = document.createElement("button");
+    approve.type = "button";
+    approve.className = "btn btn-approve";
+    approve.textContent = "Autoriser";
+    approve.addEventListener("click", () => sendConfirmation(tc.id, true, approve, reject));
+
+    const reject = document.createElement("button");
+    reject.type = "button";
+    reject.className = "btn btn-reject";
+    reject.textContent = "Refuser";
+    reject.addEventListener("click", () => sendConfirmation(tc.id, false, approve, reject));
+
+    actions.append(approve, reject);
+    detail.append(actions);
+  }
+
   card.append(detail);
   return card;
+}
+
+async function sendConfirmation(callId, approve, approveBtn, rejectBtn) {
+  approveBtn.disabled = true;
+  rejectBtn.disabled = true;
+  try {
+    await apiJson("/app/api/chat/confirm", {
+      method: "POST",
+      body: { call_id: callId, approve },
+    });
+  } catch (err) {
+    console.error(err);
+    approveBtn.disabled = false;
+    rejectBtn.disabled = false;
+  }
 }
 
 function scrollToBottom() {
@@ -663,6 +714,29 @@ function handleEvent({ event, data }, assistantMsg, row, body, toolCardMap) {
       const card = renderToolCard(tc);
       toolCardMap.set(data.id, { tc, card });
       body.before(card);
+      scrollToBottom();
+      break;
+    }
+    case "tool_confirm_required": {
+      // Either the tool_call event already landed (upgrade existing
+      // card to awaiting_confirm), or it didn't (build a fresh card
+      // straight in that state).
+      let entry = toolCardMap.get(data.id);
+      if (!entry) {
+        const tc = {
+          id: data.id, name: data.name, args: data.args || {},
+          status: "awaiting_confirm", preview: null, duration_ms: null,
+        };
+        assistantMsg.tool_calls.push(tc);
+        const card = renderToolCard(tc);
+        toolCardMap.set(data.id, { tc, card });
+        body.before(card);
+      } else {
+        entry.tc.status = "awaiting_confirm";
+        const fresh = renderToolCard(entry.tc);
+        entry.card.replaceWith(fresh);
+        entry.card = fresh;
+      }
       scrollToBottom();
       break;
     }
