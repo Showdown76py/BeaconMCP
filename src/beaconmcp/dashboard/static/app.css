@@ -1356,29 +1356,108 @@ a.sidebar-link { cursor: pointer; }
 .tab-panel { display: none; }
 #tab-oauth:checked  ~ .tab-panel[data-panel=oauth],
 #tab-dcr:checked    ~ .tab-panel[data-panel=dcr],
-#tab-bearer:checked ~ .tab-panel[data-panel=bearer],
-#p-claude:checked      ~ .tab-panel[data-panel=claude],
-#p-chatgpt:checked     ~ .tab-panel[data-panel=chatgpt],
-#p-gemini-web:checked  ~ .tab-panel[data-panel=gemini-web],
-#p-gemini-cli:checked  ~ .tab-panel[data-panel=gemini-cli],
-#p-antigravity:checked ~ .tab-panel[data-panel=antigravity],
-#p-other:checked       ~ .tab-panel[data-panel=other] {
+#tab-bearer:checked ~ .tab-panel[data-panel=bearer] {
   display: block;
 }
 
-/* Active-tab underline + color */
+/* Active-tab underline + color (inner: method or platform) */
 #tab-oauth:checked  ~ .inner-tabs [for=tab-oauth],
 #tab-dcr:checked    ~ .inner-tabs [for=tab-dcr],
 #tab-bearer:checked ~ .inner-tabs [for=tab-bearer],
-#p-claude:checked      ~ .inner-tabs [for=p-claude],
-#p-chatgpt:checked     ~ .inner-tabs [for=p-chatgpt],
-#p-gemini-web:checked  ~ .inner-tabs [for=p-gemini-web],
-#p-gemini-cli:checked  ~ .inner-tabs [for=p-gemini-cli],
-#p-antigravity:checked ~ .inner-tabs [for=p-antigravity],
-#p-other:checked       ~ .inner-tabs [for=p-other] {
+#p-claude:checked    ~ .inner-tabs [for=p-claude],
+#p-chatgpt:checked   ~ .inner-tabs [for=p-chatgpt],
+#p-gemini:checked    ~ .inner-tabs [for=p-gemini],
+#p-mistral:checked   ~ .inner-tabs [for=p-mistral],
+#p-opencode:checked  ~ .inner-tabs [for=p-opencode],
+#p-vscode:checked    ~ .inner-tabs [for=p-vscode],
+#p-cursor:checked    ~ .inner-tabs [for=p-cursor],
+#p-other:checked     ~ .inner-tabs [for=p-other] {
   color: var(--fg);
   border-bottom-color: var(--accent, #e57000);
   font-weight: 600;
+}
+
+/* Replace old platform-tab selector set */
+#p-claude:checked ~ .tab-panel[data-panel=claude],
+#p-chatgpt:checked ~ .tab-panel[data-panel=chatgpt],
+#p-gemini:checked ~ .tab-panel[data-panel=gemini],
+#p-mistral:checked ~ .tab-panel[data-panel=mistral],
+#p-opencode:checked ~ .tab-panel[data-panel=opencode],
+#p-vscode:checked ~ .tab-panel[data-panel=vscode],
+#p-cursor:checked ~ .tab-panel[data-panel=cursor],
+#p-other:checked ~ .tab-panel[data-panel=other] {
+  display: block;
+}
+
+/* Third-level sub-tabs (e.g. Claude: Web/Mobile · Desktop) */
+.sub-tabs {
+  display: inline-flex;
+  gap: 0.15rem;
+  padding: 0.2rem;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin: 0.75rem 0 1rem;
+}
+.sub-tab {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+  border-radius: calc(var(--radius-sm) - 2px);
+  cursor: pointer;
+  user-select: none;
+  transition: color 120ms ease, background 120ms ease;
+}
+.sub-tab:hover { color: var(--fg); }
+.sub-panel { display: none; }
+
+/* Claude variants */
+#cv-web:checked ~ .sub-panel[data-sub=claude-web],
+#cv-desktop:checked ~ .sub-panel[data-sub=claude-desktop] { display: block; }
+#cv-web:checked ~ .sub-tabs [for=cv-web],
+#cv-desktop:checked ~ .sub-tabs [for=cv-desktop] {
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+/* ChatGPT variants */
+#gv-web:checked ~ .sub-panel[data-sub=chatgpt-web],
+#gv-mobile:checked ~ .sub-panel[data-sub=chatgpt-mobile] { display: block; }
+#gv-web:checked ~ .sub-tabs [for=gv-web],
+#gv-mobile:checked ~ .sub-tabs [for=gv-mobile] {
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+/* Gemini variants */
+#gem-cli:checked ~ .sub-panel[data-sub=gem-cli],
+#gem-web:checked ~ .sub-panel[data-sub=gem-web],
+#gem-antigravity:checked ~ .sub-panel[data-sub=gem-antigravity] { display: block; }
+#gem-cli:checked ~ .sub-tabs [for=gem-cli],
+#gem-web:checked ~ .sub-tabs [for=gem-web],
+#gem-antigravity:checked ~ .sub-tabs [for=gem-antigravity] {
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+/* Mistral variants */
+#mi-lechat:checked ~ .sub-panel[data-sub=mi-lechat],
+#mi-vibe:checked ~ .sub-panel[data-sub=mi-vibe] { display: block; }
+#mi-lechat:checked ~ .sub-tabs [for=mi-lechat],
+#mi-vibe:checked ~ .sub-tabs [for=mi-vibe] {
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+/* Hide inline radios used by sub-tabs */
+.tab-panel > input[type=radio] {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
 }
 
 /* Card layout shared by method and platform panels */

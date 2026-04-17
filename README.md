@@ -227,6 +227,92 @@ For programmatic Gemini API usage, the BeaconMCP server is passed as a remote MC
 
 4. When the bearer expires, re-issue it through the dashboard. Long-running services should rotate tokens on a schedule (an operator typing the TOTP) rather than embedding the seed.
 
+### Mistral
+
+Mistral's clients (Le Chat web/mobile, Mistral Vibe) use a static bearer header, same as Gemini.
+
+**Le Chat** — *Settings → Connectors → Add custom MCP server* (Pro / Enterprise plans):
+- URL: `https://<your-host>/mcp`
+- Auth: Bearer token → paste your dashboard-issued token.
+
+**Mistral Vibe** — add BeaconMCP to the Vibe config file:
+
+```json
+// ~/.mistral/vibe/config.json
+{
+  "mcp": {
+    "servers": {
+      "beaconmcp": {
+        "url": "https://<your-host>/mcp",
+        "headers": { "Authorization": "Bearer <token>" }
+      }
+    }
+  }
+}
+```
+
+Cross-check against the Vibe docs — the schema has been iterating.
+
+### OpenCode
+
+OpenCode reads MCP servers from `opencode.json` (or `~/.config/opencode/opencode.json`):
+
+```json
+{
+  "mcp": {
+    "beaconmcp": {
+      "type": "remote",
+      "url": "https://<your-host>/mcp",
+      "headers": {
+        "Authorization": "Bearer <token>"
+      }
+    }
+  }
+}
+```
+
+Use `"type": "remote"` for a hosted BeaconMCP; the `local` type is for stdio-based servers.
+
+### VS Code
+
+VS Code's built-in MCP client picks up servers from workspace or user settings:
+
+```json
+// .vscode/mcp.json  (or settings.json → "mcp.servers")
+{
+  "servers": {
+    "beaconmcp": {
+      "type": "http",
+      "url": "https://<your-host>/mcp",
+      "headers": {
+        "Authorization": "Bearer <token>"
+      }
+    }
+  }
+}
+```
+
+Verify with *Command Palette → MCP: List Servers*. If you rely on GitHub Copilot's MCP integration, field names may differ — check the extension's readme.
+
+### Cursor
+
+Cursor reads MCP servers from `.cursor/mcp.json` (per-project) or `~/.cursor/mcp.json` (global):
+
+```json
+{
+  "mcpServers": {
+    "beaconmcp": {
+      "url": "https://<your-host>/mcp",
+      "headers": {
+        "Authorization": "Bearer <token>"
+      }
+    }
+  }
+}
+```
+
+Reload the Cursor window after editing; the server shows up under *Settings → Cursor Settings → MCP Servers* with a live status indicator.
+
 ### Other MCP-over-HTTP clients
 
 Any client that can send a bearer on `https://<your-host>/mcp` works the same way: create a token from `/app/tokens` after typing your TOTP, configure the client to send `Authorization: Bearer <token>`, revoke from the same page when you are done. If the client natively speaks OAuth 2.1 (like Claude), prefer that flow — it keeps the TOTP prompt at the authorization page instead of relying on a stored bearer.
