@@ -32,14 +32,21 @@ proxmox:
   verify_ssl: false
   # One entry per Proxmox node. N nodes supported; the first one is not special.
   # Each node needs an API token (Datacenter > Permissions > API Tokens).
+  #
+  # Recommended deployment: install BeaconMCP directly on one of your
+  # Proxmox nodes (typically pve1). That node is then addressable as
+  # "localhost" — the API on :8006 and SSH on :22 are both reachable
+  # without traversing a reverse proxy or tunnel, which also lets the
+  # BMC-over-SSH-tunnel feature work out of the box. Remote nodes use
+  # their public FQDN (with a reverse-proxy port if applicable).
   nodes:
     - name: pve1
-      host: pve1.example.com
-      token_id: "root@pam!beaconmcp"   # quotes required: '!' and '@' are YAML-reserved
+      host: localhost                          # node BeaconMCP runs on
+      token_id: "root@pam!beaconmcp"           # quotes required: '!' and '@' are YAML-reserved
       token_secret: ${PVE1_TOKEN_SECRET}
 
     - name: pve2
-      host: pve2.example.com
+      host: pve2.example.com:443               # reachable remote node (reverse-proxied API)
       token_id: "root@pam!beaconmcp"
       token_secret: ${PVE2_TOKEN_SECRET}
 
