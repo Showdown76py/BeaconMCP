@@ -78,6 +78,48 @@ function _stripOrdered(line) {
   return line.replace(/^\s*\d+\.\s+/, "");
 }
 
+// GitHub-flavored table row: splits `| a | b |` into ["a", "b"]. Handles
+// optional leading/trailing pipes. Escaped pipes (\|) are preserved as "|".
+function _splitTableRow(line) {
+  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  const cells = [];
+  let buf = "";
+  for (let k = 0; k < trimmed.length; k += 1) {
+    const ch = trimmed[k];
+    if (ch === "\\" && trimmed[k + 1] === "|") {
+      buf += "|";
+      k += 1;
+      continue;
+    }
+    if (ch === "|") {
+      cells.push(buf.trim());
+      buf = "";
+      continue;
+    }
+    buf += ch;
+  }
+  cells.push(buf.trim());
+  return cells;
+}
+
+function _isTableSeparator(line) {
+  if (!line || !/\|/.test(line)) return false;
+  const cells = _splitTableRow(line);
+  if (cells.length === 0) return false;
+  return cells.every((c) => /^:?-{3,}:?$/.test(c));
+}
+
+function _tableAlignments(sepLine) {
+  return _splitTableRow(sepLine).map((c) => {
+    const left = c.startsWith(":");
+    const right = c.endsWith(":");
+    if (left && right) return "center";
+    if (right) return "right";
+    if (left) return "left";
+    return null;
+  });
+}
+
 function renderMarkdown(text) {
   // 1. Pull fenced code blocks out so nothing munges their contents.
   const { stripped, blocks } = _extractFences(text);
@@ -136,6 +178,37 @@ function renderMarkdown(text) {
       }
       const body = quoted.map((l) => _renderInline(escapeHtml(l))).join("<br>");
       out.push(`<blockquote>${body}</blockquote>`);
+      continue;
+    }
+
+    // GFM table: header row followed by a separator row (| --- | --- |)
+    if (/\|/.test(line) && i + 1 < lines.length && _isTableSeparator(lines[i + 1])) {
+      flushParagraph();
+      const headers = _splitTableRow(line);
+      const aligns = _tableAlignments(lines[i + 1]);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && /\|/.test(lines[i]) && !/^\s*$/.test(lines[i])) {
+        rows.push(_splitTableRow(lines[i]));
+        i += 1;
+      }
+      const alignAttr = (idx) =>
+        aligns[idx] ? ` style="text-align:${aligns[idx]}"` : "";
+      const thead = `<thead><tr>${headers
+        .map((h, idx) => `<th${alignAttr(idx)}>${_renderInline(escapeHtml(h))}</th>`)
+        .join("")}</tr></thead>`;
+      const tbody = `<tbody>${rows
+        .map(
+          (r) =>
+            `<tr>${r
+              .map(
+                (c, idx) =>
+                  `<td${alignAttr(idx)}>${_renderInline(escapeHtml(c))}</td>`,
+              )
+              .join("")}</tr>`,
+        )
+        .join("")}</tbody>`;
+      out.push(`<table class="md-table">${thead}${tbody}</table>`);
       continue;
     }
 

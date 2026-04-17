@@ -693,6 +693,30 @@ a.sidebar-link { cursor: pointer; }
   margin: 1rem 0;
 }
 
+/* Tables (GFM) */
+.msg-body.md .md-table {
+  border-collapse: collapse;
+  margin: 0.5rem 0 0.85rem;
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+  font-size: 0.9rem;
+}
+.msg-body.md .md-table th,
+.msg-body.md .md-table td {
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+}
+.msg-body.md .md-table thead th {
+  background: var(--bg-soft);
+  font-weight: 600;
+}
+.msg-body.md .md-table tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--bg-soft) 50%, transparent);
+}
+
 /* Tool cards */
 
 .tool-card {
