@@ -5,23 +5,31 @@
 <meta name="csrf-token" content="{{ csrf_token }}">
 {% endblock %}
 {% block body %}
-<svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg" style="display:none">
-  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
-  <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
-  <symbol id="i-chev-d" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
-  <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
-  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="19" cy="12" r="1.5" fill="currentColor"/></symbol>
-  <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
-  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12l5 5L20 7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
-  <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3 2 21h20L12 3zm0 6v5m0 3v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
-  <symbol id="i-spin" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2" fill="none" opacity="0.2"/><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></symbol>
-  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor"/></symbol>
-  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L20 8l-4-4L4 16v4zm10-14 4 4" stroke="currentColor" stroke-width="2" stroke-linejoin="round" fill="none"/></symbol>
-  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
-  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l5-5-5-5M15 12H4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
-  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="1.5" stroke="currentColor" stroke-width="2" fill="none"/><path d="M5 15H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v1" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></symbol>
-  <symbol id="i-regen" viewBox="0 0 24 24"><path d="M20 4v6h-6M4 20v-6h6M20 10a8 8 0 0 0-14.47-3M4 14a8 8 0 0 0 14.47 3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
-  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M6 18 18 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+<svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1.5"/></symbol>
+  <symbol id="i-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M6 18 18 6"/></symbol>
+  <symbol id="i-chev-d" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-chev-r" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 21h20L12 3zm0 6v5m0 3v.5"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6l-8-3z"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v1"/></symbol>
+  <symbol id="i-regen" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 4v6h-6M4 20v-6h6"/><path d="M20 10a8 8 0 0 0-14.47-3M4 14a8 8 0 0 0 14.47 3"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l5-5-5-5M15 12H4"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="14" r="4"/><path d="m10 11 10-10m-2 2 2 2m-4 2 2 2"/></symbol>
+  <symbol id="i-sparkles" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 13.9 8.1 19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-cpu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></symbol>
+  <symbol id="i-server" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h5"/></symbol>
+  <symbol id="i-bolt" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></symbol>
+  <symbol id="i-gauge" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 14a4 4 0 1 0 4-4"/><path d="M12 2a10 10 0 0 1 10 10"/><path d="M2 12a10 10 0 0 1 4.5-8.36"/><path d="M12 14v-2"/></symbol>
 </svg>
 
 <div class="chat-root"
@@ -35,145 +43,134 @@
   <aside class="sidebar" id="sidebar" aria-label="Conversations">
     <div class="sidebar-head">
       <div class="brand">BeaconMCP</div>
-      <button id="close-sidebar" class="icon-btn mobile-only" aria-label="Fermer le menu">
-        <svg width="20" height="20"><use href="#i-x"/></svg>
+      <button id="close-sidebar" class="topbar-btn mobile-only" aria-label="Close menu">
+        <svg width="18" height="18"><use href="#i-x"/></svg>
       </button>
     </div>
 
-    <button id="new-chat" class="primary">
-      <svg width="16" height="16"><use href="#i-plus"/></svg>
-      <span>Nouveau chat</span>
+    <button id="new-chat" class="new-chat-btn" type="button">
+      <svg width="14" height="14"><use href="#i-plus"/></svg>
+      <span>New chat</span>
+      <span class="kbd">⌘K</span>
     </button>
 
     <a href="/app/tokens" class="sidebar-cta">
       <div class="sidebar-cta-icon">
-        <svg width="18" height="18"><use href="#i-copy"/></svg>
+        <svg width="14" height="14"><use href="#i-key"/></svg>
       </div>
       <div class="sidebar-cta-text">
-        <span class="sidebar-cta-title">Accès API</span>
-        <span class="sidebar-cta-sub">Brancher Claude, ChatGPT, Gemini, Cursor…</span>
+        <span class="sidebar-cta-title">API tokens</span>
+        <span class="sidebar-cta-sub">Connect Claude, Cursor, and more</span>
       </div>
-      <svg class="sidebar-cta-chev" width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
+      <svg class="sidebar-cta-chev" width="13" height="13"><use href="#i-chev-r"/></svg>
     </a>
 
-    <nav id="conv-list" aria-label="Liste des conversations"></nav>
+    <div class="sidebar-section">Recent</div>
+    <nav id="conv-list" class="conv-list" aria-label="Conversations"></nav>
 
     <div class="sidebar-foot">
       <div class="client-chip">
-        <span class="muted small">Session</span>
-        <span class="client-name">{{ client_name }}</span>
+        <div class="client-avatar" id="client-avatar">?</div>
+        <div class="client-info">
+          <span class="client-name">{{ client_name }}</span>
+          <span class="client-role">OAuth client</span>
+        </div>
+        <form method="POST" action="/app/logout" style="display:contents">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="client-logout" aria-label="Sign out">
+            <svg width="15" height="15"><use href="#i-logout"/></svg>
+          </button>
+        </form>
       </div>
-      <form method="POST" action="/app/logout">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit" class="ghost full">
-          <svg width="16" height="16"><use href="#i-logout"/></svg>
-          <span>Sign out</span>
-        </button>
-      </form>
     </div>
   </aside>
 
   <main class="main">
     <header class="topbar">
-      <button id="open-sidebar" class="icon-btn mobile-only" aria-label="Open menu">
-        <svg width="22" height="22"><use href="#i-menu"/></svg>
+      <button id="open-sidebar" class="topbar-btn mobile-only" aria-label="Open menu">
+        <svg width="18" height="18"><use href="#i-menu"/></svg>
       </button>
-      <h1 id="conv-title" class="title">New chat</h1>
-      <div class="topbar-actions">
-        <button id="conv-menu" class="icon-btn" aria-label="Options">
-          <svg width="20" height="20"><use href="#i-more"/></svg>
-        </button>
-      </div>
+      <h1 id="conv-title">New chat</h1>
+      <button id="conv-menu" class="topbar-btn" aria-label="Options" hidden>
+        <svg width="18" height="18"><use href="#i-more"/></svg>
+      </button>
     </header>
 
-    <section id="messages" class="messages" aria-live="polite"></section>
+    <section class="messages" id="messages" aria-live="polite"></section>
 
     <footer class="composer">
-      <div class="composer-options">
-        <label>
-          <span class="label">Model</span>
-          <select id="select-model">
-            {% for m in valid_models %}
-              <option value="{{ m }}" {% if m == default_model %}selected{% endif %}>{{ m }}</option>
-            {% endfor %}
-          </select>
-        </label>
-        <label>
-          <span class="label">Effort</span>
-          <select id="select-effort">
-            {% for e in valid_efforts %}
-              <option value="{{ e }}" {% if e == default_effort %}selected{% endif %}>{{ e }}</option>
-            {% endfor %}
-          </select>
-        </label>
+      <div class="composer-inner">
+        <div class="composer-tools">
+          <div class="model-picker" id="model-picker">
+            <button type="button" class="model-chip" id="model-chip" aria-expanded="false" aria-haspopup="listbox">
+              <span class="model-chip-name" id="model-chip-name">—</span>
+              <svg class="chev" width="12" height="12"><use href="#i-chev-d"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="composer-box">
+          <textarea id="composer-input" class="composer-text" rows="1"
+                    placeholder="Ask BeaconMCP to check a node, migrate a VM, or diagnose a BMC…"
+                    aria-label="Message"></textarea>
+          <div class="composer-row">
+            <button class="composer-send" id="composer-send" disabled aria-label="Send">
+              <svg width="15" height="15"><use href="#i-send"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="composer-hint" id="composer-hint" hidden>
+          <button type="button" class="usage-win" id="usage-5h" hidden>
+            <span class="usage-win-label">5h</span>
+            <span id="usage-5h-value">—</span>
+          </button>
+          <button type="button" class="usage-win" id="usage-week" hidden>
+            <span class="usage-win-label">7d</span>
+            <span id="usage-week-value">—</span>
+          </button>
+          <span id="composer-hint-text" style="opacity:0.7"></span>
+        </div>
       </div>
-      <div class="composer-row">
-        <textarea id="composer-input" rows="1"
-                  placeholder="Send a message to BeaconMCP…"
-                  aria-label="Message"></textarea>
-        <button id="composer-send" class="primary icon-btn" aria-label="Send">
-          <svg width="18" height="18"><use href="#i-send"/></svg>
-        </button>
-      </div>
-      <button id="usage-bar" class="usage-bar" hidden aria-live="polite"
-              type="button" aria-haspopup="dialog"
-              aria-label="Show usage details">
-        <span class="usage-win usage-5h">
-          <span class="usage-label">5h</span>
-          <span class="usage-value" id="usage-5h-value">—</span>
-        </span>
-        <span class="usage-sep" aria-hidden="true">·</span>
-        <span class="usage-win usage-week">
-          <span class="usage-label">7d</span>
-          <span class="usage-value" id="usage-week-value">—</span>
-        </span>
-      </button>
     </footer>
   </main>
 
-  <div id="sidebar-backdrop" class="backdrop" hidden></div>
+  <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
 
-  <div id="usage-modal-backdrop" class="backdrop usage-modal-backdrop" hidden></div>
-  <div id="usage-modal" class="usage-modal" role="dialog" aria-modal="true"
-       aria-labelledby="usage-modal-title" hidden tabindex="-1">
-    <header class="usage-modal-header">
+  <div class="backdrop" id="usage-backdrop" hidden></div>
+  <div class="modal" id="usage-modal" role="dialog" aria-modal="true" aria-labelledby="usage-modal-title" hidden tabindex="-1">
+    <div class="modal-head">
+      <svg width="16" height="16" aria-hidden="true"><use href="#i-gauge"/></svg>
       <h2 id="usage-modal-title">Usage limits</h2>
-      <button class="icon-btn usage-modal-close" type="button"
-              aria-label="Close">
-        <svg width="16" height="16"><use href="#i-x"/></svg>
+      <button class="modal-close" id="usage-modal-close" aria-label="Close">
+        <svg width="15" height="15"><use href="#i-x"/></svg>
       </button>
-    </header>
-
-    <section class="usage-section">
-      <div class="usage-section-head">
-        <h3>Current session</h3>
-        <span class="usage-percent" id="usage-modal-5h-pct">—</span>
+    </div>
+    <div class="modal-body">
+      <div class="usage-section" id="usage-section-5h">
+        <div class="usage-section-head">
+          <h3>Current 5h session</h3>
+          <span class="usage-pct" id="usage-modal-5h-pct">—</span>
+        </div>
+        <div class="usage-section-sub" id="usage-modal-5h-reset">—</div>
+        <div class="usage-bar-bg"><div class="usage-bar-fill" id="usage-modal-5h-fill" style="width:0%"></div></div>
       </div>
-      <p class="usage-reset-label" id="usage-modal-5h-reset">—</p>
-      <div class="usage-progress">
-        <div class="usage-progress-fill" id="usage-modal-5h-fill"></div>
+      <div class="usage-section" id="usage-section-week">
+        <div class="usage-section-head">
+          <h3>Rolling 7-day window</h3>
+          <span class="usage-pct" id="usage-modal-week-pct">—</span>
+        </div>
+        <div class="usage-section-sub">Sum over the last 7 days</div>
+        <div class="usage-bar-bg"><div class="usage-bar-fill" id="usage-modal-week-fill" style="width:0%"></div></div>
       </div>
-    </section>
-
-    <section class="usage-section">
-      <div class="usage-section-head">
-        <h3>Weekly window</h3>
-        <span class="usage-percent" id="usage-modal-week-pct">—</span>
-      </div>
-      <p class="usage-reset-label">Rolling 7-day window</p>
-      <div class="usage-progress">
-        <div class="usage-progress-fill" id="usage-modal-week-fill"></div>
-      </div>
-    </section>
-
-    <footer class="usage-modal-footer">
-      <span id="usage-modal-updated" class="usage-modal-updated">—</span>
-      <button class="usage-modal-refresh" type="button"
-              id="usage-modal-refresh" aria-label="Actualiser">
-        <svg width="14" height="14"><use href="#i-regen"/></svg>
-        <span>Actualiser</span>
+    </div>
+    <div class="modal-foot">
+      <span id="usage-modal-updated">—</span>
+      <button class="btn" id="usage-modal-refresh" type="button" aria-label="Refresh">
+        <svg width="12" height="12"><use href="#i-regen"/></svg>
+        <span>Refresh</span>
       </button>
-    </footer>
+    </div>
   </div>
 </div>
 

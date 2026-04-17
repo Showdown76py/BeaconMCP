@@ -173,11 +173,13 @@ def _apply_security_headers(response: Response) -> None:
     response.headers.setdefault(
         "Referrer-Policy", "strict-origin-when-cross-origin"
     )
-    # CSP for /app/* pages. No external resources, no inline scripts.
+    # CSP for /app/* pages. Google Fonts is allowlisted so the UI can
+    # pull Inter + JetBrains Mono; everything else stays same-origin.
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; "
-        "style-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
         "script-src 'self'; "
         "img-src 'self' data:; "
         "connect-src 'self'; "

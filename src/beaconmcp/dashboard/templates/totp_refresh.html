@@ -1,29 +1,37 @@
 {% extends "base.html" %}
-{% block title %}2FA code · BeaconMCP{% endblock %}
-{% block body_class %}centered-page{% endblock %}
+{% block title %}2FA · BeaconMCP{% endblock %}
+{% block body_class %}auth-page{% endblock %}
 {% block body %}
 <div class="auth-card">
-  <h1>BeaconMCP</h1>
-  <p class="muted">Session active for <strong>{{ client_name }}</strong></p>
-  <p class="muted small">The MCP token expired. Enter the 2FA code to renew it.</p>
+  <div class="auth-brand">
+    <span class="name">BeaconMCP</span>
+  </div>
+
+  <h1>Two-factor</h1>
+  <p class="sub">Session active for <strong>{{ client_name }}</strong>. Enter the 6-digit code from your authenticator app to renew your MCP token.</p>
 
   {% if banner %}
     <div class="banner banner-{{ banner_kind|default('error') }}">{{ banner }}</div>
   {% endif %}
 
-  <form method="POST" action="/app/refresh">
+  <form method="POST" action="/app/refresh" id="refresh-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
 
-    <label>
-      <span>2FA code</span>
-      <input type="text" name="totp" inputmode="numeric"
-             pattern="\d{6}" maxlength="6"
-             autocomplete="one-time-code" required autofocus
-             placeholder="000000" {% if locked %}disabled{% endif %}>
-    </label>
+    <div class="totp-inputs" id="totp-inputs">
+      <input maxlength="1" inputmode="numeric" aria-label="Digit 1" {% if locked %}disabled{% endif %}>
+      <input maxlength="1" inputmode="numeric" aria-label="Digit 2" {% if locked %}disabled{% endif %}>
+      <input maxlength="1" inputmode="numeric" aria-label="Digit 3" {% if locked %}disabled{% endif %}>
+      <input maxlength="1" inputmode="numeric" aria-label="Digit 4" {% if locked %}disabled{% endif %}>
+      <input maxlength="1" inputmode="numeric" aria-label="Digit 5" {% if locked %}disabled{% endif %}>
+      <input maxlength="1" inputmode="numeric" aria-label="Digit 6" {% if locked %}disabled{% endif %}>
+    </div>
+    <input type="hidden" name="totp" id="totp" pattern="\d{6}" required>
 
-    <button type="submit" {% if locked %}disabled{% endif %}>Renew</button>
+    <button type="submit" class="btn-primary" id="verify-btn" {% if locked %}disabled{% else %}disabled{% endif %}>
+      Renew session
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>
+    </button>
   </form>
 
   <form method="POST" action="/app/logout" class="secondary-action">
@@ -31,4 +39,6 @@
     <button type="submit" class="link">Sign out completely</button>
   </form>
 </div>
+
+<script src="/app/static/totp_refresh.js"></script>
 {% endblock %}
