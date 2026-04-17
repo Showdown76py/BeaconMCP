@@ -327,6 +327,75 @@ def test_classify_error_upstream_timeout():
     assert code == "upstream_timeout"
 
 
+def test_token_store_named_issue_and_list():
+    from tarkamcp.auth import TokenStore
+
+    ts = TokenStore()
+    t1, _ = ts.issue("cid", name="Gemini Web")
+    t2, _ = ts.issue("cid", name="ChatGPT")
+
+    rows = ts.list_named("cid")
+    assert len(rows) == 2
+    # Newest first
+    assert rows[0].name == "ChatGPT"
+    assert rows[1].name == "Gemini Web"
+    assert ts.count_named("cid") == 2
+
+    # Unnamed dashboard session token must not appear
+    ts.issue("cid")
+    assert ts.count_named("cid") == 2
+
+
+def test_token_store_cap_is_three():
+    from tarkamcp.auth import TokenCapExceeded, TokenStore
+
+    ts = TokenStore()
+    for i in range(3):
+        ts.issue("cid", name=f"t{i}")
+    with pytest.raises(TokenCapExceeded):
+        ts.issue("cid", name="overflow")
+    # Cap is per-client: another client is unaffected
+    ts.issue("other", name="ok")
+
+
+def test_token_store_cap_frees_after_revoke():
+    from tarkamcp.auth import TokenStore
+
+    ts = TokenStore()
+    t1, _ = ts.issue("cid", name="a")
+    ts.issue("cid", name="b")
+    ts.issue("cid", name="c")
+    assert ts.count_named("cid") == 3
+
+    # Expire (not just schedule-revoke) the first token so the cap count drops.
+    ts._tokens[t1].expires_at = 0
+    # Re-issue should now succeed.
+    ts.issue("cid", name="d")
+    assert ts.count_named("cid") == 3
+
+
+def test_token_store_revoke_named_by_prefix_scoped_to_client():
+    from tarkamcp.auth import TokenStore
+
+    ts = TokenStore()
+    t_mine, _ = ts.issue("me", name="Mine")
+    t_other, _ = ts.issue("other", name="Theirs")
+    prefix = t_other[:12]
+
+    # I can't revoke someone else's token even with the right prefix.
+    assert ts.revoke_named(prefix, "me") is False
+    # Owner can revoke their own.
+    assert ts.revoke_named(prefix, "other") is True
+
+
+def test_token_store_revoke_named_requires_min_prefix():
+    from tarkamcp.auth import TokenStore
+
+    ts = TokenStore()
+    ts.issue("cid", name="a")
+    assert ts.revoke_named("ab", "cid") is False  # too short
+
+
 def test_mcp_tool_to_declaration_passes_input_schema():
     from google.genai import types
 

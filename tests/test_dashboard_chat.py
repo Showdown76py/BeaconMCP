@@ -38,25 +38,76 @@ class FakeClientStore:
     def get_name(self, cid): return "Test"
 
 
+class _FakeTokenCapExceeded(Exception):
+    pass
+
+
 class FakeTokenStore:
+    NAMED_TOKEN_CAP = 3
+
     def __init__(self):
         self.revoked = []
         self._n = 0
         self._live: dict[str, str] = {}
-    def issue(self, cid):
+        # token -> (name, created_at, expires_at) for named tokens only
+        self._named: dict[str, tuple[str, float, float]] = {}
+
+    def issue(self, cid, *, name=None):
+        if name is not None:
+            active = sum(
+                1 for t, meta in self._named.items()
+                if self._live.get(t) == cid
+            )
+            if active >= self.NAMED_TOKEN_CAP:
+                err = _FakeTokenCapExceeded(f"max {self.NAMED_TOKEN_CAP}")
+                err.__class__.__name__ = "TokenCapExceeded"
+                raise err
         self._n += 1
-        token = f"b_{self._n}"
+        token = f"b_{self._n}" + ("x" * 60)  # pad so prefix[:12] is stable
         self._live[token] = cid
+        if name is not None:
+            self._named[token] = (name, time.time(), time.time() + BEARER_TTL_SECONDS)
         return token, BEARER_TTL_SECONDS
+
     def validate(self, token):
-        # Mirrors the real TokenStore: return client_id if the token
-        # was issued by this store instance. Tests can subclass to
-        # simulate a wiped store (e.g. after a service restart).
         return self._live.get(token)
+
     def revoke(self, token):
         self.revoked.append(token)
         self._live.pop(token, None)
+        self._named.pop(token, None)
         return True
+
+    # Named-token APIs ------------------------------------------------
+    def list_named(self, cid):
+        from dataclasses import dataclass
+
+        @dataclass
+        class _Row:
+            token: str
+            name: str
+            created_at: float
+            expires_at: float
+
+        return [
+            _Row(token=t, name=meta[0], created_at=meta[1], expires_at=meta[2])
+            for t, meta in self._named.items()
+            if self._live.get(t) == cid
+        ]
+
+    def count_named(self, cid):
+        return len(self.list_named(cid))
+
+    def revoke_named(self, token_prefix, cid):
+        if len(token_prefix) < 6:
+            return False
+        matches = [
+            t for t in self._named
+            if t.startswith(token_prefix) and self._live.get(t) == cid
+        ]
+        if len(matches) != 1:
+            return False
+        return self.revoke(matches[0])
 
 
 @pytest.fixture()
@@ -590,6 +641,132 @@ def test_confirm_endpoint_rejects_unknown_call_id(app_and_client):
         content=json.dumps({"call_id": "nope", "approve": True}),
     )
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Tokens page
+# ---------------------------------------------------------------------------
+
+def test_tokens_page_requires_auth(app_and_client):
+    _, client = app_and_client
+    r = client.get("/app/tokens")
+    assert r.status_code == 302
+    assert r.headers["location"] == "/app/login"
+
+
+def test_tokens_page_lists_empty(app_and_client):
+    _, client = app_and_client
+    _login(client)
+    r = client.get("/app/tokens")
+    assert r.status_code == 200
+    assert "Aucun token actif" in r.text
+    assert "0/3" in r.text  # count indicator
+
+
+def test_tokens_create_requires_name(app_and_client):
+    _, client = app_and_client
+    csrf = _login(client)
+    r = client.post(
+        "/app/tokens",
+        headers={"X-CSRF-Token": csrf, "Content-Type": "application/x-www-form-urlencoded"},
+        data={"csrf_token": csrf, "name": "", "totp": "123456"},
+    )
+    assert r.status_code == 200
+    assert "Le nom est obligatoire" in r.text
+
+
+def test_tokens_create_requires_totp(app_and_client):
+    _, client = app_and_client
+    csrf = _login(client)
+    r = client.post(
+        "/app/tokens",
+        data={"csrf_token": csrf, "name": "Gemini Web", "totp": "999999"},
+    )
+    assert r.status_code == 200
+    assert "Code 2FA invalide" in r.text
+
+
+def test_tokens_create_success(app_and_client, deps):
+    _, client = app_and_client
+    csrf = _login(client)
+    r = client.post(
+        "/app/tokens",
+        data={"csrf_token": csrf, "name": "Gemini Web", "totp": "123456"},
+    )
+    assert r.status_code == 200
+    assert "Nouveau token créé" in r.text
+    assert "Gemini Web" in r.text
+    assert deps.token_store.count_named("c") == 1
+
+
+def test_tokens_create_enforces_cap(app_and_client, deps):
+    _, client = app_and_client
+    csrf = _login(client)
+    for i in range(3):
+        r = client.post(
+            "/app/tokens",
+            data={"csrf_token": csrf, "name": f"Client {i}", "totp": "123456"},
+        )
+        assert r.status_code == 200, f"issue {i} failed"
+    # Fourth attempt should fail
+    r = client.post(
+        "/app/tokens",
+        data={"csrf_token": csrf, "name": "Client 4", "totp": "123456"},
+    )
+    assert r.status_code == 200
+    assert "Limite atteinte" in r.text or "maximum 3" in r.text
+    assert deps.token_store.count_named("c") == 3
+
+
+def test_tokens_revoke_removes_token(app_and_client, deps):
+    _, client = app_and_client
+    csrf = _login(client)
+    # Create two tokens
+    client.post("/app/tokens",
+                data={"csrf_token": csrf, "name": "A", "totp": "123456"})
+    client.post("/app/tokens",
+                data={"csrf_token": csrf, "name": "B", "totp": "123456"})
+    assert deps.token_store.count_named("c") == 2
+
+    rows = deps.token_store.list_named("c")
+    prefix = rows[0].token[:12]
+
+    r = client.post(
+        "/app/tokens/revoke",
+        data={"csrf_token": csrf, "token_prefix": prefix},
+    )
+    assert r.status_code == 303
+    assert deps.token_store.count_named("c") == 1
+
+
+def test_tokens_revoke_csrf_required(app_and_client):
+    _, client = app_and_client
+    _login(client)
+    r = client.post(
+        "/app/tokens/revoke",
+        data={"token_prefix": "abcdef"},
+    )
+    assert r.status_code == 403
+
+
+def test_tokens_revoke_scoped_to_client(app_and_client, deps):
+    """A client cannot revoke another client's token even with the right prefix."""
+    _, client = app_and_client
+    csrf = _login(client)
+    client.post("/app/tokens",
+                data={"csrf_token": csrf, "name": "A", "totp": "123456"})
+
+    # Craft a fake token belonging to another client
+    deps.token_store._live["foreign_token_xxxxxxxxxxxx"] = "other"
+    deps.token_store._named["foreign_token_xxxxxxxxxxxx"] = ("ForeignApp", 0, 1e12)
+
+    r = client.post(
+        "/app/tokens/revoke",
+        data={"csrf_token": csrf, "token_prefix": "foreign_toke"},
+    )
+    # Route still redirects (no enumeration), but the token stays alive.
+    assert r.status_code == 303
+    assert deps.token_store.validate("foreign_token_xxxxxxxxxxxx") == "other"
 
 
 def test_chat_page_auth_required(app_and_client):

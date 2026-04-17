@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -409,6 +410,102 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         _apply_security_headers(response)
         return response
 
+    async def tokens_get(request: Request) -> Response:
+        session = _load_session(request, deps)
+        if not session:
+            return RedirectResponse("/app/login", status_code=302)
+        if not _bearer_live(deps, session):
+            return RedirectResponse("/app/refresh?next=/app/tokens", status_code=302)
+        return _render_tokens_page(request, session, deps)
+
+    async def tokens_create(request: Request) -> Response:
+        session = _load_session(request, deps)
+        if not session:
+            return RedirectResponse("/app/login", status_code=302)
+        if not _bearer_live(deps, session):
+            return RedirectResponse("/app/refresh?next=/app/tokens", status_code=302)
+        if not await csrf.verify(request):
+            return JSONResponse({"error": "csrf"}, status_code=403)
+
+        form = await request.form()
+        name_raw = form.get("name", "")
+        name = (name_raw if isinstance(name_raw, str) else "").strip()
+        totp_raw = form.get("totp", "")
+        totp = (totp_raw if isinstance(totp_raw, str) else "").strip()
+
+        if not name:
+            return _render_tokens_page(
+                request, session, deps,
+                form_error="Le nom est obligatoire.",
+                form_name=name,
+            )
+        if len(name) > 60:
+            return _render_tokens_page(
+                request, session, deps,
+                form_error="Le nom ne peut pas dépasser 60 caractères.",
+                form_name=name,
+            )
+        if not totp:
+            return _render_tokens_page(
+                request, session, deps,
+                form_error="Le code 2FA est requis.",
+                form_name=name,
+            )
+        if deps.totp_locked(session.client_id):
+            return _render_tokens_page(
+                request, session, deps,
+                form_error="Trop de tentatives 2FA, réessaie dans 5 minutes.",
+                form_name=name,
+            )
+        if not deps.client_store.verify_totp(session.client_id, totp):  # type: ignore[attr-defined]
+            deps.totp_record_failure(session.client_id)
+            return _render_tokens_page(
+                request, session, deps,
+                form_error="Code 2FA invalide.",
+                form_name=name,
+            )
+        deps.totp_record_success(session.client_id)
+
+        try:
+            token, ttl = deps.token_store.issue(  # type: ignore[attr-defined]
+                session.client_id, name=name,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # TokenCapExceeded lives in tarkamcp.auth; catch broadly so
+            # we don't take on a circular import just for this check.
+            if type(exc).__name__ == "TokenCapExceeded":
+                return _render_tokens_page(
+                    request, session, deps,
+                    form_error=(
+                        "Limite atteinte : maximum 3 tokens actifs. "
+                        "Révoque-en un pour en créer un nouveau."
+                    ),
+                    form_name=name,
+                )
+            raise
+
+        return _render_tokens_page(
+            request, session, deps,
+            just_created={"name": name, "token": token, "ttl": ttl},
+        )
+
+    async def tokens_revoke(request: Request) -> Response:
+        session = _load_session(request, deps)
+        if not session:
+            return RedirectResponse("/app/login", status_code=302)
+        if not _bearer_live(deps, session):
+            return RedirectResponse("/app/refresh?next=/app/tokens", status_code=302)
+        if not await csrf.verify(request):
+            return JSONResponse({"error": "csrf"}, status_code=403)
+        form = await request.form()
+        prefix_raw = form.get("token_prefix", "")
+        prefix = (prefix_raw if isinstance(prefix_raw, str) else "").strip()
+        if prefix:
+            deps.token_store.revoke_named(  # type: ignore[attr-defined]
+                prefix, session.client_id,
+            )
+        return RedirectResponse("/app/tokens", status_code=303)
+
     async def chat_get(request: Request) -> Response:
         session = _load_session(request, deps)
         if not session:
@@ -681,6 +778,9 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         Route("/app/refresh", refresh_post, methods=["POST"]),
         Route("/app/logout", logout, methods=["POST"]),
         Route("/app/chat", chat_get, methods=["GET"]),
+        Route("/app/tokens", tokens_get, methods=["GET"]),
+        Route("/app/tokens", tokens_create, methods=["POST"]),
+        Route("/app/tokens/revoke", tokens_revoke, methods=["POST"]),
         Route("/app/api/conversations", api_conv_list, methods=["GET"]),
         Route("/app/api/conversations", api_conv_create, methods=["POST"]),
         Route("/app/api/conversations/{conv_id}", api_conv_detail, methods=["GET"]),
@@ -724,6 +824,65 @@ def _require_active_session(
     if not _bearer_live(deps, session):
         return _json({"error": "bearer_expired"}, status=401)
     return session
+
+
+def _render_tokens_page(
+    request: Request,
+    session: Session,
+    deps: DashboardDeps,
+    *,
+    form_error: str | None = None,
+    form_name: str = "",
+    just_created: dict[str, Any] | None = None,
+) -> Response:
+    """Render the /app/tokens page (list + create form)."""
+    tokens_raw = deps.token_store.list_named(session.client_id)  # type: ignore[attr-defined]
+    now = time.time()
+    tokens = [
+        {
+            "name": t.name,
+            "prefix": t.token[:12],
+            "created_at": t.created_at,
+            "expires_at": t.expires_at,
+            "expires_in_hours": max(0, round((t.expires_at - now) / 3600, 1)),
+        }
+        for t in tokens_raw
+    ]
+    count = len(tokens)
+    cap = getattr(deps.token_store, "NAMED_TOKEN_CAP", 3)
+
+    client_name = (
+        deps.client_store.get_name(session.client_id)  # type: ignore[attr-defined]
+        or session.client_id
+    )
+
+    # Build the MCP URL the user should paste into external clients.
+    # We prefer the public URL if configured (that's what Gemini/ChatGPT
+    # need to reach us) and otherwise reconstruct from the request.
+    if deps.mcp_public_url:
+        mcp_url = deps.mcp_public_url.rstrip("/") + "/mcp"
+    else:
+        scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+        host = request.headers.get(
+            "x-forwarded-host", request.headers.get("host", "localhost"),
+        )
+        mcp_url = f"{scheme}://{host}/mcp"
+
+    return _render(
+        "tokens.html",
+        request,
+        client_id=session.client_id,
+        client_name=client_name,
+        tokens=tokens,
+        count=count,
+        cap=cap,
+        can_create=count < cap,
+        form_error=form_error,
+        form_name=form_name,
+        just_created=just_created,
+        mcp_url=mcp_url,
+        locked=deps.totp_locked(session.client_id),
+    )
 
 
 def _resolve_mcp_url(request: Request, deps: DashboardDeps) -> str:

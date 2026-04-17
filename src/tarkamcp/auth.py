@@ -74,6 +74,12 @@ class AccessToken:
     token: str
     client_id: str
     expires_at: float
+    # Optional human label for tokens minted from the dashboard "API
+    # tokens" page. ``None`` means it's an internal dashboard-session
+    # bearer, which is not counted against the per-client cap and is
+    # not listed in the external-tokens UI.
+    name: str | None = None
+    created_at: float = 0.0
 
 
 @dataclass
@@ -241,24 +247,83 @@ class ClientStore:
         return False
 
 
+class TokenCapExceeded(Exception):
+    """Raised when a client already has the maximum number of named tokens."""
+
+
 class TokenStore:
     """In-memory access token store with expiration."""
 
     TOKEN_TTL = 3600 * 24  # 24 hours
+    # Cap on named tokens (the ones listed in the dashboard's API
+    # tokens page). Internal dashboard-session bearers are unlimited
+    # because a re-login always revokes the prior one.
+    NAMED_TOKEN_CAP = 3
 
     def __init__(self) -> None:
         self._tokens: dict[str, AccessToken] = {}
 
-    def issue(self, client_id: str) -> tuple[str, int]:
-        """Issue an access token. Returns (token, expires_in)."""
+    def issue(
+        self, client_id: str, *, name: str | None = None,
+    ) -> tuple[str, int]:
+        """Issue an access token. Returns ``(token, expires_in)``.
+
+        If ``name`` is provided the token counts against the per-client
+        named-token cap. Raises :class:`TokenCapExceeded` if the cap is
+        already met.
+        """
+        if name is not None:
+            if self.count_named(client_id) >= self.NAMED_TOKEN_CAP:
+                raise TokenCapExceeded(
+                    f"client {client_id} already has "
+                    f"{self.NAMED_TOKEN_CAP} named tokens"
+                )
         token = secrets.token_hex(32)
+        now = time.time()
         self._tokens[token] = AccessToken(
             token=token,
             client_id=client_id,
-            expires_at=time.time() + self.TOKEN_TTL,
+            expires_at=now + self.TOKEN_TTL,
+            name=name,
+            created_at=now,
         )
         self._cleanup()
         return token, self.TOKEN_TTL
+
+    def list_named(self, client_id: str) -> list[AccessToken]:
+        """Return named tokens for ``client_id`` (newest first)."""
+        self._cleanup()
+        out = [
+            t for t in self._tokens.values()
+            if t.client_id == client_id and t.name is not None
+        ]
+        out.sort(key=lambda t: t.created_at, reverse=True)
+        return out
+
+    def count_named(self, client_id: str) -> int:
+        self._cleanup()
+        return sum(
+            1 for t in self._tokens.values()
+            if t.client_id == client_id and t.name is not None
+        )
+
+    def revoke_named(self, token_prefix: str, client_id: str) -> bool:
+        """Revoke a named token owned by ``client_id``, identified by prefix.
+
+        The prefix must match exactly one of the client's named tokens.
+        Returns ``True`` on successful revocation, ``False`` otherwise.
+        """
+        if len(token_prefix) < 6:
+            return False
+        matches = [
+            t for t in self._tokens.values()
+            if t.token.startswith(token_prefix)
+            and t.client_id == client_id
+            and t.name is not None
+        ]
+        if len(matches) != 1:
+            return False
+        return self.revoke(matches[0].token)
 
     def validate(self, token: str) -> str | None:
         """Validate a token. Returns client_id if valid, None otherwise."""
