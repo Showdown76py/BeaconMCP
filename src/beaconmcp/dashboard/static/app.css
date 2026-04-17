@@ -1285,6 +1285,65 @@ a.sidebar-link { cursor: pointer; }
   border-radius: 4px;
 }
 
+/* Expandable info panel inside the hero card (CORS allowlist explainer) */
+.hero-details {
+  margin-top: 0.85rem;
+  border-top: 1px dashed var(--border);
+  padding-top: 0.6rem;
+}
+.hero-details > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--fg-muted);
+  padding: 0.2rem 0.1rem;
+  user-select: none;
+  transition: color 120ms ease;
+}
+.hero-details > summary:hover { color: var(--fg); }
+.hero-details > summary::-webkit-details-marker { display: none; }
+.hero-details > summary::after {
+  content: "▸";
+  font-size: 0.75rem;
+  margin-left: 0.25rem;
+  transition: transform 120ms ease;
+  display: inline-block;
+}
+.hero-details[open] > summary::after { transform: rotate(90deg); }
+.hero-details-body {
+  padding: 0.5rem 0.1rem 0.25rem;
+  font-size: 0.88rem;
+  line-height: 1.55;
+  color: var(--fg-muted);
+}
+.hero-details-body p { margin: 0 0 0.75rem; }
+.hero-details-body strong { color: var(--fg); font-weight: 600; }
+.hero-details-body code {
+  font-size: 0.82rem;
+  padding: 0.05rem 0.3rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.hero-details-body pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.75rem;
+  overflow-x: auto;
+  font-size: 0.82rem;
+  margin: 0.25rem 0 0.75rem;
+}
+.hero-details-body pre code {
+  background: none;
+  border: none;
+  padding: 0;
+}
+
 /* Outer view switch (Method / Platform) */
 .views { margin-top: 1.5rem; position: relative; }
 .views > input[type=radio] {

@@ -27,16 +27,35 @@
         <svg width="14" height="14"><use href="#i-copy"/></svg>
       </button>
     </div>
-    <p class="mcp-endpoint-hero-note">
-      <strong>Heads up — browser clients need their origin allowlisted.</strong>
-      Web UIs (Claude, ChatGPT, Le Chat, Perplexity, Gemini Web) send CORS
-      preflights before they can reach <code>/mcp</code>. Add their origin
-      to <code>server.allowed_origins</code> in <code>beaconmcp.yaml</code>
-      — e.g. <code>https://claude.ai</code>, <code>https://chatgpt.com</code>,
-      <code>https://chat.mistral.ai</code>, <code>https://www.perplexity.ai</code>,
-      <code>https://gemini.google.com</code>. Desktop / CLI clients don't
-      need this.
-    </p>
+    <details class="hero-details">
+      <summary>
+        <svg width="14" height="14" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5" stroke-linecap="round"/><circle cx="12" cy="16" r="0.5" fill="currentColor"/></svg>
+        Browser clients need their origin allowlisted
+      </summary>
+      <div class="hero-details-body">
+        <p>
+          A browser calling a different host has to pass a CORS preflight.
+          Web UIs (<strong>Claude</strong>, <strong>ChatGPT</strong>,
+          <strong>Le&nbsp;Chat</strong>, <strong>Perplexity</strong>,
+          <strong>Gemini&nbsp;Web</strong>) all do this before they can
+          reach <code>/mcp</code>. If the origin isn't listed, every
+          request fails silently in the browser console.
+        </p>
+        <p>Add the origins you plan to use to <code>beaconmcp.yaml</code>:</p>
+<pre><code>server:
+  allowed_origins:
+    - https://claude.ai
+    - https://chatgpt.com
+    - https://chat.mistral.ai
+    - https://www.perplexity.ai
+    - https://gemini.google.com</code></pre>
+        <p class="muted small" style="margin-bottom:0">
+          Desktop apps and CLI clients (Claude Desktop, Gemini CLI,
+          Cursor, VS Code, Mistral Vibe, OpenCode) don't run in a browser
+          and don't need an entry here.
+        </p>
+      </div>
+    </details>
   </section>
 
   <div class="views">
@@ -81,6 +100,7 @@
             </div>
             <div class="card-logos">
               <span class="logo-pill">Claude</span>
+              <span class="logo-pill">Mistral</span>
             </div>
           </header>
           <ol class="steps">
@@ -107,7 +127,6 @@
             </div>
             <div class="card-logos">
               <span class="logo-pill">ChatGPT</span>
-              <span class="logo-pill">Mistral</span>
               <span class="logo-pill">Perplexity</span>
               <span class="logo-pill">OpenCode</span>
             </div>
@@ -451,8 +470,6 @@
           <header class="card-head">
             <div class="card-title">
               <h2>Mistral</h2>
-              <span class="method-tag method-tag-dcr">OAuth + DCR</span>
-              <span class="method-tag method-tag-bearer">Bearer</span>
             </div>
           </header>
           <input type="radio" name="mistral-variant" id="mi-lechat" checked>
@@ -462,24 +479,29 @@
             <label for="mi-vibe" class="sub-tab">Vibe</label>
           </nav>
           <div class="sub-panel" data-sub="mi-lechat">
-            <p>In Le Chat: <em>Intelligence → Connecteurs → Ajouter un connecteur → Connecteur MCP personnalisé</em>. Le Chat auto-detects the auth method from the server's <code>.well-known</code> metadata.</p>
-            {% if dcr_enabled %}
-            <p><strong>Recommended — OAuth 2.1 (with DCR):</strong></p>
+            <p><span class="method-tag method-tag-oauth">OAuth 2.1</span></p>
+            <p>
+              Le Chat speaks OAuth 2.1 natively. In the app:
+              <em>Intelligence → Connecteurs → Ajouter un connecteur → Connecteur MCP personnalisé</em>.
+            </p>
             <ol class="steps">
-              <li>Mint a connector URL from <a href="/app/connectors">OAuth connectors</a>.</li>
-              <li>Paste the <code>/mcp/c/&lt;slug&gt;</code> URL as the connection server.</li>
-              <li>Le Chat detects OAuth, runs DCR, and redirects you to BeaconMCP's authorization page — type your TOTP.</li>
+              <li><strong>Name:</strong> BeaconMCP</li>
+              <li><strong>MCP Server URL:</strong> <code>{{ mcp_url }}</code></li>
+              <li>Validate. Le Chat discovers the OAuth metadata and redirects you to BeaconMCP's authorization page — type your TOTP from your phone. Token lifetime: 24 h.</li>
             </ol>
-            <p><strong>Alternative — Bearer:</strong></p>
-            {% endif %}
-            <ul>
-              <li>URL: <code>{{ mcp_url }}</code></li>
-              <li>Authentication: <em>Bearer token</em> → paste a token minted from the bearer tab.</li>
-            </ul>
-            <p class="muted small">Custom connectors are on Le Chat Pro / Enterprise plans; on the free tier the panel may be hidden. <strong>Add <code>https://chat.mistral.ai</code> to <code>server.allowed_origins</code> in <code>beaconmcp.yaml</code></strong> so the browser's CORS preflight succeeds.</p>
+            <p class="muted small">
+              Custom connectors are on Le Chat Pro / Enterprise plans; on the free tier the panel may be hidden.
+              Add <code>https://chat.mistral.ai</code> to <code>server.allowed_origins</code> so the browser CORS preflight succeeds.
+            </p>
           </div>
           <div class="sub-panel" data-sub="mi-vibe">
-            <p>Mistral Vibe reads MCP servers from <code>./.vibe/config.toml</code> (per-project) or <code>~/.vibe/config.toml</code> (global). The config is <strong>TOML</strong>, not JSON.</p>
+            <p><span class="method-tag method-tag-bearer">Bearer (unverified)</span></p>
+            <p class="muted small" style="margin-top:-0.25rem">
+              Vibe's bearer path hasn't been tested against a live
+              BeaconMCP. If the snippet below fails, check the latest
+              Vibe docs — the schema has been iterating fast.
+            </p>
+            <p>Vibe reads <code>./.vibe/config.toml</code> (per-project) or <code>~/.vibe/config.toml</code> (global). <strong>TOML format</strong>, not JSON.</p>
 <pre><code>[[mcp_servers]]
 name = "beaconmcp"
 transport = "http"
@@ -487,8 +509,7 @@ url = "{{ mcp_url }}"
 headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
             <p class="muted small">
               <code>transport</code> accepts <code>"http"</code>,
-              <code>"streamable-http"</code>, or <code>"stdio"</code>. Each
-              server is its own <code>[[mcp_servers]]</code> array entry.
+              <code>"streamable-http"</code>, or <code>"stdio"</code>.
             </p>
           </div>
         </article>

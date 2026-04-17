@@ -227,26 +227,32 @@ proxy with command-based config:
 
 ## Mistral
 
-### Le Chat
+### Le Chat (OAuth 2.1)
 
-*Intelligence → Connecteurs → Ajouter un connecteur → Connecteur MCP
-personnalisé*. Le Chat **auto-detects** the auth method from the server's
-`.well-known` metadata. Two supported paths:
+Le Chat speaks OAuth 2.1 natively. Same flow as Claude — point it at
+the bare `/mcp` URL and it handles the rest.
 
-- **OAuth 2.1 (recommended)** — enable `allow_dynamic_registration: true`
-  on the server and paste a slug URL minted from `/app/connectors`
-  (`https://<your-host>/mcp/c/<slug>`). Le Chat runs DCR + the OAuth
-  consent flow; you type your TOTP on the authorization page.
-- **Bearer** — paste `https://<your-host>/mcp` and a token from
-  `/app/tokens`.
+1. In Le Chat: *Intelligence → Connecteurs → Ajouter un connecteur → Connecteur MCP personnalisé*.
+2. Fill in:
+   - **Name:** BeaconMCP
+   - **Description:** (optional)
+   - **MCP Server URL:** `https://<your-host>/mcp`
+3. Validate. Le Chat discovers the OAuth metadata and redirects you to
+   BeaconMCP's authorization page — type your TOTP from your phone.
+   Token lifetime: 24 h; Le Chat refreshes via the authorization code
+   flow on its own.
 
-Custom connectors are on Le Chat Pro / Enterprise. The free tier may hide
-the panel entirely.
+Custom connectors are on Le Chat Pro / Enterprise; the free tier may
+hide the panel.
 
 **CORS:** add `https://chat.mistral.ai` to `server.allowed_origins`
 (see the allowlist note at the top of this file).
 
 ### Mistral Vibe
+
+> ⚠ Unverified — Vibe's bearer support hasn't been tested against a
+> live BeaconMCP instance. If it doesn't work out of the box, check the
+> latest Vibe docs (the schema has been iterating fast) and report back.
 
 Vibe reads its config from `./.vibe/config.toml` (per-project) or
 `~/.vibe/config.toml` (global). **TOML format**, not JSON:
