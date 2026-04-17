@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}API tokens · BeaconMCP{% endblock %}
+{% block title %}API access · BeaconMCP{% endblock %}
 {% block body_class %}tokens-page{% endblock %}
 {% block body %}
 <div class="tokens-wrap">
@@ -11,11 +11,11 @@
     </a>
     {% endif %}
     <div>
-      <h1>API tokens</h1>
+      <h1>API access</h1>
       <p class="muted">
-        Signed in as <strong>{{ client_name }}</strong>. Use these tokens to
-        connect BeaconMCP from an external MCP client (Gemini web, ChatGPT,
-        Claude Desktop, etc.). Each token expires after 24 h.
+        Signed in as <strong>{{ client_name }}</strong>. Pick the client you
+        want to connect and follow the matching flow. Every flow keeps 2FA
+        on your phone — BeaconMCP never stores a TOTP seed on a machine.
       </p>
     </div>
   </header>
@@ -28,107 +28,278 @@
         <svg width="14" height="14"><use href="#i-copy"/></svg>
       </button>
     </div>
-  </section>
-
-  {% if dcr_enabled %}
-  <section class="tokens-section chatgpt-cta">
-    <h2>Using ChatGPT?</h2>
-    <p>
-      ChatGPT's connector UI cannot accept a bearer token — it requires
-      OAuth Dynamic Client Registration. Mint a one-off connector URL
-      instead; it's single-use, expires in 15 min, and stays 2FA-gated.
-    </p>
-    <a href="/app/connectors" class="btn-primary-link">
-      Open ChatGPT connectors
-      <svg width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
-    </a>
-  </section>
-  {% endif %}
-
-  {% if just_created %}
-  <section class="tokens-section token-just-created">
-    <h2>New token created</h2>
-    <p>
-      Token for <strong>{{ just_created.name }}</strong>. Copy it now — it
-      will not be shown again.
-    </p>
-    <div class="token-value-wrap">
-      <code class="token-value">{{ just_created.token }}</code>
-      <button type="button" class="btn-copy" data-copy="{{ just_created.token }}">
-        <svg width="14" height="14"><use href="#i-copy"/></svg>
-        Copy
-      </button>
-    </div>
-    <p class="muted small">
-      In your MCP client's HTTP header: <code>Authorization: Bearer {{ just_created.token[:8] }}…</code>
+    <p class="muted small" style="margin-top:0.5rem">
+      Bearer-based and pre-registered-OAuth clients both point here. ChatGPT
+      connectors get a slug-scoped alias of this URL when minted below.
     </p>
   </section>
-  {% endif %}
 
-  <section class="tokens-section">
-    <div class="tokens-section-head">
-      <h2>Create a token ({{ count }}/{{ cap }})</h2>
-    </div>
+  <div class="views">
+    <input type="radio" name="view" id="view-method" checked>
+    <input type="radio" name="view" id="view-platform">
+    <nav class="view-tabs" role="tablist">
+      <label for="view-method" class="view-tab" role="tab">By auth method</label>
+      <label for="view-platform" class="view-tab" role="tab">By platform</label>
+    </nav>
 
-    {% if form_error %}
-      <div class="banner banner-error">{{ form_error }}</div>
-    {% endif %}
+    {# =========================================================== #}
+    {# VIEW: BY METHOD                                              #}
+    {# =========================================================== #}
+    <div class="view view-by-method" role="tabpanel">
 
-    {% if can_create %}
-    <form method="POST" action="/app/tokens" class="tokens-form">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label>
-        <span>Name (where it will be used)</span>
-        <input type="text" name="name" required maxlength="60"
-               placeholder="Gemini Web, ChatGPT macOS, Claude Desktop…"
-               value="{{ form_name or '' }}"
-               {% if locked %}disabled{% endif %}>
-      </label>
-      <label>
-        <span>2FA code</span>
-        <input type="text" name="totp" inputmode="numeric"
-               pattern="\d{6}" maxlength="6"
-               autocomplete="one-time-code" required
-               placeholder="000000" {% if locked %}disabled{% endif %}>
-      </label>
-      <button type="submit" {% if locked %}disabled{% endif %}>Create token</button>
-    </form>
-    {% else %}
-    <p class="muted">
-      You reached the limit of {{ cap }} active tokens. Revoke an existing
-      token before creating a new one.
-    </p>
-    {% endif %}
-  </section>
-
-  <section class="tokens-section">
-    <h2>Active tokens</h2>
-    {% if tokens %}
-    <ul class="tokens-list">
-      {% for t in tokens %}
-      <li class="token-row">
-        <div class="token-row-head">
-          <strong>{{ t.name }}</strong>
-          <code class="token-prefix">{{ t.prefix }}…</code>
+      {# ---------- OAuth (pre-registered) ---------- #}
+      <section class="tokens-section method-card" id="method-oauth">
+        <div class="method-head">
+          <span class="method-badge method-badge-oauth">OAuth 2.1</span>
+          <h2>Pre-registered client</h2>
         </div>
-        <div class="token-row-meta muted small">
-          expires in {{ t.expires_in_hours }} h
+        <p>
+          For clients that support full OAuth 2.1 with a user-provided
+          <code>client_id</code> and <code>client_secret</code>. BeaconMCP
+          handles the authorization code + PKCE flow and prompts for your
+          TOTP at every 24 h refresh.
+        </p>
+        <p class="muted small">Supported: <strong>Claude</strong> (web, iOS, Android, desktop).</p>
+        <details class="method-howto">
+          <summary>How to set one up</summary>
+          <ol>
+            <li>On the BeaconMCP server, run:
+              <pre><code>beaconmcp auth create --name "Claude iPhone"</code></pre>
+              The CLI prints the <code>client_id</code>, <code>client_secret</code>, and a TOTP QR code.
+              Scan the QR into your authenticator app immediately.
+            </li>
+            <li>In Claude: <em>Settings → Integrations → Add custom connector</em>.</li>
+            <li>URL: <code>{{ mcp_url }}</code>. Paste <code>client_id</code> and <code>client_secret</code>.</li>
+            <li>Claude redirects to this server's authorization page — type your TOTP code there, not in the CLI.</li>
+          </ol>
+        </details>
+      </section>
+
+      {# ---------- OAuth DCR ---------- #}
+      {% if dcr_enabled %}
+      <section class="tokens-section method-card" id="method-dcr">
+        <div class="method-head">
+          <span class="method-badge method-badge-dcr">OAuth + DCR</span>
+          <h2>Dynamic client registration</h2>
         </div>
-        <form method="POST" action="/app/tokens/revoke" class="token-revoke-form">
+        <p>
+          For clients that only accept OAuth with a dynamically-registered
+          client (RFC 7591) — they discover everything from a URL and don't
+          let you paste credentials. BeaconMCP gates DCR behind a single-use
+          bootstrap URL you mint here; the resulting client is bound to your
+          account and has no TOTP seed of its own (2FA delegates to yours).
+        </p>
+        <p class="muted small">Supported: <strong>ChatGPT</strong> (Developer Mode).</p>
+        <a href="/app/connectors" class="btn-primary-link">
+          Open ChatGPT connectors
+          <svg width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
+        </a>
+      </section>
+      {% endif %}
+
+      {# ---------- Bearer tokens ---------- #}
+      <section class="tokens-section method-card" id="method-bearer">
+        <div class="method-head">
+          <span class="method-badge method-badge-bearer">Bearer</span>
+          <h2>Static bearer tokens</h2>
+        </div>
+        <p>
+          For clients that attach a fixed <code>Authorization: Bearer …</code>
+          header on every call. Each token lasts 24 h and is scoped to your
+          account. TOTP is verified once, at creation time.
+        </p>
+        <p class="muted small">
+          Supported: <strong>Gemini Web</strong>, <strong>Gemini CLI</strong>,
+          <strong>Google Antigravity</strong>, any MCP-over-HTTP client
+          without an OAuth client of its own.
+        </p>
+
+        {% if just_created %}
+        <div class="token-just-created">
+          <h3>New token: {{ just_created.name }}</h3>
+          <p>Copy it now — it will not be shown again.</p>
+          <div class="token-value-wrap">
+            <code class="token-value">{{ just_created.token }}</code>
+            <button type="button" class="btn-copy" data-copy="{{ just_created.token }}">
+              <svg width="14" height="14"><use href="#i-copy"/></svg>
+              Copy
+            </button>
+          </div>
+        </div>
+        {% endif %}
+
+        {% if form_error %}
+          <div class="banner banner-error">{{ form_error }}</div>
+        {% endif %}
+
+        <h3 class="method-subhead">Create a token ({{ count }}/{{ cap }})</h3>
+        {% if can_create %}
+        <form method="POST" action="/app/tokens" class="tokens-form">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <input type="hidden" name="token_prefix" value="{{ t.prefix }}">
-          <button type="submit" class="btn-danger" aria-label="Revoke">
-            <svg width="14" height="14"><use href="#i-trash"/></svg>
-            Revoke
-          </button>
+          <label>
+            <span>Name (where it will be used)</span>
+            <input type="text" name="name" required maxlength="60"
+                   placeholder="Gemini Web, Gemini CLI, Antigravity…"
+                   value="{{ form_name or '' }}"
+                   {% if locked %}disabled{% endif %}>
+          </label>
+          <label>
+            <span>2FA code</span>
+            <input type="text" name="totp" inputmode="numeric"
+                   pattern="\d{6}" maxlength="6"
+                   autocomplete="one-time-code" required
+                   placeholder="000000" {% if locked %}disabled{% endif %}>
+          </label>
+          <button type="submit" {% if locked %}disabled{% endif %}>Create token</button>
         </form>
-      </li>
-      {% endfor %}
-    </ul>
-    {% else %}
-    <p class="muted">No active tokens yet.</p>
-    {% endif %}
-  </section>
+        {% else %}
+        <p class="muted">
+          You reached the limit of {{ cap }} active tokens. Revoke one before creating another.
+        </p>
+        {% endif %}
+
+        <h3 class="method-subhead">Active tokens</h3>
+        {% if tokens %}
+        <ul class="tokens-list">
+          {% for t in tokens %}
+          <li class="token-row">
+            <div class="token-row-head">
+              <strong>{{ t.name }}</strong>
+              <code class="token-prefix">{{ t.prefix }}…</code>
+            </div>
+            <div class="token-row-meta muted small">
+              expires in {{ t.expires_in_hours }} h
+            </div>
+            <form method="POST" action="/app/tokens/revoke" class="token-revoke-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="token_prefix" value="{{ t.prefix }}">
+              <button type="submit" class="btn-danger" aria-label="Revoke">
+                <svg width="14" height="14"><use href="#i-trash"/></svg>
+                Revoke
+              </button>
+            </form>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="muted">No active tokens yet.</p>
+        {% endif %}
+
+        <details class="method-howto">
+          <summary>Usage snippets</summary>
+          <h4>Gemini CLI</h4>
+<pre><code>gemini mcp add beaconmcp \
+  --url {{ mcp_url }} \
+  --header "Authorization: Bearer &lt;token&gt;"</code></pre>
+          <h4>Gemini Web</h4>
+          <p>
+            <em>Tools → Extensions → Custom MCP</em> → paste
+            <code>{{ mcp_url }}</code> and <code>Bearer &lt;token&gt;</code>
+            in the Authorization field.
+          </p>
+          <h4>Google Antigravity</h4>
+          <p>
+            In your project's <code>.antigravity/mcp.json</code>, add the
+            server with the <code>authorization</code> field set to
+            <code>Bearer &lt;token&gt;</code> and <code>url</code> set to
+            <code>{{ mcp_url }}</code>.
+          </p>
+          <h4>Generic (any MCP-over-HTTP client)</h4>
+          <p>
+            Send every request to <code>{{ mcp_url }}</code> with
+            <code>Authorization: Bearer &lt;token&gt;</code>. The token
+            dies after 24 h — revoke & re-issue from here.
+          </p>
+        </details>
+      </section>
+
+    </div>
+
+    {# =========================================================== #}
+    {# VIEW: BY PLATFORM                                            #}
+    {# =========================================================== #}
+    <div class="view view-by-platform" role="tabpanel">
+
+      <section class="tokens-section platform-card">
+        <h2>Claude <small class="platform-method">OAuth pre-registered</small></h2>
+        <p>
+          Claude's custom connector accepts a user-provided
+          <code>client_id</code> and <code>client_secret</code> and runs a
+          full OAuth authorization code + PKCE flow against BeaconMCP.
+        </p>
+        <p class="muted small">
+          Head to the <a href="#method-oauth">pre-registered OAuth section</a> for the CLI command.
+        </p>
+      </section>
+
+      {% if dcr_enabled %}
+      <section class="tokens-section platform-card">
+        <h2>ChatGPT <small class="platform-method">OAuth + DCR</small></h2>
+        <p>
+          ChatGPT's connector UI only exposes "No auth" and "OAuth" — no
+          bearer field — and its OAuth path requires Dynamic Client
+          Registration. Mint a single-use bootstrap URL that pins DCR to
+          your account.
+        </p>
+        <a href="/app/connectors" class="btn-primary-link">
+          Mint a connector URL
+          <svg width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
+        </a>
+      </section>
+      {% endif %}
+
+      <section class="tokens-section platform-card">
+        <h2>Gemini Web <small class="platform-method">Bearer</small></h2>
+        <p>
+          Gemini's custom-MCP panel takes a URL and an Authorization header.
+          Create a bearer token, paste
+          <code>Bearer &lt;token&gt;</code> in the header field.
+        </p>
+        <p class="muted small">
+          <a href="#method-bearer">Create a bearer token →</a>
+        </p>
+      </section>
+
+      <section class="tokens-section platform-card">
+        <h2>Gemini CLI <small class="platform-method">Bearer</small></h2>
+        <p>
+          Register the server with a bearer header.
+        </p>
+<pre><code>gemini mcp add beaconmcp \
+  --url {{ mcp_url }} \
+  --header "Authorization: Bearer &lt;token&gt;"</code></pre>
+        <p class="muted small">
+          <a href="#method-bearer">Create a bearer token →</a>
+        </p>
+      </section>
+
+      <section class="tokens-section platform-card">
+        <h2>Google Antigravity <small class="platform-method">Bearer</small></h2>
+        <p>
+          Add BeaconMCP to Antigravity's MCP config file with
+          <code>Authorization: Bearer &lt;token&gt;</code>. The bearer
+          lives in your workspace-level MCP config — treat it like any
+          secret.
+        </p>
+        <p class="muted small">
+          <a href="#method-bearer">Create a bearer token →</a>
+        </p>
+      </section>
+
+      <section class="tokens-section platform-card">
+        <h2>Other MCP-HTTP clients <small class="platform-method">Bearer</small></h2>
+        <p>
+          Any client that can send <code>Authorization: Bearer …</code> on
+          an HTTP POST works. Mint a token and point it at
+          <code>{{ mcp_url }}</code>.
+        </p>
+        <p class="muted small">
+          <a href="#method-bearer">Create a bearer token →</a>
+        </p>
+      </section>
+
+    </div>
+  </div>
 </div>
 
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -145,12 +316,21 @@
       const value = btn.getAttribute("data-copy") || "";
       try {
         await navigator.clipboard.writeText(value);
-        const original = btn.textContent;
+        const html = btn.innerHTML;
         btn.textContent = "Copied ✓";
-        setTimeout(() => { btn.innerHTML = original; }, 1500);
+        setTimeout(() => { btn.innerHTML = html; }, 1500);
       } catch (err) {
         console.error(err);
       }
+    });
+  }
+
+  // Clicking an in-page anchor (#method-bearer) from the By-platform
+  // view should also flip the tab back to By-method so the target is
+  // visible. Without this the click scrolls to a hidden element.
+  for (const a of document.querySelectorAll('a[href^="#method-"]')) {
+    a.addEventListener("click", () => {
+      document.getElementById("view-method").checked = true;
     });
   }
 </script>
