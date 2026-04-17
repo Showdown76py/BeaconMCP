@@ -9,6 +9,7 @@ from mcp.types import Icon
 from .bmc import build_registry as build_bmc_registry
 from .bmc import register_bmc_tools
 from .config import Config
+from .proxmox.aggregators import register_aggregator_tools
 from .proxmox.client import ProxmoxClient
 from .proxmox.monitoring import register_monitoring_tools
 from .proxmox.system import register_system_tools
@@ -156,29 +157,40 @@ def beaconmcp_context() -> str:
     # tool calls that would 404.
     steps: list[str] = []
     if config.pve_nodes:
-        steps.append("Check cluster state with proxmox_list_nodes.")
-        steps.append("For a specific node, use proxmox_node_status.")
+        steps.append(
+            "Start with cluster_overview for the whole cluster in one call, "
+            "or cluster_health(node=...) for node metrics + BMC + recent errors."
+        )
+        steps.append(
+            "Drill in with proxmox_node_status / proxmox_list_vms as needed. "
+            "Pass fields=[...] on detail tools to trim the response."
+        )
+        steps.append(
+            "Find a VM by name with vm_find('web-*'); act on many at once with "
+            "vm_bulk_action(vmids=[...], action='stop')."
+        )
     if config.pve_nodes and config.ssh and config.ssh.hosts:
         steps.append(
-            "If a Proxmox node is unreachable via API, try ssh_exec_command "
-            "against the matching ssh.hosts entry."
+            "If a Proxmox node is unreachable via API, try ssh_run against "
+            "the matching ssh.hosts entry."
         )
     if bmc_registry:
         steps.append(
-            "If a host is completely unresponsive, list BMC devices with "
-            "bmc_list_devices and use bmc_health_status / bmc_power_status."
+            "If a host is completely unresponsive, cluster_health already "
+            "includes BMC facts; otherwise use bmc_list_devices + "
+            "bmc_health_status / bmc_power_status."
         )
     if config.pve_nodes and config.ssh and config.ssh.hosts:
         steps.append(
-            "For in-VM issues, prefer proxmox_exec_command (QEMU Guest Agent) "
-            "or ssh_exec_command."
+            "For in-VM issues, prefer proxmox_run (QEMU Guest Agent) or ssh_run. "
+            "Both auto-switch to async on timeout and accept exec_id for polling."
         )
     elif config.pve_nodes:
-        steps.append("For in-VM issues, use proxmox_exec_command (QEMU Guest Agent).")
+        steps.append("For in-VM issues, use proxmox_run (QEMU Guest Agent).")
     elif config.ssh and config.ssh.hosts:
         steps.append(
-            "Use ssh_exec_command on declared hosts; start "
-            "ssh_exec_command_async for anything that may exceed 60s."
+            "Use ssh_run on declared hosts. Pass wait=False for long commands; "
+            "poll with ssh_run(exec_id=...)."
         )
     workflow = "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1)) or "(no workflow: no capabilities configured)"
 
@@ -213,6 +225,9 @@ if config.pve_nodes:
     register_monitoring_tools(mcp, proxmox_client)
     register_vm_tools(mcp, proxmox_client)
     register_system_tools(mcp, proxmox_client)
+    # Aggregators ride on top of the Proxmox client and opportunistically
+    # pull BMC facts when the registry is non-empty.
+    register_aggregator_tools(mcp, proxmox_client, config, bmc_registry)
 if config.ssh and config.ssh.hosts:
     register_ssh_tools(mcp, ssh_client)
 if bmc_registry:
