@@ -132,6 +132,8 @@ Place BeaconMCP behind a reverse proxy that terminates TLS and forwards the publ
 
 > **Security note — always type the TOTP by hand from your phone.**
 > The TOTP seed belongs in an authenticator app on a device you physically control (Google Authenticator, Authy, 1Password, Aegis, a YubiKey with OTP, etc.). Do **not** generate codes programmatically with `oathtool` / `pyotp` / a shell alias, and do **not** store the raw seed in a `.env`, a secrets manager, or next to the client secret — doing so collapses the two factors into one and removes the protection TOTP exists to provide. Every flow below is designed so you read a 6-digit code off your phone and type it into either the authorization page or the dashboard.
+>
+> Unattended services (scheduled jobs, CI pipelines) occasionally need machine-held TOTP. That case — with its required precautions and warnings — is covered separately in [docs/totp-automation.md](docs/totp-automation.md). Read it end-to-end before considering automation.
 
 ### Claude (web, mobile, desktop)
 
