@@ -2,8 +2,8 @@
 
 Connects to the iLO web interface with RIBCL (via the ``python-hpilo``
 library). If ``jump_host`` is set on the device, the call goes through
-an SSH port-forward opened on the referenced Proxmox node; otherwise
-the iLO is contacted directly on port 443.
+an SSH port-forward opened on the referenced ``ssh.hosts[]`` entry;
+otherwise the iLO is contacted directly on port 443.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import asyncssh
 import hpilo
 
 from ..config import BMCDevice, Config
+from ..ssh.client import _connect_to_host
 from .base import BMCTunnelError
 
 
@@ -37,7 +38,7 @@ class HPILOBackend:
 
         If the device has no ``jump_host``, returns the BMC's own address.
         If it does, opens (and caches) an SSH port-forward through the
-        named Proxmox node and returns the local forward endpoint.
+        named ``ssh.hosts[]`` entry and returns the local forward endpoint.
         """
         jump_host = self._device.jump_host
         if not jump_host:
@@ -55,28 +56,17 @@ class HPILOBackend:
         if self._tunnel is not None:
             self._tunnel.close()
 
-        ssh_cfg = self._config.ssh
-        if ssh_cfg is None:
-            raise BMCTunnelError(
-                f"BMC device {self.id!r} has jump_host={jump_host!r} but no "
-                "SSH credentials are configured. Add an 'ssh:' section to "
-                "beaconmcp.yaml so the tunnel can be opened."
-            )
-
-        jump_host_addr = self._config.get_node_host(jump_host)
-        if jump_host_addr is None:
+        jump_spec = self._config.get_ssh_host(jump_host)
+        if jump_spec is None:
             raise BMCTunnelError(
                 f"BMC device {self.id!r} references jump_host={jump_host!r}, "
-                "but that node is not defined under proxmox.nodes in beaconmcp.yaml."
+                "but that name is not declared under ssh.hosts[] in "
+                "beaconmcp.yaml. Add an ssh.hosts entry (name, host, user, "
+                "password or key_file) so the tunnel can be opened."
             )
 
         try:
-            self._tunnel = await asyncssh.connect(
-                jump_host_addr,
-                username=ssh_cfg.user,
-                password=ssh_cfg.password,
-                known_hosts=None,
-            )
+            self._tunnel = await _connect_to_host(jump_spec)
             self._tunnel_listener = await self._tunnel.forward_local_port(
                 "", 0, self._device.host, 443
             )
@@ -89,8 +79,8 @@ class HPILOBackend:
             self._tunnel_local_port = None
             raise BMCTunnelError(
                 f"Failed to open SSH tunnel to BMC {self.id!r} via "
-                f"{jump_host!r} ({jump_host_addr}): {exc}. Verify the jump "
-                "host is reachable (proxmox_list_nodes)."
+                f"jump_host {jump_host!r} ({jump_spec.host}): {exc}. "
+                "Verify the jump host is reachable."
             ) from exc
 
     async def _call(self, method: str, **kwargs: Any) -> Any:

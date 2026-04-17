@@ -11,7 +11,7 @@
 [![Gemini](https://img.shields.io/badge/Gemini-Compatible-4285F4?logo=google&logoColor=white)](https://gemini.google.com/)
 [![License](https://img.shields.io/badge/license-Apache_2.0_%2B_Commons_Clause-red)](LICENSE)
 
-**Remote MCP server for Proxmox VE clusters and BMC-managed hardware.**
+**Remote MCP server for Proxmox VE clusters, BMC-managed hardware, and SSH hosts.**
 
 Works with **Claude** (web, mobile, desktop) &bull; **ChatGPT** &bull; **Gemini** (CLI, API)
 
@@ -23,10 +23,15 @@ Works with **Claude** (web, mobile, desktop) &bull; **ChatGPT** &bull; **Gemini*
 
 ## Overview
 
-BeaconMCP exposes a Proxmox VE cluster and the hardware underneath it (HP iLO, generic IPMI) as a single Streamable HTTP MCP server. Any MCP-capable client can diagnose a crash, power-cycle a frozen host, create or migrate VMs, and execute commands inside guests or on the bare-metal nodes — through a single OAuth 2.1 endpoint.
+BeaconMCP exposes a Proxmox VE cluster, the hardware underneath it (HP iLO, generic IPMI), and arbitrary SSH-reachable hosts as a single Streamable HTTP MCP server. Any MCP-capable client can diagnose a crash, power-cycle a frozen host, create or migrate VMs, and execute commands inside guests or on bare-metal nodes — through a single OAuth 2.1 endpoint.
 
-- **30 MCP tools** across four modules: Proxmox (monitoring, VM lifecycle, system), SSH fallback, and BMC hardware management.
-- **N nodes, N BMC devices.** Declare as many Proxmox nodes as your cluster has, and as many BMC endpoints (HP iLO, IPMI) as you manage. No hard-coded node counts.
+- **Independent capabilities.** Enable only what you have: a full Proxmox cluster, a couple of VPS reachable by SSH, a rack with IPMI BMCs only, or any combination. The server registers tools per capability, so an SSH-only deployment never exposes `proxmox_*` tools.
+- **Three deployment modes out of the box:**
+  - *Proxmox + BMC + SSH* — the reference setup (a Proxmox cluster with iLO/IPMI hardware).
+  - *SSH-only* — point it at a handful of VPS or bare-metal servers; get `ssh_exec_command` / `ssh_exec_command_async` tools backed by per-host credentials.
+  - *Proxmox-only* or *BMC-only* — mix and match as your inventory grows.
+- **30+ MCP tools** across four modules: Proxmox (monitoring, VM lifecycle, system), SSH (per-host multi-target), BMC (hardware power/health), and security.
+- **N nodes, N BMC devices, N SSH hosts.** No hard-coded counts. Each SSH host carries its own credentials (password or key file) and is declared under `ssh.hosts[]`.
 - **Backend-agnostic hardware layer.** HP iLO and generic IPMI ship out of the box; Dell iDRAC and Supermicro are pluggable stubs.
 - **YAML-first configuration** with `${ENV}` references for secrets. Validation runs at startup.
 - **OAuth 2.1 + TOTP.** Client credentials with mandatory second factor on every token issuance.

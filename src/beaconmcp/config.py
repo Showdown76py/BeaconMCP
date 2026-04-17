@@ -47,11 +47,29 @@ class BMCDevice:
 
 
 @dataclass
-class SSHConfig:
+class SSHHost:
+    """One SSH target declared under ``ssh.hosts[]`` in beaconmcp.yaml.
+
+    Each host carries its own connection parameters (host, port, user) and
+    authentication material. Exactly one of ``password`` or ``key_file`` must
+    be provided — enforced at load time.
+    """
+
+    name: str
+    host: str
     user: str
-    password: str
+    port: int = 22
+    password: str | None = None
+    key_file: str | None = None
+
+
+@dataclass
+class SSHConfig:
+    hosts: list[SSHHost] = field(default_factory=list)
     # Template for resolving bare numeric IDs (VMIDs) to IP addresses,
     # e.g. "192.168.1.{id}". None disables the numeric-ID fallback.
+    # The resolved IP must match the ``host`` field of one of ``hosts``;
+    # otherwise the SSH client returns an actionable error.
     vmid_to_ip: str | None = None
 
 
@@ -199,6 +217,20 @@ class Config:
 
         ilo_host = os.environ.get("ILO_HOST", "")
         if ilo_host:
+            # BMC jump-host tunneling now requires an ssh.hosts[] entry
+            # (credentials live there). The legacy env path can no longer
+            # synthesize one, so emit BMC without jump_host and warn if the
+            # user had configured ILO_JUMP_HOST.
+            if os.environ.get("ILO_JUMP_HOST"):
+                warnings.warn(
+                    "ILO_JUMP_HOST is no longer honored via env vars: the "
+                    "jump-host now references an ssh.hosts[] entry whose "
+                    "credentials must come from beaconmcp.yaml. iLO will "
+                    "be contacted directly; migrate to YAML to restore "
+                    "tunneling.",
+                    DeprecationWarning,
+                    stacklevel=3,
+                )
             raw["bmc"] = {
                 "devices": [
                     {
@@ -207,12 +239,6 @@ class Config:
                         "host": ilo_host,
                         "user": os.environ.get("ILO_USER", ""),
                         "password": os.environ.get("ILO_PASSWORD", ""),
-                        "jump_host": os.environ.get("ILO_JUMP_HOST", "")
-                        or (
-                            raw["proxmox"]["nodes"][0]["name"]
-                            if raw["proxmox"]["nodes"]
-                            else None
-                        ),
                     }
                 ]
             }
@@ -220,11 +246,15 @@ class Config:
         ssh_user = os.environ.get("SSH_USER", "")
         ssh_pw = os.environ.get("SSH_PASSWORD", "")
         if ssh_user and ssh_pw:
-            raw["ssh"] = {
-                "user": ssh_user,
-                "password": ssh_pw,
-                "vmid_to_ip": os.environ.get("SSH_VMID_TO_IP") or None,
-            }
+            warnings.warn(
+                "SSH credentials in environment variables (SSH_USER / "
+                "SSH_PASSWORD) are no longer supported: the new multi-host "
+                "model requires hosts to be declared under 'ssh.hosts:' in "
+                "beaconmcp.yaml. SSH tools will NOT be registered in this "
+                "legacy-env session. Migrate to the YAML config.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
 
         infra_path = Path(os.environ.get("INFRA_YAML_PATH", "infrastructure.yaml"))
         if infra_path.exists():
@@ -237,13 +267,6 @@ class Config:
     def _build(cls, raw: dict) -> Config:
         proxmox_raw = raw.get("proxmox") or {}
         nodes_raw = proxmox_raw.get("nodes") or []
-        if not nodes_raw:
-            print(
-                "ERROR: At least one Proxmox node is required. Add one under "
-                "'proxmox.nodes:' in beaconmcp.yaml.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
 
         pve_nodes = [
             PVENode(
@@ -277,9 +300,57 @@ class Config:
         ssh_raw = raw.get("ssh")
         ssh: SSHConfig | None = None
         if ssh_raw:
+            # Reject the legacy single-credential shape explicitly so existing
+            # deployments get a clear migration pointer instead of a confusing
+            # "missing field" error.
+            if "hosts" not in ssh_raw and ("user" in ssh_raw or "password" in ssh_raw):
+                raise ConfigError(
+                    "ssh: legacy shape with top-level 'user'/'password' is no "
+                    "longer supported. Migrate to 'ssh.hosts:' — see "
+                    "beaconmcp.yaml.example. Each host now carries its own "
+                    "credentials (password or key_file)."
+                )
+            hosts_raw = ssh_raw.get("hosts") or []
+            if not isinstance(hosts_raw, list) or not hosts_raw:
+                raise ConfigError(
+                    "ssh.hosts: at least one host entry is required when the "
+                    "'ssh:' section is present. Remove the section entirely "
+                    "to disable SSH."
+                )
+            ssh_hosts: list[SSHHost] = []
+            seen_names: set[str] = set()
+            for h in hosts_raw:
+                if not isinstance(h, dict):
+                    raise ConfigError(
+                        "ssh.hosts[]: each entry must be a mapping."
+                    )
+                host_name = _required(h, "name", "ssh.hosts")
+                if host_name in seen_names:
+                    raise ConfigError(
+                        f"ssh.hosts: duplicate name {host_name!r}."
+                    )
+                seen_names.add(host_name)
+                password = h.get("password") or None
+                key_file = h.get("key_file") or None
+                if bool(password) == bool(key_file):
+                    raise ConfigError(
+                        f"ssh.hosts[{host_name}]: provide exactly one of "
+                        "'password' or 'key_file' (got "
+                        + ("both" if password and key_file else "neither")
+                        + ")."
+                    )
+                ssh_hosts.append(
+                    SSHHost(
+                        name=host_name,
+                        host=_required(h, "host", f"ssh.hosts[{host_name}]"),
+                        user=_required(h, "user", f"ssh.hosts[{host_name}]"),
+                        port=int(h.get("port", 22)),
+                        password=password,
+                        key_file=key_file,
+                    )
+                )
             ssh = SSHConfig(
-                user=_required(ssh_raw, "user", "ssh"),
-                password=_required(ssh_raw, "password", "ssh"),
+                hosts=ssh_hosts,
                 vmid_to_ip=ssh_raw.get("vmid_to_ip"),
             )
 
@@ -313,6 +384,46 @@ class Config:
             dashboard=dashboard,
             ssh_enabled=_bool((feat_raw.get("ssh") or {}).get("enabled", True)),
         )
+
+        # Cross-capability validation ----------------------------------------
+
+        # Require at least one capability to be configured. An empty server
+        # would only expose security_end_session, which is useless in isolation.
+        if not pve_nodes and not bmc_devices and not (ssh and ssh.hosts):
+            raise ConfigError(
+                "at least one capability must be configured: add entries "
+                "under 'proxmox.nodes:', 'ssh.hosts:', or 'bmc.devices:' "
+                "in beaconmcp.yaml."
+            )
+
+        # Refuse to start if an SSH host name collides with a Proxmox node
+        # name. The two share the ``host`` argument of ssh_* tools, so a
+        # shared name would be ambiguous. Forcing distinct names means one
+        # declarative source of truth per SSH target.
+        if ssh and ssh.hosts:
+            pve_names = {n.name for n in pve_nodes}
+            for h in ssh.hosts:
+                if h.name in pve_names:
+                    raise ConfigError(
+                        f"host name {h.name!r} is declared both in "
+                        "ssh.hosts and proxmox.nodes — choose distinct "
+                        "names. To SSH into a Proxmox host, add it to "
+                        "ssh.hosts with a different name (e.g. "
+                        f"'{h.name}-ssh')."
+                    )
+
+        # BMC jump_host now references ssh.hosts[].name (was proxmox.nodes[].name
+        # in pre-2.0 shape). Validate the reference exists so the user gets a
+        # load-time error instead of a runtime BMCTunnelError at first use.
+        ssh_host_names = {h.name for h in ssh.hosts} if ssh else set()
+        for d in bmc_devices:
+            if d.jump_host and d.jump_host not in ssh_host_names:
+                raise ConfigError(
+                    f"bmc.devices[{d.id}].jump_host={d.jump_host!r} does not "
+                    "match any ssh.hosts[].name. Declare the jump host under "
+                    "ssh.hosts (with user and password/key_file) so BMC "
+                    "tunneling can authenticate."
+                )
 
         return cls(
             server=server,
@@ -350,6 +461,33 @@ class Config:
         for d in self.bmc_devices:
             if d.id == device_id:
                 return d
+        return None
+
+    def get_ssh_host(self, name: str) -> SSHHost | None:
+        """Look up an SSH host by declared name (``ssh.hosts[].name``).
+
+        Returns ``None`` when SSH is disabled or no host matches.
+        """
+        if not self.ssh:
+            return None
+        for h in self.ssh.hosts:
+            if h.name == name:
+                return h
+        return None
+
+    def get_ssh_host_by_address(self, address: str) -> SSHHost | None:
+        """Look up an SSH host by its declared ``host`` field (IP/hostname).
+
+        Used by the SSH client's numeric-VMID resolver: the template is
+        applied to produce an IP, then that IP is matched against declared
+        hosts to discover which credentials to use. Returns ``None`` when
+        no host has that address (caller surfaces an actionable error).
+        """
+        if not self.ssh:
+            return None
+        for h in self.ssh.hosts:
+            if h.host == address:
+                return h
         return None
 
     def redacted(self) -> dict:
@@ -398,9 +536,18 @@ class Config:
             },
             "ssh": (
                 {
-                    "user": self.ssh.user,
-                    "password": mask(self.ssh.password),
                     "vmid_to_ip": self.ssh.vmid_to_ip,
+                    "hosts": [
+                        {
+                            "name": h.name,
+                            "host": h.host,
+                            "port": h.port,
+                            "user": h.user,
+                            "password": mask(h.password) if h.password else None,
+                            "key_file": h.key_file,
+                        }
+                        for h in self.ssh.hosts
+                    ],
                 }
                 if self.ssh
                 else None

@@ -529,39 +529,52 @@ def test_ssh(runner: TestRunner, tools: dict) -> None:
         runner.record(
             "SSH tests (skipped: SSH not configured)",
             True,
-            "Set SSH_USER and SSH_PASSWORD in .env to enable SSH tests",
+            "Declare at least one host under ssh.hosts[] in beaconmcp.yaml to enable SSH tests",
         )
         return
 
-    # T20: SSH exec on pve1
-    result = call_tool(tools, "ssh_exec_command", host="pve1", command="uptime", timeout=30)
+    # Use the first declared SSH host so the tests work regardless of whether
+    # the user named it 'pve1-ssh', 'vps1', etc. Hardcoded 'pve1' no longer
+    # resolves after the collision rule was introduced.
+    from beaconmcp.server import config as _cfg
+    if not _cfg.ssh or not _cfg.ssh.hosts:
+        runner.record(
+            "SSH tests (skipped: no ssh.hosts[] declared)",
+            True,
+            "Add an entry under ssh.hosts[] to enable SSH tests",
+        )
+        return
+    ssh_target = _cfg.ssh.hosts[0].name
+
+    # T20: SSH exec
+    result = call_tool(tools, "ssh_exec_command", host=ssh_target, command="uptime", timeout=30)
     runner.record(
-        "ssh_exec_command 'uptime' on pve1",
+        f"ssh_exec_command 'uptime' on {ssh_target}",
         isinstance(result, dict) and result.get("exit_code") == 0 and "load average" in result.get("stdout", ""),
         f"Result: {result}",
         result,
     )
 
     # T21: SSH exec -- hostname
-    result = call_tool(tools, "ssh_exec_command", host="pve1", command="hostname", timeout=15)
+    result = call_tool(tools, "ssh_exec_command", host=ssh_target, command="hostname", timeout=15)
     runner.record(
-        "ssh_exec_command 'hostname' on pve1",
+        f"ssh_exec_command 'hostname' on {ssh_target}",
         isinstance(result, dict) and result.get("exit_code") == 0 and len(result.get("stdout", "").strip()) > 0,
         f"stdout = '{result.get('stdout', '').strip()}'",
         result,
     )
 
     # T22: SSH exec -- df (disk usage)
-    result = call_tool(tools, "ssh_exec_command", host="pve1", command="df -h /", timeout=15)
+    result = call_tool(tools, "ssh_exec_command", host=ssh_target, command="df -h /", timeout=15)
     runner.record(
-        "ssh_exec_command 'df -h /' on pve1",
+        f"ssh_exec_command 'df -h /' on {ssh_target}",
         isinstance(result, dict) and result.get("exit_code") == 0,
         f"exit_code = {result.get('exit_code')}",
         result,
     )
 
     # T23: SSH exec -- failing command
-    result = call_tool(tools, "ssh_exec_command", host="pve1",
+    result = call_tool(tools, "ssh_exec_command", host=ssh_target,
                        command="cat /nonexistent/file/12345", timeout=15)
     runner.record(
         "ssh_exec_command on nonexistent file returns non-zero exit code",
@@ -570,23 +583,38 @@ def test_ssh(runner: TestRunner, tools: dict) -> None:
         result,
     )
 
-    # T24: SSH host resolution -- VMID format
+    # T24: SSH host resolution -- every target must be declared in ssh.hosts[].
+    # A raw IP/hostname not declared there now raises SSHHostResolutionError
+    # (no more implicit passthrough). Exercise both paths.
+    from beaconmcp.server import config as _cfg
     from beaconmcp.server import ssh_client
-    resolved = ssh_client.resolve_host("101")
-    runner.record(
-        "SSH host resolution: VMID '101' -> 192.168.1.101",
-        resolved == "192.168.1.101",
-        f"Resolved to: {resolved}",
-    )
-    resolved = ssh_client.resolve_host("pve1")
-    runner.record(
-        "SSH host resolution: 'pve1' -> configured host",
-        resolved == os.environ.get("PVE1_HOST", ""),
-        f"Resolved to: {resolved}",
-    )
+    from beaconmcp.ssh.client import SSHHostResolutionError
+
+    declared = _cfg.ssh.hosts[0] if _cfg.ssh and _cfg.ssh.hosts else None
+    if declared is not None:
+        resolved = ssh_client.resolve_host(declared.name)
+        runner.record(
+            f"SSH resolve_host('{declared.name}') -> declared host field",
+            resolved == declared.host,
+            f"Resolved to: {resolved}, expected {declared.host}",
+        )
+
+    try:
+        ssh_client.resolve_host("definitely-not-declared-xyzzy")
+        runner.record(
+            "SSH resolve_host raises on undeclared identifier",
+            False,
+            "Expected SSHHostResolutionError, got silent pass",
+        )
+    except SSHHostResolutionError:
+        runner.record(
+            "SSH resolve_host raises on undeclared identifier",
+            True,
+            "",
+        )
 
     # T25: SSH async exec + poll
-    result = call_tool(tools, "ssh_exec_command_async", host="pve1",
+    result = call_tool(tools, "ssh_exec_command_async", host=ssh_target,
                        command="sleep 2 && echo ssh-async-done")
     has_id = isinstance(result, dict) and "exec_id" in result
     runner.record(

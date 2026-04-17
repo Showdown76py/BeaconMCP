@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -8,19 +9,19 @@ from typing import Any
 
 import asyncssh
 
-from ..config import Config
+from ..config import Config, SSHHost
 
 
 class SSHNotConfiguredError(Exception):
     def __init__(self) -> None:
         super().__init__(
-            "SSH credentials are not configured. Add an 'ssh:' section "
-            "to beaconmcp.yaml."
+            "SSH is not configured. Add an 'ssh:' section with at least "
+            "one entry under 'ssh.hosts[]' in beaconmcp.yaml."
         )
 
 
 class SSHHostResolutionError(Exception):
-    """Raised when a host identifier cannot be resolved to a target address."""
+    """Raised when a host identifier cannot be resolved to a declared SSH host."""
 
 
 @dataclass
@@ -53,74 +54,136 @@ def _prune_ssh_sessions() -> None:
         del _ssh_sessions[eid]
 
 
+async def _connect_to_host(spec: SSHHost) -> asyncssh.SSHClientConnection:
+    """Open an asyncssh connection to a declared host using its auth method.
+
+    Exposed at module level so BMC jump-host tunneling in ``bmc/hp_ilo.py``
+    can reuse the same auth plumbing (password vs. key_file, port override,
+    trusted host keys) instead of duplicating it.
+    """
+    connect_kwargs: dict[str, Any] = {
+        "host": spec.host,
+        "port": spec.port,
+        "username": spec.user,
+        "known_hosts": None,  # infra is trusted
+    }
+    if spec.password:
+        connect_kwargs["password"] = spec.password
+    elif spec.key_file:
+        connect_kwargs["client_keys"] = [os.path.expanduser(spec.key_file)]
+    return await asyncssh.connect(**connect_kwargs)
+
+
 class SSHClient:
-    """Async SSH client with host resolution and connection caching."""
+    """Async SSH client with declarative host resolution and connection caching.
+
+    Every SSH target must be declared under ``ssh.hosts[]`` in beaconmcp.yaml.
+    The client looks up an identifier (a host name, a numeric VMID, or a raw
+    IP/hostname) against that declaration to recover full connect params
+    (host, port, user, password or key_file). There is no implicit
+    passthrough to an arbitrary host with shared credentials — this keeps
+    credentials a declarative concern, not a runtime guess.
+    """
 
     def __init__(self, config: Config) -> None:
         self._config = config
 
-    def resolve_host(self, host: str) -> str:
-        """Resolve a host identifier to an actual hostname/IP.
+    def resolve(self, identifier: str) -> SSHHost:
+        """Resolve an identifier to a declared :class:`SSHHost`.
 
-        Accepts:
-        - Node name (e.g. pve1) -> resolved from ``proxmox.nodes`` config.
-        - Numeric VMID -> substituted into the ``ssh.vmid_to_ip`` template
-          (e.g. ``"192.168.1.{id}"``). Raises when the template is unset.
-        - Direct IP or hostname -> passed through unchanged.
+        Resolution order:
+        1. Match ``identifier`` against ``ssh.hosts[].name``.
+        2. If numeric and ``ssh.vmid_to_ip`` is set, apply the template and
+           match the resulting IP against ``ssh.hosts[].host``.
+        3. Otherwise, match ``identifier`` directly against
+           ``ssh.hosts[].host``.
+
+        Raises :class:`SSHNotConfiguredError` if SSH has no hosts declared,
+        or :class:`SSHHostResolutionError` with an actionable message when
+        no host matches.
         """
-        node_host = self._config.get_node_host(host)
-        if node_host:
-            return node_host
+        if not self._config.ssh or not self._config.ssh.hosts:
+            raise SSHNotConfiguredError()
 
-        if host.isdigit():
-            template = self._config.ssh.vmid_to_ip if self._config.ssh else None
+        # 1. By declared name
+        by_name = self._config.get_ssh_host(identifier)
+        if by_name is not None:
+            return by_name
+
+        # 2. Numeric VMID → template → address match
+        if identifier.isdigit():
+            template = self._config.ssh.vmid_to_ip
             if not template:
                 raise SSHHostResolutionError(
-                    f"Host {host!r} looks like a numeric VMID, but no "
-                    "'ssh.vmid_to_ip' template is configured in beaconmcp.yaml. "
-                    "Either set the template (e.g. '192.168.1.{id}') or pass "
-                    "a hostname / IP directly."
+                    f"Identifier {identifier!r} looks like a numeric VMID "
+                    "but no 'ssh.vmid_to_ip' template is configured. Either "
+                    "set the template (e.g. '192.168.1.{id}') or reference "
+                    "one of the declared host names under ssh.hosts[]."
                 )
             try:
-                return template.format(id=host)
+                resolved_ip = template.format(id=identifier)
             except (KeyError, IndexError) as exc:
                 raise SSHHostResolutionError(
                     f"ssh.vmid_to_ip template {template!r} is invalid: {exc}. "
                     "Use '{id}' as the only placeholder."
                 ) from exc
+            by_addr = self._config.get_ssh_host_by_address(resolved_ip)
+            if by_addr is not None:
+                return by_addr
+            raise SSHHostResolutionError(
+                f"VMID {identifier!r} resolves to {resolved_ip!r} via "
+                "ssh.vmid_to_ip, but no ssh.hosts[] entry has that address. "
+                f"Declare one (e.g. name: vm-{identifier}, host: "
+                f"{resolved_ip}, user: ..., password or key_file: ...)."
+            )
 
-        return host
+        # 3. Direct IP/hostname
+        by_addr = self._config.get_ssh_host_by_address(identifier)
+        if by_addr is not None:
+            return by_addr
 
-    async def _get_connection(self, host: str) -> asyncssh.SSHClientConnection:
-        """Get or create an SSH connection with caching."""
-        resolved = self.resolve_host(host)
+        declared = ", ".join(h.name for h in self._config.ssh.hosts) or "<none>"
+        raise SSHHostResolutionError(
+            f"Host {identifier!r} is not declared in ssh.hosts[]. Add an "
+            "entry (name, host, user, password or key_file) to enable SSH "
+            f"to this target. Declared hosts: {declared}."
+        )
 
-        if resolved in _connection_cache:
-            conn, created_at = _connection_cache[resolved]
+    def resolve_host(self, identifier: str) -> str:
+        """Return the connect-target address for an identifier.
+
+        Back-compat helper used by ``ssh_exec_command_async`` to surface the
+        resolved IP/hostname in its response. Prefer :meth:`resolve` when the
+        full host spec (port, user, auth) is needed.
+        """
+        return self.resolve(identifier).host
+
+    async def _get_connection(self, identifier: str) -> asyncssh.SSHClientConnection:
+        """Get or create an SSH connection with caching.
+
+        Cache key is the declared host *name*, so distinct declarations
+        sharing the same address still get distinct cached connections
+        (useful when one address has multiple user accounts).
+        """
+        host_spec = self.resolve(identifier)
+        cache_key = host_spec.name
+
+        if cache_key in _connection_cache:
+            conn, created_at = _connection_cache[cache_key]
             if time.time() - created_at < _CONNECTION_TTL:
                 try:
-                    # Verify connection is still alive
                     if not conn.is_closed():
                         return conn
                 except Exception:
                     pass
-            # Expired or dead connection
             try:
                 conn.close()
             except Exception:
                 pass
-            del _connection_cache[resolved]
+            del _connection_cache[cache_key]
 
-        if not self._config.ssh:
-            raise SSHNotConfiguredError()
-
-        conn = await asyncssh.connect(
-            resolved,
-            username=self._config.ssh.user,
-            password=self._config.ssh.password,
-            known_hosts=None,  # Accept all host keys (infra is trusted)
-        )
-        _connection_cache[resolved] = (conn, time.time())
+        conn = await _connect_to_host(host_spec)
+        _connection_cache[cache_key] = (conn, time.time())
         return conn
 
     async def exec_command(self, host: str, command: str, timeout: int = 60) -> dict[str, Any]:
