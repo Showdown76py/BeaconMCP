@@ -4,10 +4,12 @@
 {% block body %}
 <div class="tokens-wrap">
   <header class="tokens-header">
+    {% if chat_enabled %}
     <a href="/app/chat" class="back-link">
       <svg width="16" height="16" aria-hidden="true"><use href="#i-chev-r" style="transform: rotate(180deg); transform-origin: center"/></svg>
       Retour au chat
     </a>
+    {% endif %}
     <div>
       <h1>Tokens API</h1>
       <p class="muted">
