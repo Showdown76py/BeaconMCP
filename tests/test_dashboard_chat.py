@@ -23,7 +23,9 @@ from tarkamcp.dashboard.chat import (
     ThinkingDelta,
     ToolCallEnd,
     ToolCallStart,
+    ToolConfirmRequired,
 )
+from tarkamcp.dashboard.confirmations import ConfirmationStore
 from tarkamcp.dashboard.conversations import ConversationStore
 from tarkamcp.dashboard.csrf import CSRF_COOKIE
 from tarkamcp.dashboard.db import Database
@@ -75,6 +77,7 @@ def deps(tmp_path, engine):
         totp_record_success=lambda cid: None,
         conversations=ConversationStore(db),
         engine=engine,
+        confirmations=ConfirmationStore(),
         mcp_public_url="https://mcp.example/",
     )
 
@@ -509,6 +512,84 @@ def test_chat_persists_history_for_second_turn(app_and_client, engine, deps):
     assert [m.role for m in history] == ["user", "assistant"]
     assert history[0].content == "first"
     assert history[1].content == "ack"
+
+
+def test_chat_stream_ssh_tool_emits_confirm_event(app_and_client, engine, deps):
+    """ssh_exec_command triggers a tool_confirm_required SSE frame and the
+    engine must wait for a decision via /app/api/chat/confirm.
+    """
+    import threading, time as _t
+
+    engine.script = FakeScript(events=[
+        ToolCallStart(id="tc1", name="ssh_exec_command", args={"host": "pve1", "command": "ls"}),
+        ToolConfirmRequired(id="tc1", name="ssh_exec_command", args={"host": "pve1", "command": "ls"}),
+        ToolCallEnd(id="tc1", status="ok", preview="ok", duration_ms=50),
+        TextDelta(text="done"),
+    ])
+
+    _, client = app_and_client
+    csrf = _login(client)
+    r = client.post("/app/api/conversations",
+                    headers={"X-CSRF-Token": csrf, "Content-Type": "application/json"},
+                    content="{}")
+    cid = r.json()["conversation"]["id"]
+
+    # Approve the confirmation from a parallel thread so the SSE stream
+    # is free to unblock and finish.
+    def approve_when_ready():
+        deadline = _t.time() + 5
+        while _t.time() < deadline:
+            pending = deps.confirmations.pending_for(
+                deps.session_store.list_for_client("c")[0].session_id
+            )
+            if pending:
+                client.post(
+                    "/app/api/chat/confirm",
+                    headers={"X-CSRF-Token": csrf, "Content-Type": "application/json"},
+                    content=json.dumps({"call_id": pending[0], "approve": True}),
+                )
+                return
+            _t.sleep(0.05)
+
+    t = threading.Thread(target=approve_when_ready)
+    t.start()
+    try:
+        r = client.post(
+            "/app/api/chat/stream",
+            headers={"X-CSRF-Token": csrf, "Content-Type": "application/json"},
+            content=json.dumps({"conversation_id": cid, "content": "run ls"}),
+        )
+    finally:
+        t.join(timeout=5)
+
+    events = _parse_sse(r.text)
+    names = [e[0] for e in events]
+    assert "tool_confirm_required" in names
+    assert "tool_result" in names
+    # done must still fire so the client state settles.
+    assert "done" in names
+
+
+def test_confirm_endpoint_requires_csrf(app_and_client):
+    _, client = app_and_client
+    _login(client)
+    r = client.post(
+        "/app/api/chat/confirm",
+        headers={"Content-Type": "application/json"},
+        content=json.dumps({"call_id": "x", "approve": True}),
+    )
+    assert r.status_code == 403
+
+
+def test_confirm_endpoint_rejects_unknown_call_id(app_and_client):
+    _, client = app_and_client
+    csrf = _login(client)
+    r = client.post(
+        "/app/api/chat/confirm",
+        headers={"X-CSRF-Token": csrf, "Content-Type": "application/json"},
+        content=json.dumps({"call_id": "nope", "approve": True}),
+    )
+    assert r.status_code == 404
 
 
 def test_chat_page_auth_required(app_and_client):

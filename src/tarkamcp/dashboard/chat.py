@@ -21,7 +21,7 @@ import sys
 import time
 import traceback
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Iterable, Protocol, runtime_checkable
+from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Protocol, runtime_checkable
 
 from .conversations import Message, ToolCall
 
@@ -106,14 +106,33 @@ class ToolCallEnd:
 
 
 @dataclass
+class ToolConfirmRequired:
+    """Engine paused waiting for a manual approve/reject click in the UI."""
+    id: str
+    name: str
+    args: dict[str, Any]
+
+
+@dataclass
 class ErrorEvent:
     code: str
     message: str
 
 
 ChatEvent = (
-    TextDelta | ThinkingDelta | ToolCallStart | ToolCallEnd | ErrorEvent
+    TextDelta | ThinkingDelta | ToolCallStart | ToolCallEnd
+    | ToolConfirmRequired | ErrorEvent
 )
+
+
+# Tool names that MUST go through a human approval step before we run
+# them from a Gemini turn. SSH exec on the PVE hosts is the obvious one
+# -- any conversation could otherwise fire arbitrary shell. Keep this
+# list tight; every entry adds a modal click to the UX.
+_NEEDS_CONFIRMATION: frozenset[str] = frozenset({
+    "ssh_exec_command",
+    "ssh_exec_command_async",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +153,12 @@ class TurnInput:
     #           Google's backend call mcp_url directly. Natively supported
     #           on Gemini 3; requires mcp_url to be publicly reachable.
     mcp_mode: str = "local"
+    # Optional callback invoked right before executing any tool whose
+    # name appears in ``_NEEDS_CONFIRMATION``. It is handed the
+    # ``ToolConfirmRequired`` payload (already yielded to the UI) and
+    # must return ``True`` for approve / ``False`` for reject. If
+    # ``None``, confirmation-gated tools auto-reject.
+    confirm_tool: Callable[[ToolConfirmRequired], Awaitable[bool]] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -515,6 +540,56 @@ class GeminiChatEngine:
                         for fc, fc_id, args in fc_invocations:
                             name = getattr(fc, "name", "")
                             start = tool_starts.pop(fc_id, time.monotonic())
+
+                            approved = True
+                            if name in _NEEDS_CONFIRMATION:
+                                req = ToolConfirmRequired(
+                                    id=fc_id, name=name, args=args,
+                                )
+                                yield req  # UI shows approve/reject buttons
+                                if turn.confirm_tool is None:
+                                    # No callback wired -> auto-reject so
+                                    # the engine never runs the tool without
+                                    # an explicit green light.
+                                    approved = False
+                                else:
+                                    try:
+                                        approved = bool(
+                                            await turn.confirm_tool(req)
+                                        )
+                                    except asyncio.CancelledError:
+                                        raise
+                                    except Exception:  # noqa: BLE001
+                                        approved = False
+
+                            if not approved:
+                                payload = {
+                                    "error": "user_rejected",
+                                    "message": (
+                                        "L'utilisateur a refusé l'exécution "
+                                        "de cet outil depuis le dashboard."
+                                    ),
+                                }
+                                status = "rejected"
+                                duration = int(
+                                    (time.monotonic() - start) * 1000
+                                )
+                                yield ToolCallEnd(
+                                    id=fc_id, status=status,
+                                    preview=_short_preview(payload),
+                                    duration_ms=duration,
+                                )
+                                response_parts.append(
+                                    types.Part(
+                                        function_response=types.FunctionResponse(
+                                            id=getattr(fc, "id", None),
+                                            name=name,
+                                            response=payload,
+                                        )
+                                    )
+                                )
+                                continue
+
                             try:
                                 result = await session.call_tool(name, args)
                                 payload = _mcp_call_result_to_response(result)

@@ -7,6 +7,7 @@ Builds the route list and dependencies. Mounted under ``/app/*`` from
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,8 +33,10 @@ from .chat import (
     ThinkingDelta,
     ToolCallEnd,
     ToolCallStart,
+    ToolConfirmRequired,
     TurnInput,
 )
+from .confirmations import ConfirmationStore
 from .conversations import (
     DEFAULT_EFFORT,
     DEFAULT_MODEL,
@@ -68,6 +71,7 @@ class DashboardDeps:
     totp_record_success: Callable[[str], None]
     conversations: ConversationStore | None = None
     engine: ChatEngine | None = None
+    confirmations: ConfirmationStore | None = None
     # Public URL used by Gemini's backend to call this MCP server in
     # "remote" mode. Falls back to the request's Host header at call time
     # when unset. Ignored in "local" mode.
@@ -501,6 +505,28 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             return _json({"error": "not_found"}, status=404)
         return Response(status_code=204)
 
+    async def api_chat_confirm(request: Request) -> Response:
+        session = _require_active_session(request, deps)
+        if isinstance(session, Response):
+            return session
+        if not await csrf.verify(request):
+            return _json({"error": "csrf"}, status=403)
+        if deps.confirmations is None:
+            return _json({"error": "chat_disabled"}, status=503)
+        body = await _read_json(request)
+        call_id = str(body.get("call_id") or "").strip()
+        if not call_id:
+            return _json({"error": "invalid_request"}, status=400)
+        approved = bool(body.get("approve"))
+        ok = deps.confirmations.resolve(
+            call_id=call_id,
+            session_id=session.session_id,
+            approved=approved,
+        )
+        if not ok:
+            return _json({"error": "not_found"}, status=404)
+        return _json({"ok": True, "approved": approved})
+
     async def api_chat_stream(request: Request) -> Response:
         session = _load_session(request, deps)
         if not session:
@@ -546,6 +572,25 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
 
             collected: list[Any] = []
 
+            confirmations = deps.confirmations
+            issued_call_ids: list[str] = []
+
+            async def _confirm(req: ToolConfirmRequired) -> bool:
+                if confirmations is None:
+                    return False
+                fut = confirmations.create(
+                    call_id=req.id, session_id=session.session_id,
+                )
+                issued_call_ids.append(req.id)
+                try:
+                    # 5 minute ceiling matches the upstream MCP SSE
+                    # read timeout; anything longer and the browser
+                    # connection tends to time out anyway.
+                    return await asyncio.wait_for(fut, timeout=300)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    confirmations.cancel(req.id)
+                    return False
+
             turn = TurnInput(
                 history=history,
                 user_text=user_text,
@@ -554,6 +599,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                 bearer=session.mcp_bearer or "",
                 mcp_url=_resolve_mcp_url(request, deps),
                 mcp_mode=deps.mcp_mode,
+                confirm_tool=_confirm,
             )
 
             try:
@@ -565,6 +611,10 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                         yield _sse("thinking_delta", {"summary": event.summary})
                     elif isinstance(event, ToolCallStart):
                         yield _sse("tool_call", {
+                            "id": event.id, "name": event.name, "args": event.args,
+                        })
+                    elif isinstance(event, ToolConfirmRequired):
+                        yield _sse("tool_confirm_required", {
                             "id": event.id, "name": event.name, "args": event.args,
                         })
                     elif isinstance(event, ToolCallEnd):
@@ -585,6 +635,12 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                 yield _sse("error", {
                     "code": "internal", "message": str(exc),
                 })
+            finally:
+                # Free any confirmation futures left dangling (client
+                # disconnected before approving, engine errored mid-loop).
+                if confirmations is not None:
+                    for cid in issued_call_ids:
+                        confirmations.cancel(cid)
 
             from .chat import assemble_assistant_message  # local to avoid cycle
             content, tool_calls, thinking = assemble_assistant_message(collected)
@@ -631,6 +687,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         Route("/app/api/conversations/{conv_id}", api_conv_patch, methods=["PATCH"]),
         Route("/app/api/conversations/{conv_id}", api_conv_delete, methods=["DELETE"]),
         Route("/app/api/chat/stream", api_chat_stream, methods=["POST"]),
+        Route("/app/api/chat/confirm", api_chat_confirm, methods=["POST"]),
         Route("/", index, methods=["GET"]),
         Mount(
             "/app/static",
