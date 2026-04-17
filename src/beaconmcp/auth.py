@@ -64,6 +64,68 @@ def revoke_current_token() -> bool:
 CLIENTS_FILE = Path("/opt/beaconmcp/clients.json")
 
 
+# Allowlist of redirect_uri prefixes accepted from DCR clients. Attack:
+# a rogue script registers itself against your /oauth/register/c/<slug>
+# with redirect_uri="https://evil.example/cb". If you later authorize it
+# (fooled into thinking it's ChatGPT), the authorization code lands on
+# the attacker's server. Validating here stops that before a client row
+# is ever persisted.
+#
+# Each prefix matches an origin + (optional) path prefix. Wildcards are
+# only implicit via prefix matching — a listed origin covers every path
+# beneath it. Custom OS URI schemes (vscode://, cursor://) are matched
+# scheme-only because their host semantics don't carry meaning.
+#
+# Add a new client's origin here BEFORE flipping
+# ``allow_dynamic_registration`` on for it, not after.
+TRUSTED_REDIRECT_PREFIXES: tuple[str, ...] = (
+    # Anthropic / Claude
+    "https://claude.ai/",
+    "https://claude.com/",
+    # OpenAI / ChatGPT + Codex + platform
+    "https://chatgpt.com/",
+    "https://chat.openai.com/",
+    "https://platform.openai.com/",
+    # Google / Gemini CLI + AI Studio
+    "https://gemini.google.com/",
+    "https://aistudio.google.com/",
+    "https://console.cloud.google.com/",
+    # Mistral
+    "https://chat.mistral.ai/",
+    "https://console.mistral.ai/",
+    # VS Code web surfaces
+    "https://vscode.dev/",
+    "https://github.dev/",
+    # Cursor dashboard
+    "https://cursor.com/",
+    # OS-level custom URI schemes used by desktop clients
+    "vscode://",
+    "vscode-insiders://",
+    "cursor://",
+    # Local loopback for every CLI / terminal client (Codex, Gemini CLI,
+    # Mistral Vibe, OpenCode, mcp-remote, …). Ports are dynamic so we
+    # match the scheme + loopback host and let the client pick the port.
+    "http://localhost:",
+    "http://localhost/",
+    "http://127.0.0.1:",
+    "http://127.0.0.1/",
+    "http://[::1]:",
+    "http://[::1]/",
+)
+
+
+def is_trusted_redirect_uri(redirect_uri: str) -> bool:
+    """Return True iff ``redirect_uri`` starts with a known-trusted prefix.
+
+    Callers SHOULD reject any DCR ``redirect_uris`` entry for which this
+    returns False. See :data:`TRUSTED_REDIRECT_PREFIXES` for the rationale
+    and the list of accepted prefixes.
+    """
+    if not isinstance(redirect_uri, str) or not redirect_uri:
+        return False
+    return any(redirect_uri.startswith(p) for p in TRUSTED_REDIRECT_PREFIXES)
+
+
 @dataclass
 class Client:
     client_id: str

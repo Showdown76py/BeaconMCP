@@ -19,6 +19,21 @@ auth paths the dashboard helps you drive:
 > code off your phone. Unattended-service automation is covered separately
 > in [totp-automation.md](totp-automation.md).
 
+> **Trusted redirect URIs — hard-coded allowlist on the server.**
+> Every `redirect_uri` reaching `/oauth/authorize` or `/oauth/register/c/<slug>`
+> is checked against a fixed list in
+> [`src/beaconmcp/auth.py`](../src/beaconmcp/auth.py) (constant
+> `TRUSTED_REDIRECT_PREFIXES`). It covers every client documented here
+> — consumer and enterprise web URLs (claude.ai, chatgpt.com,
+> chat.mistral.ai, …), the OS URI schemes used by desktop clients
+> (`vscode://`, `cursor://`), and HTTP loopback for CLI tools
+> (`http://localhost:*`, `http://127.0.0.1:*`). If a new client shows
+> "invalid_redirect_uri" during DCR or "redirect_uri origin not on the
+> BeaconMCP trusted-origin allowlist" at `/oauth/authorize`, add its
+> origin to that constant and restart. This check exists because DCR
+> would otherwise let any caller register an attacker-controlled
+> callback.
+
 > **CORS allowlist — required for every web client.**
 > Browser-based MCP clients (Claude Web, ChatGPT Web, Le Chat, Perplexity,
 > Gemini Web) fire a CORS preflight before they can reach `/mcp`. If the

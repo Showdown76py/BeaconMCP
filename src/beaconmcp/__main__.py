@@ -297,6 +297,19 @@ def _run_http(mcp, host: str, port: int):
                 {"error": "invalid_request", "error_description": "redirect_uri must use https"},
                 status_code=400,
             )
+        # Reject any redirect_uri whose origin isn't on the trusted
+        # allowlist. Prevents authorization-code exfiltration via a
+        # typo-squat or attacker-controlled client that somehow got a
+        # valid client_id.
+        if not auth.is_trusted_redirect_uri(redirect_uri):
+            return {}, JSONResponse(
+                {"error": "invalid_request",
+                 "error_description": (
+                     "redirect_uri origin not on the BeaconMCP trusted-"
+                     "origin allowlist; see auth.TRUSTED_REDIRECT_PREFIXES"
+                 )},
+                status_code=400,
+            )
         if not code_challenge or code_challenge_method != "S256":
             return {}, JSONResponse(
                 {"error": "invalid_request", "error_description": "PKCE with S256 is required"},
@@ -619,6 +632,34 @@ def _run_http(mcp, host: str, port: int):
             if isinstance(candidate, str) and candidate.strip():
                 client_name = candidate.strip()[:60]
 
+        # Validate redirect_uris BEFORE provisioning a client. The MCP spec
+        # lets the caller propose arbitrary redirect URIs during DCR; if we
+        # accepted them blindly, a rogue script could register itself with
+        # redirect_uri=https://evil.example/cb and later phish an
+        # authorization code out of us. Reject anything not on the trusted
+        # allowlist (auth.TRUSTED_REDIRECT_PREFIXES).
+        redirect_uris_raw = None
+        if isinstance(body, dict):
+            redirect_uris_raw = body.get("redirect_uris")
+        if not isinstance(redirect_uris_raw, list) or not redirect_uris_raw:
+            return JSONResponse(
+                {"error": "invalid_redirect_uri",
+                 "error_description": "redirect_uris is required"},
+                status_code=400,
+            )
+        bad = [u for u in redirect_uris_raw
+               if not auth.is_trusted_redirect_uri(u)]
+        if bad:
+            return JSONResponse(
+                {"error": "invalid_redirect_uri",
+                 "error_description": (
+                     "one or more redirect_uris are not on the BeaconMCP "
+                     "trusted-origin allowlist"
+                 ),
+                 "rejected_redirect_uris": bad},
+                status_code=400,
+            )
+
         try:
             new_client_id, new_client_secret = client_store.create_dynamic(
                 owner_client_id=row.owner_client_id,
@@ -650,11 +691,7 @@ def _run_http(mcp, host: str, port: int):
             "token_endpoint_auth_method": "client_secret_post",
             "grant_types": ["authorization_code"],
             "response_types": ["code"],
-            "redirect_uris": (
-                body.get("redirect_uris")
-                if isinstance(body, dict) and isinstance(body.get("redirect_uris"), list)
-                else []
-            ),
+            "redirect_uris": redirect_uris_raw,
         }, status_code=201)
 
     class _McpSlugRewriteApp:
