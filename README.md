@@ -160,7 +160,7 @@ Full setup for **ChatGPT** (Web / Mobile / Codex CLI), **Gemini** (CLI / Antigra
 
 An optional web panel is mounted under `/app/*` on the same port as the MCP endpoint. It provides TOTP login, an API-token management page (used to wire external clients like the Gemini web UI or ChatGPT MCP without exposing the OAuth flow), and an optional integrated Gemini chat. The chat panel is gated by `GEMINI_API_KEY`; the tokens page works without it.
 
-Full reference: [docs/dashboard.md](docs/dashboard.md).
+Full reference: [docs/dashboard.md](docs/dashboard.md). See also: [docs/clients.md](docs/clients.md) for external MCP client configuration.
 
 ---
 
