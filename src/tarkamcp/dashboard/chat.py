@@ -119,9 +119,24 @@ class ErrorEvent:
     message: str
 
 
+@dataclass
+class UsageAccumulated:
+    """Total token counts for the turn, summed across all tool rounds.
+
+    Emitted exactly once at the end of a successful (or partially
+    successful) turn so the route can compute a USD cost and persist it.
+    ``cached_tokens`` is the subset of ``prompt_tokens`` that Gemini
+    served from an implicit/explicit cache hit.
+    """
+    model: str
+    prompt_tokens: int
+    cached_tokens: int
+    output_tokens: int
+
+
 ChatEvent = (
     TextDelta | ThinkingDelta | ToolCallStart | ToolCallEnd
-    | ToolConfirmRequired | ErrorEvent
+    | ToolConfirmRequired | ErrorEvent | UsageAccumulated
 )
 
 
@@ -232,6 +247,8 @@ def assemble_assistant_message(
             tc.status = event.status
             tc.preview = event.preview
             tc.duration_ms = event.duration_ms
+        # UsageAccumulated / ToolConfirmRequired / ErrorEvent don't
+        # contribute to the persisted message body.
 
     return (
         "".join(content_parts),
@@ -367,6 +384,12 @@ class GeminiChatEngine:
         tool_starts: dict[str, float] = {}
         seen_tool_ids: set[str] = set()
 
+        # Accumulated across every ``generate_content_stream`` round in
+        # this turn so the dashboard can charge the client once per turn.
+        usage_total_prompt = 0
+        usage_total_cached = 0
+        usage_total_output = 0
+
         contents = self._build_contents(turn.history, turn.user_text)
         thinking = self._build_thinking_config(turn.model, turn.effort)
 
@@ -495,7 +518,15 @@ class GeminiChatEngine:
 
                         model_parts: list = []
                         fc_invocations: list = []  # (fc_part, fc_id)
+                        last_usage: Any = None
                         async for chunk in stream:
+                            um = getattr(chunk, "usage_metadata", None)
+                            if um is not None:
+                                # Only the final chunk carries totals for
+                                # the stream; earlier chunks may surface
+                                # partial data. Keep overwriting so we
+                                # land on the last value.
+                                last_usage = um
                             for part in _iter_parts(chunk):
                                 text = getattr(part, "text", None)
                                 if text:
@@ -529,7 +560,24 @@ class GeminiChatEngine:
                                         args=args,
                                     )
 
+                        if last_usage is not None:
+                            usage_total_prompt += int(
+                                getattr(last_usage, "prompt_token_count", 0) or 0
+                            )
+                            usage_total_cached += int(
+                                getattr(last_usage, "cached_content_token_count", 0) or 0
+                            )
+                            usage_total_output += int(
+                                getattr(last_usage, "candidates_token_count", 0) or 0
+                            )
+
                         if not fc_invocations:
+                            yield UsageAccumulated(
+                                model=turn.model,
+                                prompt_tokens=usage_total_prompt,
+                                cached_tokens=usage_total_cached,
+                                output_tokens=usage_total_output,
+                            )
                             return  # model is done
 
                         current_contents.append(
@@ -627,6 +675,15 @@ class GeminiChatEngine:
                             types.Content(role="user", parts=response_parts)
                         )
 
+                    # Even though we couldn't finish, tokens WERE burned
+                    # across the rounds; surface them so the client is
+                    # charged for what actually hit Google.
+                    yield UsageAccumulated(
+                        model=turn.model,
+                        prompt_tokens=usage_total_prompt,
+                        cached_tokens=usage_total_cached,
+                        output_tokens=usage_total_output,
+                    )
                     yield ErrorEvent(
                         code="tool_loop_limit",
                         message=(

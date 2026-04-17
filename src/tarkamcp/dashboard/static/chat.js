@@ -245,6 +245,10 @@ const el = {
   send: document.getElementById("composer-send"),
   selModel: document.getElementById("select-model"),
   selEffort: document.getElementById("select-effort"),
+  usageBar: document.getElementById("usage-bar"),
+  usage5hValue: document.getElementById("usage-5h-value"),
+  usage5hReset: document.getElementById("usage-5h-reset"),
+  usageWeekValue: document.getElementById("usage-week-value"),
 };
 
 // ---------------- Sidebar ----------------
@@ -492,6 +496,71 @@ async function sendConfirmation(callId, approve, approveBtn, rejectBtn) {
 
 function scrollToBottom() {
   el.messages.scrollTop = el.messages.scrollHeight;
+}
+
+// ---------------- Usage footer ----------------
+
+// Formats a float dollar amount with 2 fractional digits for the footer.
+// Values above $10 drop to 1 decimal for compactness.
+function formatUsd(n) {
+  const abs = Math.abs(n);
+  if (abs >= 10) return `$${n.toFixed(1)}`;
+  return `$${n.toFixed(2)}`;
+}
+
+// Render HH:MM for an absolute epoch-seconds timestamp in local time.
+function formatLocalTime(epochSecs) {
+  const d = new Date(epochSecs * 1000);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}h${mm}`;
+}
+
+function renderUsage(u) {
+  if (!u) return;
+  const hasAnyCap = (u.limit_5h_usd > 0) || (u.limit_week_usd > 0);
+  if (!hasAnyCap) {
+    el.usageBar.hidden = true;
+    return;
+  }
+  el.usageBar.hidden = false;
+
+  if (u.limit_5h_usd > 0) {
+    el.usage5hValue.textContent =
+      `${formatUsd(u.spent_5h_usd)} / ${formatUsd(u.limit_5h_usd)}`;
+    el.usage5hValue.parentElement.classList.toggle(
+      "usage-over", u.spent_5h_usd >= u.limit_5h_usd,
+    );
+    if (u.session_5h_reset_at) {
+      el.usage5hReset.textContent = `· reset ${formatLocalTime(u.session_5h_reset_at)}`;
+    } else {
+      el.usage5hReset.textContent = "";
+    }
+    el.usage5hValue.parentElement.hidden = false;
+  } else {
+    el.usage5hValue.parentElement.hidden = true;
+  }
+
+  if (u.limit_week_usd > 0) {
+    el.usageWeekValue.textContent =
+      `${formatUsd(u.spent_week_usd)} / ${formatUsd(u.limit_week_usd)}`;
+    el.usageWeekValue.parentElement.classList.toggle(
+      "usage-over", u.spent_week_usd >= u.limit_week_usd,
+    );
+    el.usageWeekValue.parentElement.hidden = false;
+  } else {
+    el.usageWeekValue.parentElement.hidden = true;
+  }
+}
+
+async function loadUsage() {
+  try {
+    const data = await apiJson("/app/api/usage");
+    renderUsage(data?.usage);
+  } catch (err) {
+    // Not fatal: usage tracking is best-effort.
+    console.warn("usage load failed", err);
+  }
 }
 
 // ---------------- Conversation API ----------------
@@ -757,6 +826,10 @@ function handleEvent({ event, data }, assistantMsg, row, body, toolCardMap) {
       window.location.href = "/app/refresh?next=/app/chat";
       break;
     }
+    case "usage_update": {
+      renderUsage(data);
+      break;
+    }
     case "title_updated": {
       if (state.active && state.active.id === data.conversation_id) {
         state.active.title = data.title;
@@ -792,7 +865,7 @@ function handleEvent({ event, data }, assistantMsg, row, body, toolCardMap) {
 
 (async () => {
   try {
-    await loadConversations();
+    await Promise.all([loadConversations(), loadUsage()]);
     if (state.conversations.length) {
       await loadConversation(state.conversations[0].id);
     }

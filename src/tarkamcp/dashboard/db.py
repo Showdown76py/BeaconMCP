@@ -19,7 +19,7 @@ def db_path() -> Path:
     return Path(override) if override else DEFAULT_DB_PATH
 
 
-_LATEST_VERSION = 2
+_LATEST_VERSION = 3
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -94,6 +94,37 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "UPDATE messages SET model = 'gemini-3.1-pro-preview' "
             "WHERE model = 'gemini-3.1-pro'"
+        )
+
+    if version < 3:
+        # Usage accounting: a per-turn ledger + a materialized 5h session
+        # row per client. The ledger is the source of truth (used for the
+        # rolling 7-day window); the session row avoids a GROUP BY scan
+        # on every pre-turn budget check.
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS usage_events (
+              id               TEXT PRIMARY KEY,
+              client_id        TEXT NOT NULL,
+              conversation_id  TEXT,
+              message_id       TEXT,
+              ts               REAL NOT NULL,
+              model            TEXT NOT NULL,
+              prompt_tokens    INTEGER NOT NULL DEFAULT 0,
+              cached_tokens    INTEGER NOT NULL DEFAULT 0,
+              output_tokens    INTEGER NOT NULL DEFAULT 0,
+              cost_usd         REAL NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_usage_client_ts
+              ON usage_events(client_id, ts DESC);
+
+            CREATE TABLE IF NOT EXISTS usage_5h_sessions (
+              client_id      TEXT PRIMARY KEY,
+              started_at     REAL NOT NULL,
+              last_event_at  REAL NOT NULL,
+              cost_usd       REAL NOT NULL DEFAULT 0
+            );
+            """
         )
 
     conn.execute(f"PRAGMA user_version = {_LATEST_VERSION}")

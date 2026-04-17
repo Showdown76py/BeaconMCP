@@ -528,11 +528,37 @@ def _build_dashboard_routes(client_store, token_store, totp_locked,
     from .dashboard.conversations import ConversationStore
     from .dashboard.db import Database
     from .dashboard.session import SessionStore
+    from .dashboard.usage import Budget, UsageStore
 
     database = Database()
     session_store = SessionStore(database)
     conversations = ConversationStore(database)
     confirmations = ConfirmationStore()
+
+    # Usage accounting. Both caps are applied globally to every client.
+    # Setting a cap to 0 (or leaving the var unset and letting the float
+    # parse to 0) disables enforcement on that window. Defaults follow
+    # the decision captured in docs/superpowers/specs: $2 / 5h, $10 / week.
+    def _float_env(name: str, default: float) -> float:
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            return default
+        try:
+            return float(raw)
+        except ValueError:
+            print(
+                f"WARNING: {name}={raw!r} is not a valid float; "
+                f"using default {default}.",
+                file=sys.stderr,
+            )
+            return default
+
+    budget = Budget(
+        limit_5h_usd=_float_env("TARKAMCP_DASHBOARD_LIMIT_5H_USD", 2.0),
+        limit_week_usd=_float_env("TARKAMCP_DASHBOARD_LIMIT_WEEK_USD", 10.0),
+    )
+    usage = UsageStore(database, budget)
+
     api_key = os.environ.get("GEMINI_API_KEY", "")
     engine = GeminiChatEngine(api_key=api_key) if api_key else None
     mcp_public_url = os.environ.get("TARKAMCP_DASHBOARD_PUBLIC_URL", "").strip() or None
@@ -558,6 +584,7 @@ def _build_dashboard_routes(client_store, token_store, totp_locked,
         conversations=conversations,
         engine=engine,
         confirmations=confirmations,
+        usage=usage,
         mcp_public_url=mcp_public_url,
         mcp_mode=mcp_mode,
     )
