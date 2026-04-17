@@ -1,50 +1,36 @@
 <div align="center">
 
-# TarkaMCP
+# BeaconMCP
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![MCP Protocol](https://img.shields.io/badge/MCP-Model_Context_Protocol-5A67D8)](https://modelcontextprotocol.io/)
 [![Proxmox VE](https://img.shields.io/badge/Proxmox-VE_8.x-E57000?logo=proxmox&logoColor=white)](https://www.proxmox.com/)
-[![HP iLO 4](https://img.shields.io/badge/HP-iLO_4-0096D6?logo=hp&logoColor=white)](https://www.hpe.com/us/en/servers/integrated-lights-out-ilo.html)
+[![HP iLO](https://img.shields.io/badge/HP-iLO_4%2F5-0096D6?logo=hp&logoColor=white)](https://www.hpe.com/us/en/servers/integrated-lights-out-ilo.html)
+[![IPMI](https://img.shields.io/badge/IPMI-2.0-4E5D70)](https://en.wikipedia.org/wiki/Intelligent_Platform_Management_Interface)
 [![ChatGPT](https://img.shields.io/badge/ChatGPT-Compatible-74AA9C?logo=openai&logoColor=white)](https://chatgpt.com/)
 [![Gemini](https://img.shields.io/badge/Gemini-Compatible-4285F4?logo=google&logoColor=white)](https://gemini.google.com/)
-[![License](https://img.shields.io/github/license/Showdown76py/TarkaMCP)](LICENSE)
-[![Claude Code](https://img.shields.io/badge/Built_with-Claude_Code-F97316)](https://claude.ai/code)
+[![License](https://img.shields.io/github/license/Showdown76py/BeaconMCP)](LICENSE)
 
-**Serveur MCP remote pour la gestion d'infrastructure Proxmox VE.**
+**Remote MCP server for Proxmox VE clusters and BMC-managed hardware.**
 
-Compatible **Claude** (web, mobile) &bull; **ChatGPT** &bull; **Gemini** (CLI, API)
+Works with **Claude** (web, mobile, desktop) &bull; **ChatGPT** &bull; **Gemini** (CLI, API)
 
-[Installation](#installation) &bull; [Connexion](#connexion-par-plateforme) &bull; [Outils](#outils-disponibles) &bull; [Tests](#tests)
+[Installation](#installation) &bull; [Connecting clients](#connecting-clients) &bull; [Tools](#available-tools) &bull; [Tests](#tests)
 
 </div>
 
 ---
 
-### Fonctionnalités
+## Overview
 
-- **29 outils MCP** répartis en 3 modules (Proxmox, SSH, iLO)
-- **Multi-plateforme** -- Claude, ChatGPT, Gemini via Streamable HTTP + OAuth 2.1
-- **Diagnostic automatisé** -- l'IA identifie les crashs, vérifie le hardware, propose des résolutions
-- **Exécution de commandes** dans les VMs/CTs via QEMU Guest Agent ou SSH (sync et async)
-- **Gestion hardware à distance** -- power on/off/reset, températures, ventilateurs via iLO 4
-- **Architecture modulaire** -- chaque module se charge uniquement si ses credentials sont configurés
+BeaconMCP exposes a Proxmox VE cluster and the hardware underneath it (HP iLO, generic IPMI) as a single Streamable HTTP MCP server. Any MCP-capable client can diagnose a crash, power-cycle a frozen host, create or migrate VMs, and execute commands inside guests or on the bare-metal nodes — through a single OAuth 2.1 endpoint.
 
----
-
-## Table des matières
-
-- [Architecture](#architecture)
-- [Installation](#installation)
-- [Connexion par plateforme](#connexion-par-plateforme)
-- [Dashboard web](#dashboard-web)
-- [Sécurité : review manuelle des actions sensibles](#sécurité--review-manuelle-des-actions-sensibles)
-- [Configuration Proxmox](#configuration-proxmox)
-- [Configuration iLO](#configuration-ilo)
-- [Configuration .env](#configuration-env)
-- [Tests](#tests) — détails dans [docs/tests.md](docs/tests.md)
-- [Outils disponibles](#outils-disponibles)
-- [Dépannage & exemples](#dépannage--exemples) — détails dans [docs/troubleshooting.md](docs/troubleshooting.md)
+- **30 MCP tools** across four modules: Proxmox (monitoring, VM lifecycle, system), SSH fallback, and BMC hardware management.
+- **N nodes, N BMC devices.** Declare as many Proxmox nodes as your cluster has, and as many BMC endpoints (HP iLO, IPMI) as you manage. No hard-coded node counts.
+- **Backend-agnostic hardware layer.** HP iLO and generic IPMI ship out of the box; Dell iDRAC and Supermicro are pluggable stubs.
+- **YAML-first configuration** with `${ENV}` references for secrets. Validation runs at startup.
+- **OAuth 2.1 + TOTP.** Client credentials with mandatory second factor on every token issuance.
+- **Optional web dashboard** — login, API-token management, and an (optional) integrated Gemini chat panel.
 
 ---
 
@@ -52,150 +38,128 @@ Compatible **Claude** (web, mobile) &bull; **ChatGPT** &bull; **Gemini** (CLI, A
 
 ```
 Clients (Claude, ChatGPT, Gemini)
-        |
-        | HTTPS (Cloudflare Tunnel)
-        v
-+--[ pve1.tarkacore.dev ]-------------------+
-|                                            |
-|  TarkaMCP (HTTP :8420)                     |
-|    +-- proxmox/ -----> Proxmox API :8006   |
-|    +-- ssh/ ---------> SSH :22             |
-|    +-- ilo/ ---------> iLO 4 (réseau local)|
-|                                            |
-+--------------------------------------------+
-        |
-        | API Proxmox
-        v
-  pve2.tarkacore.dev
+        │
+        │ HTTPS (reverse proxy / tunnel)
+        ▼
+┌──────────────────────────────────┐
+│   BeaconMCP  (HTTP :8420)         │
+│   ├── proxmox/   → Proxmox API   │
+│   ├── ssh/       → SSH :22       │
+│   ├── bmc/       → iLO / IPMI    │
+│   └── dashboard/ → /app/*        │
+└──────────────────────────────────┘
+        │
+        │ managed cluster
+        ▼
+  Proxmox nodes (N)  ·  BMC devices (N)
 ```
 
-Le serveur tourne sur pve1 et expose un endpoint MCP via Cloudflare Tunnel. Toutes les plateformes s'y connectent avec des credentials OAuth.
+BeaconMCP runs on any host that can reach the Proxmox API of every declared node and the BMC management network. It speaks MCP over Streamable HTTP and is typically placed behind a reverse proxy with DNS-rebinding protection configured via `server.allowed_hosts` in the YAML.
+
+---
+
+## Requirements
+
+- Python 3.11+
+- Proxmox VE 8.x with API tokens provisioned on each node (Datacenter → Permissions → API Tokens)
+- *(optional)* `ipmitool` binary on the BeaconMCP host if any IPMI BMC is configured
+- *(optional)* reachable jump host (a Proxmox node) for HP iLO devices exposed only on a private management VLAN
+- *(optional)* `GEMINI_API_KEY` to enable the integrated chat panel
 
 ---
 
 ## Installation
 
-### 1. Installer sur pve1
+### 1. Install
 
 ```bash
-git clone https://github.com/Showdown76py/TarkaMCP.git /opt/tarkamcp
-cd /opt/tarkamcp
+git clone https://github.com/Showdown76py/BeaconMCP.git /opt/beaconmcp
+cd /opt/beaconmcp
 sudo bash deploy/install.sh
 ```
 
-### 2. Configurer les credentials Proxmox
+The install script creates a `beaconmcp` system user, installs the package in editable mode, registers a systemd unit, and creates `/opt/beaconmcp` for persistent state.
+
+### 2. Configure
 
 ```bash
-nano /opt/tarkamcp/.env
+cp beaconmcp.yaml.example /opt/beaconmcp/beaconmcp.yaml
+cp .env.example /opt/beaconmcp/.env
+# Edit both: YAML defines the topology, .env holds the secrets.
 ```
 
-Remplir au minimum `PVE1_HOST`, `PVE1_TOKEN_ID`, `PVE1_TOKEN_SECRET` (voir [Configuration .env](#configuration-env)).
-
-### 3. Créer un client OAuth (avec 2FA)
+The YAML declares Proxmox nodes, BMC devices, SSH credentials, the dashboard configuration, and DNS-rebinding allowlists. Secrets are referenced via `${ENV_VAR}` placeholders resolved at startup against the `.env` file. Validate the result without starting the server:
 
 ```bash
-tarkamcp auth create --name "Claude Web"
+beaconmcp validate-config
+# prints the fully-resolved config with secrets masked, and a one-line summary.
 ```
 
-```
-  Client ID:     tarkamcp_a1b2c3...
-  Client Secret: sk_d4e5f6...
-
-  --- 2FA / Google Authenticator ---
-  Scanne ce QR code dans ton app (Google Authenticator, Authy, 1Password) :
-
-  █▀▀▀▀▀█ ▄▀ ▄█ █▀▀▀▀▀█
-  █ ███ █ ▀ ▄▄▄ █ ███ █
-  ...
-
-  Secret manuel : JBSWY3DPEHPK3PXP
-  URI otpauth   : otpauth://totp/TarkaMCP:tarkamcp_...?secret=...&issuer=TarkaMCP
-```
-
-**Important** : le Client Secret ET le secret TOTP ne sont affichés qu'une seule fois. Scanne le QR tout de suite dans ton app d'authentification, sinon tu devras révoquer et recréer le client.
-
-### 4. Démarrer le serveur
+### 3. Provision an OAuth client
 
 ```bash
-sudo systemctl start tarkamcp
+beaconmcp auth create --name "Claude Web"
+```
+
+The CLI prints a client id, a client secret, and a TOTP seed (with an ASCII QR code). **Both secrets are displayed exactly once.** Scan the QR into an authenticator app (Google Authenticator, Authy, 1Password) immediately, or store the raw seed in a secrets manager.
+
+Repeat for each MCP client that should have access (ChatGPT, Gemini, etc.). Clients are listed and revoked with:
+
+```bash
+beaconmcp auth list
+beaconmcp auth revoke <client_id>
+```
+
+### 4. Start the server
+
+```bash
+sudo systemctl enable --now beaconmcp
 curl http://localhost:8420/health
-# → {"status": "ok", "server": "tarkamcp"}
+# {"status":"ok","server":"beaconmcp"}
 ```
 
-### 5. Exposer via Cloudflare Tunnel
+### 5. Expose publicly
 
-Dans le dashboard Cloudflare Zero Trust, ajouter un tunnel :
-
-| Paramètre | Valeur |
-|-----------|--------|
-| **Hostname** | `mcp.tarkacore.dev` |
-| **Service** | `http://localhost:8420` |
-
-Puis déclarer ce hostname dans `.env` via `TARKAMCP_ALLOWED_HOSTS`, sinon le
-SDK MCP renverra `421 Misdirected Request` (protection DNS-rebinding).
-
-### Gérer les clients
-
-```bash
-# Créer un client par plateforme
-tarkamcp auth create --name "ChatGPT"
-tarkamcp auth create --name "Gemini"
-
-# Lister
-tarkamcp auth list
-
-# Révoquer un accès
-tarkamcp auth revoke tarkamcp_abc123...
-```
+Place BeaconMCP behind a reverse proxy that terminates TLS and forwards the public hostname to `http://localhost:8420`. Declare that hostname under `server.allowed_hosts` in `beaconmcp.yaml`; without it the MCP SDK rejects incoming requests with `421 Misdirected Request` (DNS-rebinding protection).
 
 ---
 
-## Connexion par plateforme
+## Connecting clients
 
-### Claude (web & mobile)
+### Claude (web, mobile, desktop)
 
-1. **Settings** > **Integrations** > **Add custom connector**
-2. Remplir :
-   - **Name** : `TarkaMCP`
-   - **Remote MCP server URL** : `https://mcp.tarkacore.dev/mcp`
-   - **OAuth Client ID** : `tarkamcp_a1b2c3...`
-   - **OAuth Client Secret** : `sk_d4e5f6...`
-3. **Add**
+1. **Settings → Integrations → Add custom connector.**
+2. Fill in:
+   - **Name:** BeaconMCP
+   - **Remote MCP server URL:** `https://<your-host>/mcp`
+   - **OAuth Client ID** and **OAuth Client Secret** from `beaconmcp auth create`.
+3. **Add.**
 
-À la connexion, une page TarkaMCP s'ouvre dans ton navigateur et demande le code 2FA à 6 chiffres depuis Google Authenticator. Saisis-le, tu es redirigé vers Claude automatiquement. Le token dure 24 h, après quoi Claude redemande le code.
+On first use, Claude redirects to the BeaconMCP authorization page, which prompts for the 6-digit TOTP code. Tokens last 24 hours; Claude re-prompts at expiry.
 
 ### ChatGPT
 
-1. **Settings** > **Developer Mode** > **MCP Servers**
-2. URL : `https://mcp.tarkacore.dev/mcp`
-3. Obtenir un bearer token. Deux options :
-   - **Via le dashboard** (recommandé) : [page Tokens API](#page-tokens-api) → crée un token nommé "ChatGPT", copie la valeur.
-   - **Via curl** :
-     ```bash
-     TOTP=$(oathtool --totp -b "$TOTP_SECRET")   # ou tape-le depuis l'app
-     curl -X POST https://mcp.tarkacore.dev/oauth/token \
-       -d "grant_type=client_credentials&client_id=ID&client_secret=SECRET&totp=$TOTP"
-     ```
-4. Utiliser la valeur comme bearer token. Expire dans 24 h.
+1. **Settings → Developer Mode → MCP Servers.**
+2. URL: `https://<your-host>/mcp`.
+3. Obtain a bearer token either from the dashboard's **API Tokens** page (recommended) or via a direct OAuth token request:
+
+   ```bash
+   TOTP=$(oathtool --totp -b "$TOTP_SECRET")
+   curl -X POST https://<your-host>/oauth/token \
+     -d "grant_type=client_credentials&client_id=$ID&client_secret=$SECRET&totp=$TOTP"
+   ```
+
+4. Use the returned `access_token` as the bearer. Expires in 24 hours.
 
 ### Gemini CLI
 
 ```bash
-# Option 1 : récupère un token depuis le dashboard (Tokens API → nouveau token "Gemini CLI")
-gemini mcp add tarkamcp --url https://mcp.tarkacore.dev/mcp \
-  --header "Authorization: Bearer <token-copié-depuis-le-dashboard>"
-
-# Option 2 : via curl
-TOTP=$(oathtool --totp -b "$TOTP_SECRET")
-TOKEN=$(curl -s -X POST https://mcp.tarkacore.dev/oauth/token \
-  -d "grant_type=client_credentials&client_id=ID&client_secret=SECRET&totp=$TOTP" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-
-gemini mcp add tarkamcp --url https://mcp.tarkacore.dev/mcp \
-  --header "Authorization: Bearer $TOKEN"
+gemini mcp add beaconmcp \
+  --url https://<your-host>/mcp \
+  --header "Authorization: Bearer <token>"
 ```
 
-Le token est valide 24 h (option 1 comme option 2). Recréer un nouveau token dans le dashboard ou relancer le bloc curl pour renouveler.
+Issue the token either from the dashboard or from the `curl` snippet above.
 
 ### Gemini API
 
@@ -203,225 +167,157 @@ Le token est valide 24 h (option 1 comme option 2). Recréer un nouveau token da
 import requests, pyotp
 from google import genai
 
-totp = pyotp.TOTP("JBSWY3DPEHPK3PXP").now()   # le secret affiché à la création
-token = requests.post("https://mcp.tarkacore.dev/oauth/token", data={
-    "grant_type": "client_credentials",
-    "client_id": "tarkamcp_...",
-    "client_secret": "sk_...",
-    "totp": totp,
-}).json()["access_token"]
+totp = pyotp.TOTP(TOTP_SECRET).now()
+token = requests.post(
+    "https://<your-host>/oauth/token",
+    data={
+        "grant_type": "client_credentials",
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "totp": totp,
+    },
+).json()["access_token"]
 
 client = genai.Client()
 response = client.models.generate_content(
     model="gemini-2.0-flash",
-    contents="Liste les VMs sur pve1",
-    config={"tools": [{"mcp_servers": [{
-        "url": "https://mcp.tarkacore.dev/mcp",
-        "headers": {"Authorization": f"Bearer {token}"},
-    }]}]},
+    contents="List the VMs on pve1",
+    config={
+        "tools": [
+            {
+                "mcp_servers": [
+                    {
+                        "url": "https://<your-host>/mcp",
+                        "headers": {"Authorization": f"Bearer {token}"},
+                    }
+                ]
+            }
+        ]
+    },
 )
 ```
 
-> Stocker le secret TOTP dans le code va à l'encontre de l'intérêt du 2FA. Préfère un vault (1Password CLI, `pass`, secret manager) ou tape le code à la main.
+Storing the TOTP seed next to the client secret defeats the second factor. Prefer a secrets manager or a hardware authenticator for production workloads.
 
 ---
 
-## Dashboard web
+## Dashboard
 
-Un panel web optionnel est servi par TarkaMCP sur la même URL (`https://mcp.tarkacore.dev/app/...`) — login TOTP, chat Gemini multi-conversations, et génération de tokens API pour brancher des clients MCP externes (Gemini web, ChatGPT, Claude Desktop…).
+An optional web panel is mounted under `/app/*` on the same port as the MCP endpoint. It provides TOTP login, an API-token management page (used to wire external clients like the Gemini web UI or ChatGPT MCP without exposing the OAuth flow), and an optional integrated Gemini chat. The chat panel is gated by `GEMINI_API_KEY`; the tokens page works without it.
 
-Le chat nécessite `GEMINI_API_KEY` ; la page **Tokens API** fonctionne sans. Détails complets (modes, pages, flow, modèles, sécurité SSH, tarifs, limites d'usage, architecture) dans [docs/dashboard.md](docs/dashboard.md).
-
----
-
-## Sécurité : review manuelle des actions sensibles
-
-> **Ne laisse jamais un LLM exécuter des commandes shell sur ton infra sans les avoir relues toi-même.**
-
-TarkaMCP expose des outils qui peuvent faire des dégâts irréversibles (`ssh_exec_command*`, `proxmox_exec_command*`, power off iLO, `vm_stop`, `vm_create`, etc.). Le LLM ne comprend pas toujours les conséquences d'une commande — un `rm -rf` "pour faire propre", un `systemctl stop` sur le mauvais service, un `pct destroy` au lieu de `pct stop`. Quelques règles :
-
-- **Désactive l'auto-approve** sur chaque client MCP externe (Claude Desktop, Gemini CLI, ChatGPT MCP, etc.). La plupart offrent un toggle "Approve each tool call" ou équivalent — garde-le **activé**, et refuse l'option "Always allow this tool".
-- **Relis l'argument `command` avant d'autoriser** un appel `ssh_exec_command*` ou `proxmox_exec_command*`. Pose-toi la question : "si cette commande tournait sur la mauvaise VM / le mauvais host, est-ce que je pourrais récupérer ?"
-- **Le chat intégré (`/app/chat`) force déjà une approbation humaine** pour `ssh_exec_command`, `ssh_exec_command_async`, `proxmox_exec_command` et `proxmox_exec_command_async` — même si tu cliques vite, lis au moins les `args` de la tool-card. Le timeout est à 5 min et l'absence de réponse vaut refus.
-- **Préfère les outils lecture-seule** (`*_list_*`, `*_status`, `*_get_*`, `get_logs`, `health_status`…) pour l'exploration. Ils ne sont jamais bloqués par confirmation parce qu'ils ne peuvent rien casser.
-- **Ne partage jamais** un bearer `/app/tokens` avec un client MCP qui n'est pas le tien. Un token compromis = shell arbitraire sur pve1/pve2 pendant 24 h.
-
-Un `systemctl restart tarkamcp` invalide tous les bearers en mémoire : en cas de doute sur un token qui fuite, c'est la corde de panique.
+Full reference: [docs/dashboard.md](docs/dashboard.md).
 
 ---
 
-## Configuration Proxmox
+## Configuration
 
-### Créer un API token
+Two files are read at startup:
 
-Sur l'interface web Proxmox (`https://pve1.tarkacore.dev`) :
+- **`beaconmcp.yaml`** — topology and feature flags. Path resolution: `--config` flag → `BEACONMCP_CONFIG` env → `./beaconmcp.yaml` → `/etc/beaconmcp/config.yaml`. See [`beaconmcp.yaml.example`](beaconmcp.yaml.example) for the full schema.
+- **`.env`** — secrets referenced by the YAML as `${VAR}`. Missing references fail the startup check with the offending YAML path.
 
-1. **Datacenter** > **Permissions** > **API Tokens** > **Add**
-2. **User** : `root@pam`, **Token ID** : `tarkamcp`
-3. **Décocher** Privilege Separation
-4. Copier le secret affiché
+Common keys:
 
-Répéter sur pve2 quand disponible.
-
-### Installer le QEMU Guest Agent
-
-Nécessaire pour exécuter des commandes à l'intérieur des VMs.
-
-```bash
-# Debian/Ubuntu
-apt install -y qemu-guest-agent && systemctl enable --now qemu-guest-agent
-
-# CentOS/RHEL
-dnf install -y qemu-guest-agent && systemctl enable --now qemu-guest-agent
-```
-
-Puis dans Proxmox : VM > **Options** > **QEMU Guest Agent** > cocher > redémarrer la VM.
-
-Les conteneurs LXC n'ont pas besoin du Guest Agent.
-
-### Configurer SSH (optionnel)
-
-SSH sert de fallback quand l'API Proxmox ne suffit pas.
-
-```bash
-# Vérifier que l'auth par mot de passe est active
-grep "^PasswordAuthentication" /etc/ssh/sshd_config
-```
+| Section | Notes |
+|---------|-------|
+| `server.allowed_hosts` | DNS-rebinding allowlist — **must** include the public FQDN behind your reverse proxy. |
+| `server.allowed_origins` | CORS allowlist for browser-based MCP clients. |
+| `proxmox.nodes[]` | One entry per Proxmox node. Needs an API token per node. |
+| `ssh.vmid_to_ip` | Optional template (e.g. `"192.168.1.{id}"`) used by `ssh_exec_command` when the `host` argument is a bare VMID. Omit to disable numeric-ID shortcuts. |
+| `bmc.devices[]` | Zero or more BMCs. `type` is one of `hp_ilo`, `ipmi`, `idrac` (stub), `supermicro` (stub). `jump_host` is optional — set it to the name of a `proxmox.nodes[]` entry to route the connection over an SSH tunnel. |
+| `features.dashboard.limits` | Per-5h and per-week USD caps for the Gemini chat. Set to `0` to disable a window. |
 
 ---
 
-## Configuration iLO
+## Security: manual review of sensitive actions
 
-L'iLO est sur le réseau local. TarkaMCP y accède via un tunnel SSH ouvert sur
-`ILO_JUMP_HOST` (par défaut `pve1`) ; les credentials SSH doivent donc être
-configurés. Quand TarkaMCP tourne lui-même sur pve1, le tunnel est trivial
-(localhost → iLO) mais reste nécessaire vu que python-hpilo est synchrone.
+> **Never let an LLM execute shell commands on infrastructure you care about without reading the command first.**
 
-```bash
-# Trouver l'IP de l'iLO depuis pve1
-nmap -sn 192.168.1.0/24 | grep -B2 "HP\|iLO"
+BeaconMCP exposes tools that cause irreversible changes: `ssh_exec_command*`, `proxmox_exec_command*`, `bmc_power_off`, `proxmox_vm_stop`, `proxmox_vm_create`, and more. Models do not always grasp the consequences of a command — an errant `rm -rf`, a `systemctl stop` on the wrong unit, a `pct destroy` mistaken for `pct stop`. A few working rules:
 
-# Tester
-curl -sk https://IP_ILO/xmldata?item=All | grep PRODUCT_NAME
-```
+- **Disable auto-approve** on every external MCP client (Claude Desktop, Gemini CLI, ChatGPT MCP). Keep per-call approval enabled; refuse "always allow this tool".
+- **Read the `command` argument** before approving any `ssh_exec_command*` or `proxmox_exec_command*` call. Ask: if this ran against the wrong VM or host, could I recover?
+- **The integrated chat** at `/app/chat` already forces human confirmation for every `ssh_exec_command*` and `proxmox_exec_command*` call. Read the arguments shown on the confirmation card even when you click through fast. No answer within 5 minutes counts as refusal.
+- **Prefer read-only tools** (`*_list_*`, `*_status`, `*_get_*`, `get_logs`, `health_status`) for exploration — they cannot break anything and are never gated by confirmation.
+- **Do not share a `/app/tokens` bearer** with a client you do not fully control. A leaked token grants arbitrary shell access on your Proxmox nodes for 24 hours.
+
+`systemctl restart beaconmcp` invalidates every in-memory bearer. When in doubt about a token, restart is the panic lever.
 
 ---
 
-## Configuration .env
+## Available tools
 
-```bash
-cp .env.example .env && nano .env
-```
+### Proxmox — monitoring (6)
 
-```env
-# OBLIGATOIRE
-PVE1_HOST=pve1.tarkacore.dev
-PVE1_TOKEN_ID=root@pam!tarkamcp
-PVE1_TOKEN_SECRET=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+| Tool | Description |
+|------|-------------|
+| `proxmox_list_nodes` | List cluster nodes and their status. |
+| `proxmox_node_status` | CPU, memory, disk, uptime of a single node. |
+| `proxmox_list_vms` | List every VM and container across the cluster. |
+| `proxmox_vm_status` | Detailed state of a VM or container. |
+| `proxmox_get_logs` | System or task logs. |
+| `proxmox_get_tasks` | Recent task history. |
 
-# OPTIONNEL -- PVE2
-PVE2_HOST=pve2.tarkacore.dev
-PVE2_TOKEN_ID=root@pam!tarkamcp
-PVE2_TOKEN_SECRET=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+### Proxmox — VM lifecycle (7)
 
-# OPTIONNEL -- iLO
-ILO_HOST=192.168.1.X
-ILO_USER=Administrator
-ILO_PASSWORD=xxxxx
-ILO_JUMP_HOST=pve1
+| Tool | Description |
+|------|-------------|
+| `proxmox_vm_start` | Start a VM or container. |
+| `proxmox_vm_stop` | Stop (clean or forced). |
+| `proxmox_vm_restart` | Restart. |
+| `proxmox_vm_create` | Provision a new VM or container. |
+| `proxmox_vm_clone` | Clone an existing one. |
+| `proxmox_vm_migrate` | Migrate across nodes. |
+| `proxmox_vm_config` | Read or update configuration. |
 
-# OPTIONNEL -- SSH
-SSH_USER=root
-SSH_PASSWORD=xxxxx
+### Proxmox — system (5)
 
-# OPTIONS
-PVE_VERIFY_SSL=false
-# TARKAMCP_PORT=8420
+| Tool | Description |
+|------|-------------|
+| `proxmox_storage_status` | Storage pool status. |
+| `proxmox_network_config` | Network configuration per node. |
+| `proxmox_exec_command` | Command inside a VM or container (sync, via QEMU Guest Agent). |
+| `proxmox_exec_command_async` | Long-running command (async). |
+| `proxmox_exec_get_result` | Fetch the result of an async command. |
 
-# OBLIGATOIRE en prod -- hostnames publics autorisés par la protection
-# DNS-rebinding du SDK MCP (sinon 421 Misdirected Request). Virgules.
-TARKAMCP_ALLOWED_HOSTS=mcp.tarkacore.dev,127.0.0.1:*,localhost:*,[::1]:*
-# TARKAMCP_ALLOWED_ORIGINS=https://claude.ai,https://chat.openai.com,https://gemini.google.com
-```
+### SSH fallback (4)
 
-Modules chargés conditionnellement : sans SSH → pas de `ssh_*`, sans iLO → pas de `ilo_*`.
+| Tool | Description |
+|------|-------------|
+| `ssh_exec_command` | Command on a host (sync). `host` accepts node names, VMIDs, hostnames, or IPs. |
+| `ssh_exec_command_async` | Long-running command (async). |
+| `ssh_exec_get_result` | Fetch the result of an async SSH command. |
+| `ssh_list_sessions` | List active and recent SSH sessions. |
+
+### BMC — hardware management (8)
+
+| Tool | Description |
+|------|-------------|
+| `bmc_list_devices` | List configured BMCs (`id`, `type`). Call first to discover valid `device_id` values. |
+| `bmc_server_info` | Server model, serial, firmware. |
+| `bmc_health_status` | Temperatures, fans, power supplies, disks, memory. |
+| `bmc_power_status` | Current physical power state. |
+| `bmc_power_on` | Power on. |
+| `bmc_power_off` | ACPI shutdown (or `force=true` to cut power). |
+| `bmc_power_reset` | Hard reset. |
+| `bmc_get_event_log` | BMC event log (default 50, max 200). |
+
+Each `bmc_*` action tool takes a `device_id` argument. When only one device is configured, `device_id` is optional and defaults to that device.
 
 ---
 
 ## Tests
 
-Tests unitaires (`pytest`) pour le dashboard + tests d'intégration (`python tests/test_integration.py`) qui tapent la vraie infra. Détails des sections, flags CLI et prérequis : [docs/tests.md](docs/tests.md).
+The project ships unit tests (`pytest`) for the dashboard and configuration, plus an integration script (`python tests/test_integration.py`) that exercises a live Proxmox cluster. Flags, prerequisites, and fixtures are documented in [docs/tests.md](docs/tests.md).
 
 ---
 
-## Outils disponibles
+## Troubleshooting
 
-### Proxmox -- Monitoring (6)
-
-| Outil | Description |
-|-------|-------------|
-| `proxmox_list_nodes` | Liste les nœuds avec leur statut |
-| `proxmox_node_status` | CPU, RAM, disque, uptime d'un nœud |
-| `proxmox_list_vms` | Liste toutes les VMs/CTs |
-| `proxmox_vm_status` | État détaillé d'une VM/CT |
-| `proxmox_get_logs` | Logs système ou tâches |
-| `proxmox_get_tasks` | Tâches récentes |
-
-### Proxmox -- Gestion VMs (7)
-
-| Outil | Description |
-|-------|-------------|
-| `proxmox_vm_start` | Démarrer une VM/CT |
-| `proxmox_vm_stop` | Arrêter (clean ou force) |
-| `proxmox_vm_restart` | Redémarrer |
-| `proxmox_vm_create` | Créer une VM/CT |
-| `proxmox_vm_clone` | Cloner |
-| `proxmox_vm_migrate` | Migrer vers un autre nœud |
-| `proxmox_vm_config` | Lire/modifier la config |
-
-### Proxmox -- Système (5)
-
-| Outil | Description |
-|-------|-------------|
-| `proxmox_storage_status` | État du stockage |
-| `proxmox_network_config` | Config réseau du nœud |
-| `proxmox_exec_command` | Commande dans une VM/CT (sync) |
-| `proxmox_exec_command_async` | Commande longue (async) |
-| `proxmox_exec_get_result` | Résultat d'une commande async |
-
-### SSH (4)
-
-| Outil | Description |
-|-------|-------------|
-| `ssh_exec_command` | Commande sur un hôte (sync) |
-| `ssh_exec_command_async` | Commande longue (async) |
-| `ssh_exec_get_result` | Résultat d'une commande async |
-| `ssh_list_sessions` | Sessions SSH actives |
-
-### iLO (7)
-
-| Outil | Description |
-|-------|-------------|
-| `ilo_server_info` | Modèle, serial, firmware |
-| `ilo_health_status` | Températures, ventilateurs, alims, disques |
-| `ilo_power_status` | État d'alimentation (ON/OFF) |
-| `ilo_power_on` | Allumer le serveur |
-| `ilo_power_off` | Éteindre (clean ou force) |
-| `ilo_power_reset` | Hard reset |
-| `ilo_get_event_log` | Journal d'événements iLO |
+Common errors, their causes, and the fixes that worked are in [docs/troubleshooting.md](docs/troubleshooting.md).
 
 ---
 
-## Dépannage & exemples
-
-Tableau des erreurs courantes, causes et correctifs — plus quelques scénarios d'usage type — dans [docs/troubleshooting.md](docs/troubleshooting.md).
-
----
-
-## Licence
+## License
 
 [Apache 2.0](LICENSE)
-
-<div align="center">
-<sub>Construit avec <a href="https://claude.ai/code">Claude Code</a></sub>
-</div>

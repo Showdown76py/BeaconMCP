@@ -13,19 +13,19 @@ from starlette.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from tarkamcp.dashboard.app import DashboardDeps, build_dashboard_routes
-from tarkamcp.dashboard.chat import (
+from beaconmcp.dashboard.app import DashboardDeps, build_dashboard_routes
+from beaconmcp.dashboard.chat import (
     FakeChatEngine,
     FakeScript,
     TextDelta,
     UsageAccumulated,
 )
-from tarkamcp.dashboard.confirmations import ConfirmationStore
-from tarkamcp.dashboard.conversations import ConversationStore
-from tarkamcp.dashboard.csrf import CSRF_COOKIE
-from tarkamcp.dashboard.db import Database
-from tarkamcp.dashboard.session import SessionStore
-from tarkamcp.dashboard.usage import Budget, UsageMeter, UsageStore
+from beaconmcp.dashboard.confirmations import ConfirmationStore
+from beaconmcp.dashboard.conversations import ConversationStore
+from beaconmcp.dashboard.csrf import CSRF_COOKIE
+from beaconmcp.dashboard.db import Database
+from beaconmcp.dashboard.session import SessionStore
+from beaconmcp.dashboard.usage import Budget, UsageMeter, UsageStore
 
 
 # ---------------------------------------------------------------------------

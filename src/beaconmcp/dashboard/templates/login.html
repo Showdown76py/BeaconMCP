@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Sign in · BeaconMCP{% endblock %}
+{% block body_class %}centered-page{% endblock %}
+{% block body %}
+<div class="auth-card">
+  <h1>BeaconMCP</h1>
+  <p class="muted">Dashboard sign-in</p>
+
+  {% if banner %}
+    <div class="banner banner-{{ banner_kind|default('error') }}">{{ banner }}</div>
+  {% endif %}
+
+  <form method="POST" action="/app/login" autocomplete="on">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+
+    <label>
+      <span>Client ID</span>
+      <input type="text" name="client_id" value="{{ client_id|default('') }}"
+             autocomplete="username" required spellcheck="false"
+             placeholder="beaconmcp_…" {% if locked %}disabled{% endif %}>
+    </label>
+
+    <label>
+      <span>Client Secret</span>
+      <input type="password" name="client_secret"
+             autocomplete="current-password" required
+             placeholder="sk_…" {% if locked %}disabled{% endif %}>
+    </label>
+
+    <label>
+      <span>2FA code</span>
+      <input type="text" name="totp" inputmode="numeric"
+             pattern="\d{6}" maxlength="6"
+             autocomplete="one-time-code" required
+             placeholder="000000" {% if locked %}disabled{% endif %}>
+    </label>
+
+    <label class="checkbox">
+      <input type="checkbox" name="remember" checked
+             {% if locked %}disabled{% endif %}>
+      <span>Stay signed in for 90 days</span>
+    </label>
+
+    <button type="submit" {% if locked %}disabled{% endif %}>Sign in</button>
+  </form>
+</div>
+{% endblock %}
