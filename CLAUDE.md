@@ -1,51 +1,62 @@
-# TarkaMCP
+# BeaconMCP
 
-Remote MCP server for managing a Proxmox VE infrastructure (pve1.example.com, pve2.example.com) with HP iLO 4 hardware management and SSH fallback access. Runs as an HTTP server with OAuth 2.1 client credentials authentication.
+Remote MCP server for managing any Proxmox VE cluster together with its BMC-managed hardware (HP iLO, IPMI). Runs over HTTP with OAuth 2.1 + TOTP. Topology is described in a single YAML file; secrets are referenced through `${ENV_VAR}` placeholders.
 
 ## Quick Start
 
 ```bash
 pip install -e .
-cp .env.example .env             # Fill in Proxmox credentials
-tarkamcp auth create --name "x"  # Create OAuth client
-tarkamcp serve                   # Start HTTP server on :8420
+cp beaconmcp.yaml.example beaconmcp.yaml   # Describe your infrastructure
+cp .env.example .env                       # Fill in the referenced secrets
+beaconmcp validate-config                  # Dry-run the loader, secrets masked
+beaconmcp auth create --name "x"           # Create an OAuth client
+beaconmcp serve                            # Start HTTP server on :8420
 ```
 
 ## Project Structure
 
 ```
-src/tarkamcp/
-  __main__.py         CLI: serve (HTTP server) + auth (client management)
-  server.py           FastMCP server, registers all tool modules
-  config.py           Environment variable loading & validation
+src/beaconmcp/
+  __main__.py         CLI: serve + auth + validate-config
+  server.py           FastMCP server, registers every tool module
+  config.py           YAML loader with ${ENV} resolver + legacy env fallback
   auth.py             OAuth 2.1 client credentials (ClientStore + TokenStore)
   proxmox/
-    client.py         proxmoxer wrapper (API token auth, error handling)
+    client.py         proxmoxer wrapper (API-token auth, N-node aware)
     monitoring.py     6 tools: list_nodes, node_status, list_vms, vm_status, get_logs, get_tasks
     vms.py            7 tools: vm_start/stop/restart/create/clone/migrate/config
     system.py         5 tools: storage_status, network_config, exec_command (sync+async+get_result)
   ssh/
-    client.py         asyncssh wrapper (host resolution, connection caching)
+    client.py         asyncssh wrapper with configurable VMID->IP template
     tools.py          4 tools: ssh_exec_command (sync+async+get_result), ssh_list_sessions
-  ilo/
-    client.py         python-hpilo wrapper (SSH tunnel via pve1 to local iLO)
-    tools.py          7 tools: server_info, health_status, power_status/on/off/reset, event_log
+  bmc/
+    base.py           BMCClient Protocol + shared exceptions + stub base class
+    hp_ilo.py         HPILOBackend (python-hpilo, optional SSH jump tunnel)
+    ipmi.py           GenericIPMIBackend (shells out to ipmitool)
+    idrac.py          IDRACStubBackend (TODO)
+    supermicro.py     SupermicroStubBackend (TODO)
+    registry.py       build_registry(config) -> {device_id: BMCClient}
+    tools.py          8 tools: bmc_list_devices + 7 action tools (device_id param)
+  dashboard/          Optional web panel: /app/login, /app/chat, /app/tokens
+beaconmcp.yaml.example  Template describing the full config schema
 deploy/
-  install.sh          One-command install script for Proxmox nodes
-  tarkamcp.service    systemd unit file
+  install.sh          One-command install script
+  beaconmcp.service   systemd unit file
 ```
 
 ## Configuration
 
-All via environment variables (`.env` file). See `.env.example`.
+Two files:
 
-**Required:** `PVE1_HOST`, `PVE1_TOKEN_ID`, `PVE1_TOKEN_SECRET`
-**Optional:** PVE2, iLO, SSH credentials (modules conditionally registered)
+- **`beaconmcp.yaml`** — topology and feature flags. Resolution order: `--config` flag → `BEACONMCP_CONFIG` env → `./beaconmcp.yaml` → `/etc/beaconmcp/config.yaml`.
+- **`.env`** — secrets referenced by the YAML via `${VAR}`.
+
+Legacy `PVE*_*`, `ILO_*`, `SSH_*` env vars still work when no YAML is found (deprecated; removed in 2.1).
 
 ## Auth
 
-OAuth 2.1 client credentials. Manage with `tarkamcp auth create/list/revoke`.
+OAuth 2.1 client credentials + mandatory TOTP. Manage with `beaconmcp auth create/list/revoke`.
 
 ## Design Spec
 
-See `docs/superpowers/specs/2026-04-16-tarkamcp-design.md`
+See `docs/superpowers/specs/2026-04-16-beaconmcp-design.md`.

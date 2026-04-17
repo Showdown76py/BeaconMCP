@@ -14,8 +14,8 @@ from starlette.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from tarkamcp.dashboard.app import BEARER_TTL_SECONDS, DashboardDeps, build_dashboard_routes
-from tarkamcp.dashboard.chat import (
+from beaconmcp.dashboard.app import BEARER_TTL_SECONDS, DashboardDeps, build_dashboard_routes
+from beaconmcp.dashboard.chat import (
     ErrorEvent,
     FakeChatEngine,
     FakeScript,
@@ -25,11 +25,11 @@ from tarkamcp.dashboard.chat import (
     ToolCallStart,
     ToolConfirmRequired,
 )
-from tarkamcp.dashboard.confirmations import ConfirmationStore
-from tarkamcp.dashboard.conversations import ConversationStore
-from tarkamcp.dashboard.csrf import CSRF_COOKIE
-from tarkamcp.dashboard.db import Database
-from tarkamcp.dashboard.session import SessionStore
+from beaconmcp.dashboard.confirmations import ConfirmationStore
+from beaconmcp.dashboard.conversations import ConversationStore
+from beaconmcp.dashboard.csrf import CSRF_COOKIE
+from beaconmcp.dashboard.db import Database
+from beaconmcp.dashboard.session import SessionStore
 
 
 class FakeClientStore:
@@ -456,7 +456,7 @@ def test_chat_stream_detects_token_wiped_after_restart(tmp_path, engine):
                     content="{}")
     cid = r.json()["conversation"]["id"]
 
-    # Simulate `systemctl restart tarkamcp` wiping every issued token.
+    # Simulate `systemctl restart beaconmcp` wiping every issued token.
     token_store.wiped = True
 
     r = client.post(
@@ -659,7 +659,7 @@ def test_tokens_page_lists_empty(app_and_client):
     _login(client)
     r = client.get("/app/tokens")
     assert r.status_code == 200
-    assert "Aucun token actif" in r.text
+    assert "No active tokens" in r.text
     assert "0/3" in r.text  # count indicator
 
 
@@ -672,7 +672,7 @@ def test_tokens_create_requires_name(app_and_client):
         data={"csrf_token": csrf, "name": "", "totp": "123456"},
     )
     assert r.status_code == 200
-    assert "Le nom est obligatoire" in r.text
+    assert "Name is required" in r.text
 
 
 def test_tokens_create_requires_totp(app_and_client):
@@ -683,7 +683,7 @@ def test_tokens_create_requires_totp(app_and_client):
         data={"csrf_token": csrf, "name": "Gemini Web", "totp": "999999"},
     )
     assert r.status_code == 200
-    assert "Code 2FA invalide" in r.text
+    assert "Invalid 2FA code" in r.text
 
 
 def test_tokens_create_success(app_and_client, deps):
@@ -694,7 +694,7 @@ def test_tokens_create_success(app_and_client, deps):
         data={"csrf_token": csrf, "name": "Gemini Web", "totp": "123456"},
     )
     assert r.status_code == 200
-    assert "Nouveau token créé" in r.text
+    assert "New token created" in r.text
     assert "Gemini Web" in r.text
     assert deps.token_store.count_named("c") == 1
 
@@ -714,7 +714,7 @@ def test_tokens_create_enforces_cap(app_and_client, deps):
         data={"csrf_token": csrf, "name": "Client 4", "totp": "123456"},
     )
     assert r.status_code == 200
-    assert "Limite atteinte" in r.text or "maximum 3" in r.text
+    assert "Limit reached" in r.text or "3 active tokens" in r.text
     assert deps.token_store.count_named("c") == 3
 
 
@@ -819,7 +819,7 @@ def test_chat_stream_remote_mode_still_routes_public_url(tmp_path, engine):
 def test_gemini_engine_rejects_remote_mode():
     """GeminiChatEngine yields an ErrorEvent instead of calling the SDK."""
     import asyncio
-    from tarkamcp.dashboard.chat import (
+    from beaconmcp.dashboard.chat import (
         ErrorEvent,
         GeminiChatEngine,
         TurnInput,
@@ -856,7 +856,7 @@ def test_needs_confirmation_includes_proxmox_exec():
     human approval -- not just SSH, but also the QEMU Guest Agent exec
     path (``proxmox_exec_command`` + its async twin).
     """
-    from tarkamcp.dashboard.chat import _NEEDS_CONFIRMATION
+    from beaconmcp.dashboard.chat import _NEEDS_CONFIRMATION
     assert "proxmox_exec_command" in _NEEDS_CONFIRMATION
     assert "proxmox_exec_command_async" in _NEEDS_CONFIRMATION
     assert "ssh_exec_command" in _NEEDS_CONFIRMATION

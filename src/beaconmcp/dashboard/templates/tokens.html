@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block title %}API tokens · BeaconMCP{% endblock %}
+{% block body_class %}tokens-page{% endblock %}
+{% block body %}
+<div class="tokens-wrap">
+  <header class="tokens-header">
+    {% if chat_enabled %}
+    <a href="/app/chat" class="back-link">
+      <svg width="16" height="16" aria-hidden="true"><use href="#i-chev-r" style="transform: rotate(180deg); transform-origin: center"/></svg>
+      Back to chat
+    </a>
+    {% endif %}
+    <div>
+      <h1>API tokens</h1>
+      <p class="muted">
+        Signed in as <strong>{{ client_name }}</strong>. Use these tokens to
+        connect BeaconMCP from an external MCP client (Gemini web, ChatGPT,
+        Claude Desktop, etc.). Each token expires after 24 h.
+      </p>
+    </div>
+  </header>
+
+  <section class="tokens-section">
+    <h2>MCP server URL</h2>
+    <div class="token-endpoint">
+      <code>{{ mcp_url }}</code>
+      <button type="button" class="btn-copy" data-copy="{{ mcp_url }}" aria-label="Copy URL">
+        <svg width="14" height="14"><use href="#i-copy"/></svg>
+      </button>
+    </div>
+  </section>
+
+  {% if just_created %}
+  <section class="tokens-section token-just-created">
+    <h2>New token created</h2>
+    <p>
+      Token for <strong>{{ just_created.name }}</strong>. Copy it now — it
+      will not be shown again.
+    </p>
+    <div class="token-value-wrap">
+      <code class="token-value">{{ just_created.token }}</code>
+      <button type="button" class="btn-copy" data-copy="{{ just_created.token }}">
+        <svg width="14" height="14"><use href="#i-copy"/></svg>
+        Copy
+      </button>
+    </div>
+    <p class="muted small">
+      In your MCP client's HTTP header: <code>Authorization: Bearer {{ just_created.token[:8] }}…</code>
+    </p>
+  </section>
+  {% endif %}
+
+  <section class="tokens-section">
+    <div class="tokens-section-head">
+      <h2>Create a token ({{ count }}/{{ cap }})</h2>
+    </div>
+
+    {% if form_error %}
+      <div class="banner banner-error">{{ form_error }}</div>
+    {% endif %}
+
+    {% if can_create %}
+    <form method="POST" action="/app/tokens" class="tokens-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>
+        <span>Name (where it will be used)</span>
+        <input type="text" name="name" required maxlength="60"
+               placeholder="Gemini Web, ChatGPT macOS, Claude Desktop…"
+               value="{{ form_name or '' }}"
+               {% if locked %}disabled{% endif %}>
+      </label>
+      <label>
+        <span>2FA code</span>
+        <input type="text" name="totp" inputmode="numeric"
+               pattern="\d{6}" maxlength="6"
+               autocomplete="one-time-code" required
+               placeholder="000000" {% if locked %}disabled{% endif %}>
+      </label>
+      <button type="submit" {% if locked %}disabled{% endif %}>Create token</button>
+    </form>
+    {% else %}
+    <p class="muted">
+      You reached the limit of {{ cap }} active tokens. Revoke an existing
+      token before creating a new one.
+    </p>
+    {% endif %}
+  </section>
+
+  <section class="tokens-section">
+    <h2>Active tokens</h2>
+    {% if tokens %}
+    <ul class="tokens-list">
+      {% for t in tokens %}
+      <li class="token-row">
+        <div class="token-row-head">
+          <strong>{{ t.name }}</strong>
+          <code class="token-prefix">{{ t.prefix }}…</code>
+        </div>
+        <div class="token-row-meta muted small">
+          expires in {{ t.expires_in_hours }} h
+        </div>
+        <form method="POST" action="/app/tokens/revoke" class="token-revoke-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="token_prefix" value="{{ t.prefix }}">
+          <button type="submit" class="btn-danger" aria-label="Revoke">
+            <svg width="14" height="14"><use href="#i-trash"/></svg>
+            Revoke
+          </button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">No active tokens yet.</p>
+    {% endif %}
+  </section>
+</div>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="1.5" stroke="currentColor" stroke-width="2" fill="none"/><path d="M5 15H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v1" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
+    <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
+  </defs>
+</svg>
+
+<script type="module">
+  for (const btn of document.querySelectorAll("[data-copy]")) {
+    btn.addEventListener("click", async () => {
+      const value = btn.getAttribute("data-copy") || "";
+      try {
+        await navigator.clipboard.writeText(value);
+        const original = btn.textContent;
+        btn.textContent = "Copied ✓";
+        setTimeout(() => { btn.innerHTML = original; }, 1500);
+      } catch (err) {
+        console.error(err);
+      }
+    });
+  }
+</script>
+{% endblock %}

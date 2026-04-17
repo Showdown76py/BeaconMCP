@@ -1,35 +1,43 @@
 # Tests
 
-Les tests unitaires et dashboard tournent sans infra réelle (SQLite in-memory + mocks Starlette) :
+Unit tests (dashboard + configuration) run without live infrastructure, using SQLite in-memory and Starlette mocks:
 
 ```bash
-pytest tests/test_dashboard_unit.py tests/test_dashboard_chat.py \
-       tests/test_dashboard_usage.py tests/test_dashboard_integration.py
+pytest tests/
 ```
 
-Les **tests d'intégration** ciblent la vraie infra Proxmox / iLO / SSH et se lancent via un script dédié :
+To scope to specific suites:
 
 ```bash
-# Tous les tests
+pytest tests/test_dashboard_unit.py \
+       tests/test_dashboard_chat.py \
+       tests/test_dashboard_usage.py \
+       tests/test_dashboard_integration.py
+```
+
+**Integration tests** target a live Proxmox cluster, BMC devices, and SSH hosts, and run from a dedicated script:
+
+```bash
+# All sections
 python tests/test_integration.py
 
-# Par section
+# Restrict to a section
 python tests/test_integration.py --section proxmox
 python tests/test_integration.py --section ssh
-python tests/test_integration.py --section ilo
+python tests/test_integration.py --section bmc
 
-# Avec tests VM lifecycle (start/stop/clone)
+# Include VM lifecycle coverage (start/stop/clone)
 python tests/test_integration.py --test-vmid 9999
 ```
 
 | Section | Tests | Description |
 |---------|-------|-------------|
-| Proxmox Monitoring | 12 | nodes, status, VMs, logs, tasks |
-| Proxmox System | 4 | storage, network |
-| Proxmox Exec | 6 | QEMU GA + LXC, sync/async |
-| VM Lifecycle | 7 | start/stop/restart/config/clone |
+| Proxmox monitoring | 12 | nodes, status, VMs, logs, tasks |
+| Proxmox system | 4 | storage, network |
+| Proxmox exec | 6 | QEMU Guest Agent + LXC, sync/async |
+| VM lifecycle | 7 | start/stop/restart/config/clone |
 | SSH | 8 | exec, host resolution, async |
-| iLO | 6 | health, power, event log |
-| Resources & Errors | 8 | config, prompts, error handling |
+| BMC | 6 | health, power, event log |
+| Resources & errors | 8 | config, prompts, error handling |
 
-Ces tests exigent que `.env` soit renseigné avec des credentials valides et que l'infra cible soit joignable. Ils **ne tournent pas en CI** — c'est de la vérification locale avant un deploy sur pve1.
+Integration tests require a filled-in `beaconmcp.yaml` (plus `.env` for secrets) and reachable targets. They **do not run in CI** — treat them as local pre-deploy verification.
