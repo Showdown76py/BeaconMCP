@@ -30,39 +30,167 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ESC_MAP[c]);
 }
 
-function renderMarkdown(text) {
-  // Order: code fences -> inline code -> bold/italic/strike -> links -> line breaks.
-  let out = escapeHtml(text);
-
-  // Fenced code blocks
-  out = out.replace(/```([a-zA-Z0-9+_-]*)\n([\s\S]*?)```/g, (_, lang, body) =>
-    `<pre><code${lang ? ` class="lang-${escapeHtml(lang)}"` : ""}>${body.replace(/\n+$/, "")}</code></pre>`
+// Extract fenced code blocks first so their body is never touched by the
+// other markdown rules (headings inside a code block stay as text, etc).
+// Returns { stripped, blocks } where placeholders ⟦CODE0⟧ are restored
+// after all other passes have run.
+function _extractFences(raw) {
+  const blocks = [];
+  const stripped = raw.replace(
+    /```([a-zA-Z0-9+_.-]*)\n([\s\S]*?)```/g,
+    (_, lang, body) => {
+      const idx = blocks.length;
+      blocks.push({ lang, body: body.replace(/\n+$/, "") });
+      return `\u0000CODEBLOCK${idx}\u0000`;
+    },
   );
+  return { stripped, blocks };
+}
 
+// Inline pass: runs on a single line's text AFTER HTML-escaping. Inline
+// code first so nothing inside backticks gets formatted.
+function _renderInline(text) {
   // Inline code
-  out = out.replace(/`([^`\n]+?)`/g, (_, c) => `<code>${c}</code>`);
-
-  // Bold / italic / strikethrough
+  let out = text.replace(/`([^`\n]+?)`/g, (_, c) => `<code>${c}</code>`);
+  // Bold then italic then strike
   out = out.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
   out = out.replace(/(?<!\*)\*(?!\*)([^*\n]+?)\*(?!\*)/g, "<em>$1</em>");
   out = out.replace(/~~([^~\n]+?)~~/g, "<s>$1</s>");
-
-  // Links [text](https://...)
+  // Links [label](https://...)
   out = out.replace(
     /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
     (_, label, href) =>
-      `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${label}</a>`
+      `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${label}</a>`,
   );
-
-  // Two newlines = paragraph, single newline = <br>
-  out = out
-    .split(/\n{2,}/)
-    .map((p) => p.replace(/\n/g, "<br>"))
-    .map((p) => `<p>${p}</p>`)
-    .join("");
-  // Pre blocks should not be wrapped in <p>
-  out = out.replace(/<p>(<pre>[\s\S]*?<\/pre>)<\/p>/g, "$1");
   return out;
+}
+
+function _isBulletLine(line) {
+  return /^\s*[-*+]\s+/.test(line);
+}
+function _isOrderedLine(line) {
+  return /^\s*\d+\.\s+/.test(line);
+}
+function _stripBullet(line) {
+  return line.replace(/^\s*[-*+]\s+/, "");
+}
+function _stripOrdered(line) {
+  return line.replace(/^\s*\d+\.\s+/, "");
+}
+
+function renderMarkdown(text) {
+  // 1. Pull fenced code blocks out so nothing munges their contents.
+  const { stripped, blocks } = _extractFences(text);
+
+  // 2. Work line-by-line so we can recognise block-level constructs
+  // (headings, lists, blockquotes, hr). Inline formatting is applied
+  // after HTML-escaping each line body.
+  const lines = stripped.split("\n");
+  const out = [];
+  let i = 0;
+  let inParagraph = [];
+
+  const flushParagraph = () => {
+    if (inParagraph.length === 0) return;
+    const body = inParagraph.map((l) => _renderInline(escapeHtml(l))).join("<br>");
+    out.push(`<p>${body}</p>`);
+    inParagraph = [];
+  };
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Blank line -> paragraph break
+    if (/^\s*$/.test(line)) {
+      flushParagraph();
+      i += 1;
+      continue;
+    }
+
+    // Horizontal rule: ---, ***, ___ on their own line
+    if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      flushParagraph();
+      out.push("<hr>");
+      i += 1;
+      continue;
+    }
+
+    // ATX heading: 1-6 # followed by space
+    const heading = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
+    if (heading) {
+      flushParagraph();
+      const level = heading[1].length;
+      const body = _renderInline(escapeHtml(heading[2]));
+      out.push(`<h${level}>${body}</h${level}>`);
+      i += 1;
+      continue;
+    }
+
+    // Blockquote: consume consecutive "> " lines
+    if (/^\s*>\s?/.test(line)) {
+      flushParagraph();
+      const quoted = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+        quoted.push(lines[i].replace(/^\s*>\s?/, ""));
+        i += 1;
+      }
+      const body = quoted.map((l) => _renderInline(escapeHtml(l))).join("<br>");
+      out.push(`<blockquote>${body}</blockquote>`);
+      continue;
+    }
+
+    // Unordered list: consume consecutive bullet lines
+    if (_isBulletLine(line)) {
+      flushParagraph();
+      const items = [];
+      while (i < lines.length && _isBulletLine(lines[i])) {
+        items.push(_stripBullet(lines[i]));
+        i += 1;
+      }
+      out.push(
+        `<ul>${items
+          .map((it) => `<li>${_renderInline(escapeHtml(it))}</li>`)
+          .join("")}</ul>`,
+      );
+      continue;
+    }
+
+    // Ordered list
+    if (_isOrderedLine(line)) {
+      flushParagraph();
+      const items = [];
+      while (i < lines.length && _isOrderedLine(lines[i])) {
+        items.push(_stripOrdered(lines[i]));
+        i += 1;
+      }
+      out.push(
+        `<ol>${items
+          .map((it) => `<li>${_renderInline(escapeHtml(it))}</li>`)
+          .join("")}</ol>`,
+      );
+      continue;
+    }
+
+    // Default: accumulate into current paragraph.
+    inParagraph.push(line);
+    i += 1;
+  }
+  flushParagraph();
+
+  let html = out.join("");
+
+  // 3. Restore fenced code blocks.
+  html = html.replace(/\u0000CODEBLOCK(\d+)\u0000/g, (_, idx) => {
+    const { lang, body } = blocks[Number(idx)];
+    const cls = lang ? ` class="lang-${escapeHtml(lang)}"` : "";
+    return `<pre><code${cls}>${escapeHtml(body)}</code></pre>`;
+  });
+
+  // A paragraph that wraps a code-block placeholder-turned-<pre> breaks
+  // layout; unwrap those (the extraction happens before paragraph
+  // splitting so this is defensive against any edge case).
+  html = html.replace(/<p>(<pre>[\s\S]*?<\/pre>)<\/p>/g, "$1");
+  return html;
 }
 
 // ---------------- API helpers ----------------
