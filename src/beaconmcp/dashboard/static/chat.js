@@ -1,5 +1,6 @@
 // BeaconMCP dashboard chat client.
-// Vanilla ES module. No emoji.
+// Vanilla ES module. Drives the design-system UI:
+// sidebar + model popover + tool cards + thinking + confirm + usage.
 
 const root = document.querySelector(".chat-root");
 if (!root) throw new Error("chat-root missing");
@@ -10,6 +11,22 @@ const DEFAULT_MODEL = root.dataset.defaultModel;
 const DEFAULT_EFFORT = root.dataset.defaultEffort;
 const VALID_MODELS = JSON.parse(root.dataset.validModels || "[]");
 const VALID_EFFORTS = JSON.parse(root.dataset.validEfforts || "[]");
+
+// --- Model catalog (mirrors src/beaconmcp/dashboard/conversations.py) ---
+const MODEL_CATALOG = {
+  "gemini-2.5-flash": {
+    shortName: "2.5 Flash", name: "Gemini 2.5 Flash", group: "Gemini 2", preview: false,
+  },
+  "gemini-2.5-pro": {
+    shortName: "2.5 Pro", name: "Gemini 2.5 Pro", group: "Gemini 2", preview: false,
+  },
+  "gemini-3-flash-preview": {
+    shortName: "3 Flash", name: "Gemini 3 Flash", group: "Gemini 3", preview: true,
+  },
+  "gemini-3.1-pro-preview": {
+    shortName: "3.1 Pro", name: "Gemini 3.1 Pro", group: "Gemini 3", preview: true,
+  },
+};
 
 const csrfToken = () =>
   document.querySelector('meta[name="csrf-token"]')?.content ||
@@ -23,17 +40,15 @@ function getCookie(name) {
     .map(([, v]) => decodeURIComponent(v || ""))[0];
 }
 
-// ---------------- Minimal safe markdown ----------------
+// ---------------- Markdown ----------------
+// Kept from the previous dashboard: extracts fences first, then runs
+// line-level block detection and inline formatting on the rest.
 
 const ESC_MAP = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ESC_MAP[c]);
 }
 
-// Extract fenced code blocks first so their body is never touched by the
-// other markdown rules (headings inside a code block stay as text, etc).
-// Returns { stripped, blocks } where placeholders ⟦CODE0⟧ are restored
-// after all other passes have run.
 function _extractFences(raw) {
   const blocks = [];
   const stripped = raw.replace(
@@ -47,16 +62,11 @@ function _extractFences(raw) {
   return { stripped, blocks };
 }
 
-// Inline pass: runs on a single line's text AFTER HTML-escaping. Inline
-// code first so nothing inside backticks gets formatted.
 function _renderInline(text) {
-  // Inline code
   let out = text.replace(/`([^`\n]+?)`/g, (_, c) => `<code>${c}</code>`);
-  // Bold then italic then strike
   out = out.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
   out = out.replace(/(?<!\*)\*(?!\*)([^*\n]+?)\*(?!\*)/g, "<em>$1</em>");
   out = out.replace(/~~([^~\n]+?)~~/g, "<s>$1</s>");
-  // Links [label](https://...)
   out = out.replace(
     /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
     (_, label, href) =>
@@ -65,21 +75,11 @@ function _renderInline(text) {
   return out;
 }
 
-function _isBulletLine(line) {
-  return /^\s*[-*+]\s+/.test(line);
-}
-function _isOrderedLine(line) {
-  return /^\s*\d+\.\s+/.test(line);
-}
-function _stripBullet(line) {
-  return line.replace(/^\s*[-*+]\s+/, "");
-}
-function _stripOrdered(line) {
-  return line.replace(/^\s*\d+\.\s+/, "");
-}
+function _isBulletLine(line) { return /^\s*[-*+]\s+/.test(line); }
+function _isOrderedLine(line) { return /^\s*\d+\.\s+/.test(line); }
+function _stripBullet(line) { return line.replace(/^\s*[-*+]\s+/, ""); }
+function _stripOrdered(line) { return line.replace(/^\s*\d+\.\s+/, ""); }
 
-// GitHub-flavored table row: splits `| a | b |` into ["a", "b"]. Handles
-// optional leading/trailing pipes. Escaped pipes (\|) are preserved as "|".
 function _splitTableRow(line) {
   const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
   const cells = [];
@@ -87,15 +87,9 @@ function _splitTableRow(line) {
   for (let k = 0; k < trimmed.length; k += 1) {
     const ch = trimmed[k];
     if (ch === "\\" && trimmed[k + 1] === "|") {
-      buf += "|";
-      k += 1;
-      continue;
+      buf += "|"; k += 1; continue;
     }
-    if (ch === "|") {
-      cells.push(buf.trim());
-      buf = "";
-      continue;
-    }
+    if (ch === "|") { cells.push(buf.trim()); buf = ""; continue; }
     buf += ch;
   }
   cells.push(buf.trim());
@@ -121,12 +115,7 @@ function _tableAlignments(sepLine) {
 }
 
 function renderMarkdown(text) {
-  // 1. Pull fenced code blocks out so nothing munges their contents.
   const { stripped, blocks } = _extractFences(text);
-
-  // 2. Work line-by-line so we can recognise block-level constructs
-  // (headings, lists, blockquotes, hr). Inline formatting is applied
-  // after HTML-escaping each line body.
   const lines = stripped.split("\n");
   const out = [];
   let i = 0;
@@ -142,46 +131,37 @@ function renderMarkdown(text) {
   while (i < lines.length) {
     const line = lines[i];
 
-    // Blank line -> paragraph break
-    if (/^\s*$/.test(line)) {
+    if (/^\s*$/.test(line)) { flushParagraph(); i += 1; continue; }
+
+    // Heading
+    const h = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (h) {
       flushParagraph();
-      i += 1;
-      continue;
+      const level = h[1].length;
+      out.push(`<h${level}>${_renderInline(escapeHtml(h[2]))}</h${level}>`);
+      i += 1; continue;
     }
 
-    // Horizontal rule: ---, ***, ___ on their own line
-    if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+    // HR
+    if (/^\s*([-*_])\s*\1\s*\1[-*_\s]*$/.test(line)) {
       flushParagraph();
       out.push("<hr>");
-      i += 1;
-      continue;
+      i += 1; continue;
     }
 
-    // ATX heading: 1-6 # followed by space
-    const heading = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
-    if (heading) {
-      flushParagraph();
-      const level = heading[1].length;
-      const body = _renderInline(escapeHtml(heading[2]));
-      out.push(`<h${level}>${body}</h${level}>`);
-      i += 1;
-      continue;
-    }
-
-    // Blockquote: consume consecutive "> " lines
+    // Blockquote
     if (/^\s*>\s?/.test(line)) {
       flushParagraph();
-      const quoted = [];
+      const body = [];
       while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
-        quoted.push(lines[i].replace(/^\s*>\s?/, ""));
+        body.push(lines[i].replace(/^\s*>\s?/, ""));
         i += 1;
       }
-      const body = quoted.map((l) => _renderInline(escapeHtml(l))).join("<br>");
-      out.push(`<blockquote>${body}</blockquote>`);
+      out.push(`<blockquote>${body.map((l) => _renderInline(escapeHtml(l))).join("<br>")}</blockquote>`);
       continue;
     }
 
-    // GFM table: header row followed by a separator row (| --- | --- |)
+    // Table
     if (/\|/.test(line) && i + 1 < lines.length && _isTableSeparator(lines[i + 1])) {
       flushParagraph();
       const headers = _splitTableRow(line);
@@ -192,81 +172,99 @@ function renderMarkdown(text) {
         rows.push(_splitTableRow(lines[i]));
         i += 1;
       }
-      const alignAttr = (idx) =>
-        aligns[idx] ? ` style="text-align:${aligns[idx]}"` : "";
-      const thead = `<thead><tr>${headers
-        .map((h, idx) => `<th${alignAttr(idx)}>${_renderInline(escapeHtml(h))}</th>`)
-        .join("")}</tr></thead>`;
-      const tbody = `<tbody>${rows
-        .map(
-          (r) =>
-            `<tr>${r
-              .map(
-                (c, idx) =>
-                  `<td${alignAttr(idx)}>${_renderInline(escapeHtml(c))}</td>`,
-              )
-              .join("")}</tr>`,
-        )
-        .join("")}</tbody>`;
-      out.push(`<table class="md-table">${thead}${tbody}</table>`);
+      const th = headers
+        .map((c, idx) => {
+          const a = aligns[idx] ? ` style="text-align:${aligns[idx]}"` : "";
+          return `<th${a}>${_renderInline(escapeHtml(c))}</th>`;
+        })
+        .join("");
+      const trs = rows
+        .map((r) => {
+          const tds = r
+            .map((c, idx) => {
+              const a = aligns[idx] ? ` style="text-align:${aligns[idx]}"` : "";
+              return `<td${a}>${_renderInline(escapeHtml(c))}</td>`;
+            })
+            .join("");
+          return `<tr>${tds}</tr>`;
+        })
+        .join("");
+      out.push(`<table><thead><tr>${th}</tr></thead><tbody>${trs}</tbody></table>`);
       continue;
     }
 
-    // Unordered list: consume consecutive bullet lines
-    if (_isBulletLine(line)) {
+    // Lists
+    if (_isBulletLine(line) || _isOrderedLine(line)) {
       flushParagraph();
+      const ordered = _isOrderedLine(line);
+      const strip = ordered ? _stripOrdered : _stripBullet;
+      const pred = ordered ? _isOrderedLine : _isBulletLine;
       const items = [];
-      while (i < lines.length && _isBulletLine(lines[i])) {
-        items.push(_stripBullet(lines[i]));
+      while (i < lines.length && pred(lines[i])) {
+        items.push(_renderInline(escapeHtml(strip(lines[i]))));
         i += 1;
       }
-      out.push(
-        `<ul>${items
-          .map((it) => `<li>${_renderInline(escapeHtml(it))}</li>`)
-          .join("")}</ul>`,
-      );
+      const tag = ordered ? "ol" : "ul";
+      out.push(`<${tag}>${items.map((it) => `<li>${it}</li>`).join("")}</${tag}>`);
       continue;
     }
 
-    // Ordered list
-    if (_isOrderedLine(line)) {
-      flushParagraph();
-      const items = [];
-      while (i < lines.length && _isOrderedLine(lines[i])) {
-        items.push(_stripOrdered(lines[i]));
-        i += 1;
-      }
-      out.push(
-        `<ol>${items
-          .map((it) => `<li>${_renderInline(escapeHtml(it))}</li>`)
-          .join("")}</ol>`,
-      );
-      continue;
-    }
-
-    // Default: accumulate into current paragraph.
     inParagraph.push(line);
     i += 1;
   }
   flushParagraph();
 
   let html = out.join("");
-
-  // 3. Restore fenced code blocks.
   html = html.replace(/\u0000CODEBLOCK(\d+)\u0000/g, (_, idx) => {
     const { lang, body } = blocks[Number(idx)];
     const cls = lang ? ` class="lang-${escapeHtml(lang)}"` : "";
     return `<pre><code${cls}>${escapeHtml(body)}</code></pre>`;
   });
-
-  // A paragraph that wraps a code-block placeholder-turned-<pre> breaks
-  // layout; unwrap those (the extraction happens before paragraph
-  // splitting so this is defensive against any edge case).
   html = html.replace(/<p>(<pre>[\s\S]*?<\/pre>)<\/p>/g, "$1");
   return html;
 }
 
-// ---------------- API helpers ----------------
+// ---------------- DOM helpers ----------------
+
+function h(tag, props = {}, children = []) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") el.className = v;
+    else if (k === "html") el.innerHTML = v;
+    else if (k === "text") el.textContent = v;
+    else if (k.startsWith("on") && typeof v === "function") {
+      el.addEventListener(k.slice(2).toLowerCase(), v);
+    } else if (k === "dataset") {
+      for (const [dk, dv] of Object.entries(v)) el.dataset[dk] = dv;
+    } else if (k === "style" && typeof v === "object") {
+      Object.assign(el.style, v);
+    } else if (v === true) {
+      el.setAttribute(k, "");
+    } else {
+      el.setAttribute(k, v);
+    }
+  }
+  for (const child of [].concat(children)) {
+    if (child == null || child === false) continue;
+    el.append(typeof child === "string" ? document.createTextNode(child) : child);
+  }
+  return el;
+}
+
+function icon(name, size = 14, cls = "") {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("width", size);
+  svg.setAttribute("height", size);
+  if (cls) svg.setAttribute("class", cls);
+  svg.setAttribute("aria-hidden", "true");
+  const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  use.setAttribute("href", `#i-${name}`);
+  svg.append(use);
+  return svg;
+}
+
+// ---------------- API helper ----------------
 
 async function apiJson(url, { method = "GET", body = null } = {}) {
   const headers = { "Accept": "application/json" };
@@ -296,19 +294,19 @@ async function apiJson(url, { method = "GET", body = null } = {}) {
 
 const state = {
   conversations: [],
-  active: null, // Conversation
-  messages: [], // Message[]
+  active: null,
+  messages: [],
   streaming: false,
   abortController: null,
+  model: DEFAULT_MODEL,
+  effort: DEFAULT_EFFORT,
 };
-
-// ---------------- DOM refs ----------------
 
 const el = {
   sidebar: document.getElementById("sidebar"),
   openSidebar: document.getElementById("open-sidebar"),
   closeSidebar: document.getElementById("close-sidebar"),
-  backdrop: document.getElementById("sidebar-backdrop"),
+  sidebarBackdrop: document.getElementById("sidebar-backdrop"),
   newChat: document.getElementById("new-chat"),
   convList: document.getElementById("conv-list"),
   convTitle: document.getElementById("conv-title"),
@@ -316,109 +314,118 @@ const el = {
   messages: document.getElementById("messages"),
   composer: document.getElementById("composer-input"),
   send: document.getElementById("composer-send"),
-  selModel: document.getElementById("select-model"),
-  selEffort: document.getElementById("select-effort"),
-  usageBar: document.getElementById("usage-bar"),
+  modelPicker: document.getElementById("model-picker"),
+  modelChip: document.getElementById("model-chip"),
+  modelChipName: document.getElementById("model-chip-name"),
+  composerHint: document.getElementById("composer-hint"),
+  composerHintText: document.getElementById("composer-hint-text"),
+  usage5h: document.getElementById("usage-5h"),
   usage5hValue: document.getElementById("usage-5h-value"),
+  usageWeek: document.getElementById("usage-week"),
   usageWeekValue: document.getElementById("usage-week-value"),
+  usageBackdrop: document.getElementById("usage-backdrop"),
   usageModal: document.getElementById("usage-modal"),
-  usageModalBackdrop: document.getElementById("usage-modal-backdrop"),
-  usageModalClose: document.querySelector(".usage-modal-close"),
+  usageModalClose: document.getElementById("usage-modal-close"),
   usageModal5hPct: document.getElementById("usage-modal-5h-pct"),
   usageModal5hReset: document.getElementById("usage-modal-5h-reset"),
   usageModal5hFill: document.getElementById("usage-modal-5h-fill"),
+  usageSection5h: document.getElementById("usage-section-5h"),
   usageModalWeekPct: document.getElementById("usage-modal-week-pct"),
   usageModalWeekFill: document.getElementById("usage-modal-week-fill"),
+  usageSectionWeek: document.getElementById("usage-section-week"),
   usageModalUpdated: document.getElementById("usage-modal-updated"),
   usageModalRefresh: document.getElementById("usage-modal-refresh"),
+  clientAvatar: document.getElementById("client-avatar"),
 };
+
+// Client avatar: two-letter initials from CLIENT_NAME
+(function initAvatar() {
+  const parts = (CLIENT_NAME || "?").trim().split(/\s+/).slice(0, 2);
+  const initials = parts.map((p) => p[0] || "").join("").toUpperCase() || "?";
+  el.clientAvatar.textContent = initials.slice(0, 2);
+})();
 
 // ---------------- Sidebar ----------------
 
 function openSidebar() {
   el.sidebar.classList.add("open");
-  el.backdrop.hidden = false;
+  el.sidebarBackdrop.hidden = false;
 }
 function closeSidebar() {
   el.sidebar.classList.remove("open");
-  el.backdrop.hidden = true;
+  el.sidebarBackdrop.hidden = true;
 }
 el.openSidebar?.addEventListener("click", openSidebar);
 el.closeSidebar?.addEventListener("click", closeSidebar);
-el.backdrop?.addEventListener("click", closeSidebar);
+el.sidebarBackdrop?.addEventListener("click", closeSidebar);
 
 // ---------------- Conversation list ----------------
 
 function renderConvList() {
   el.convList.innerHTML = "";
   for (const c of state.conversations) {
-    const item = document.createElement("a");
-    item.className = "conv-item" + (state.active?.id === c.id ? " active" : "");
-    item.href = "#";
-    item.dataset.id = c.id;
-    const title = document.createElement("span");
-    title.className = "conv-title";
-    title.textContent = c.title || "Nouveau chat";
-    const menuBtn = document.createElement("button");
-    menuBtn.className = "icon-btn conv-menu-btn";
-    menuBtn.setAttribute("aria-label", "Options");
-    menuBtn.innerHTML = '<svg width="16" height="16"><use href="#i-more"/></svg>';
-    menuBtn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      openConvMenu(c, menuBtn);
-    });
-    item.append(title, menuBtn);
-    item.addEventListener("click", (e) => {
-      e.preventDefault();
-      loadConversation(c.id);
-      closeSidebar();
-    });
+    const item = h("div", {
+      class: "conv-item" + (state.active?.id === c.id ? " active" : ""),
+      dataset: { id: c.id },
+      onClick: (e) => {
+        if (e.target.closest(".conv-menu-btn")) return;
+        loadConversation(c.id);
+        closeSidebar();
+      },
+    }, [
+      h("span", { class: "conv-title", text: c.title || "New chat" }),
+      h("button", {
+        class: "conv-menu-btn",
+        "aria-label": "Options",
+        onClick: (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          openConvMenu(c, e.currentTarget);
+        },
+      }, [icon("more", 14)]),
+    ]);
     el.convList.append(item);
   }
 }
 
 function openConvMenu(conv, anchor) {
-  const existing = document.querySelector(".conv-popover");
-  if (existing) existing.remove();
-  const pop = document.createElement("div");
-  pop.className = "conv-popover";
+  document.querySelector(".conv-popover")?.remove();
   const rect = anchor.getBoundingClientRect();
+  const pop = h("div", { class: "conv-popover" });
   pop.style.top = `${rect.bottom + 4}px`;
-  pop.style.left = `${rect.left - 140}px`;
+  pop.style.left = `${Math.max(8, rect.right - 170)}px`;
 
-  const rename = document.createElement("button");
-  rename.innerHTML = '<svg width="14" height="14"><use href="#i-edit"/></svg><span>Renommer</span>';
-  rename.addEventListener("click", async () => {
-    pop.remove();
-    const next = prompt("Nouveau titre", conv.title || "");
-    if (next !== null && next.trim()) {
-      await apiJson(`/app/api/conversations/${conv.id}`, {
-        method: "PATCH",
-        body: { title: next.trim() },
-      });
-      conv.title = next.trim();
-      if (state.active?.id === conv.id) el.convTitle.textContent = conv.title;
+  const rename = h("button", {
+    onClick: async () => {
+      pop.remove();
+      const next = prompt("New title", conv.title || "");
+      if (next !== null && next.trim()) {
+        await apiJson(`/app/api/conversations/${conv.id}`, {
+          method: "PATCH", body: { title: next.trim() },
+        });
+        conv.title = next.trim();
+        if (state.active?.id === conv.id) el.convTitle.textContent = conv.title;
+        renderConvList();
+      }
+    },
+  }, [icon("edit", 13), h("span", { text: "Rename" })]);
+
+  const remove = h("button", {
+    class: "danger",
+    onClick: async () => {
+      pop.remove();
+      if (!confirm(`Delete "${conv.title || "this conversation"}"?`)) return;
+      await apiJson(`/app/api/conversations/${conv.id}`, { method: "DELETE" });
+      state.conversations = state.conversations.filter((x) => x.id !== conv.id);
+      if (state.active?.id === conv.id) {
+        state.active = null;
+        state.messages = [];
+        el.convTitle.textContent = "New chat";
+        renderMessages();
+      }
       renderConvList();
-    }
-  });
-
-  const remove = document.createElement("button");
-  remove.className = "danger";
-  remove.innerHTML = '<svg width="14" height="14"><use href="#i-trash"/></svg><span>Supprimer</span>';
-  remove.addEventListener("click", async () => {
-    pop.remove();
-    if (!confirm(`Supprimer "${conv.title || "cette conversation"}" ?`)) return;
-    await apiJson(`/app/api/conversations/${conv.id}`, { method: "DELETE" });
-    state.conversations = state.conversations.filter((x) => x.id !== conv.id);
-    if (state.active?.id === conv.id) {
-      state.active = null;
-      state.messages = [];
-      el.convTitle.textContent = "Nouveau chat";
-      renderMessages();
-    }
-    renderConvList();
-  });
+    },
+  }, [icon("trash", 13), h("span", { text: "Delete" })]);
 
   pop.append(rename, remove);
   document.body.append(pop);
@@ -433,131 +440,287 @@ function openConvMenu(conv, anchor) {
   }, 0);
 }
 
-// ---------------- Messages rendering ----------------
+// ---------------- Model picker ----------------
 
-function renderMessages() {
-  el.messages.innerHTML = "";
-  for (const m of state.messages) {
-    el.messages.append(renderMessage(m));
-  }
-  scrollToBottom();
+function modelMeta(id) {
+  return MODEL_CATALOG[id] || { shortName: id, name: id, group: "Other", preview: false };
 }
 
-function renderMessage(m) {
-  const row = document.createElement("article");
-  row.className = `msg msg-${m.role}`;
-  row.dataset.id = m.id;
+function updateModelChip() {
+  const m = modelMeta(state.model);
+  el.modelChipName.textContent = m.shortName;
+}
 
-  if (m.role === "assistant") {
-    const meta = document.createElement("div");
-    meta.className = "msg-meta";
-    meta.textContent = `${m.model || DEFAULT_MODEL} · ${m.effort || DEFAULT_EFFORT}`;
-    row.append(meta);
+function openModelPopover() {
+  const existing = el.modelPicker.querySelector(".model-popover");
+  if (existing) { existing.remove(); el.modelChip.setAttribute("aria-expanded", "false"); return; }
+
+  const pop = h("div", { class: "model-popover", role: "listbox" });
+  const groups = {};
+  for (const id of VALID_MODELS) {
+    const m = modelMeta(id);
+    groups[m.group] = groups[m.group] || [];
+    groups[m.group].push({ id, ...m });
   }
-
-  // Tool cards come before the text; they represent what the assistant did
-  // before producing its final answer.
-  if (m.tool_calls && m.tool_calls.length) {
-    for (const tc of m.tool_calls) {
-      row.append(renderToolCard(tc));
+  for (const [groupName, models] of Object.entries(groups)) {
+    pop.append(h("div", { class: "model-group-label", text: groupName }));
+    for (const m of models) {
+      const row = h("button", {
+        type: "button",
+        class: "model-option" + (m.id === state.model ? " active" : ""),
+        onClick: () => {
+          state.model = m.id;
+          updateModelChip();
+          persistSettings();
+          pop.remove();
+          el.modelChip.setAttribute("aria-expanded", "false");
+        },
+      }, [
+        h("span", { class: "model-title" }, [
+          h("span", { text: m.name }),
+          m.preview ? h("span", { class: "badge badge-preview", text: "Preview" }) : null,
+        ]),
+        icon("check", 14, "model-check"),
+      ]);
+      pop.append(row);
     }
   }
 
+  // Thinking effort row
+  const effortRow = h("div", { class: "effort-row" }, [
+    h("span", { class: "effort-label", text: "Thinking" }),
+  ]);
+  const effortOpts = h("div", { class: "effort-options" });
+  for (const e of VALID_EFFORTS) {
+    effortOpts.append(h("button", {
+      type: "button",
+      class: state.effort === e ? "active" : "",
+      text: e,
+      onClick: () => {
+        state.effort = e;
+        effortOpts.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.textContent === state.effort));
+        persistSettings();
+      },
+    }));
+  }
+  effortRow.append(effortOpts);
+  pop.append(effortRow);
+
+  el.modelPicker.append(pop);
+  el.modelChip.setAttribute("aria-expanded", "true");
+
+  setTimeout(() => {
+    const off = (e) => {
+      if (!el.modelPicker.contains(e.target)) {
+        pop.remove();
+        el.modelChip.setAttribute("aria-expanded", "false");
+        document.removeEventListener("mousedown", off);
+      }
+    };
+    document.addEventListener("mousedown", off);
+  }, 0);
+}
+
+el.modelChip.addEventListener("click", openModelPopover);
+
+async function persistSettings() {
+  if (!state.active) return;
+  try {
+    await apiJson(`/app/api/conversations/${state.active.id}`, {
+      method: "PATCH",
+      body: { model: state.model, effort: state.effort },
+    });
+    state.active.model = state.model;
+    state.active.thinking_effort = state.effort;
+  } catch (err) {
+    console.warn("persistSettings failed", err);
+  }
+}
+
+// ---------------- Messages rendering ----------------
+
+function toolCategory(name) {
+  if (!name) return null;
+  if (name.startsWith("proxmox_")) return "proxmox";
+  if (name.startsWith("bmc_")) return "bmc";
+  if (name.startsWith("ssh_")) return "ssh";
+  return null;
+}
+function toolIconName(name) {
+  const cat = toolCategory(name);
+  if (cat === "proxmox") return "server";
+  if (cat === "bmc") return "cpu";
+  if (cat === "ssh") return "terminal";
+  return "bolt";
+}
+function toolNeedsConfirm(name) {
+  return /^(ssh_exec_command|proxmox_exec_command)/.test(name || "");
+}
+
+function renderMessages() {
+  el.messages.innerHTML = "";
+  if (!state.messages.length) {
+    el.messages.append(renderEmptyState());
+    return;
+  }
+  const inner = h("div", { class: "messages-inner" });
+  for (const m of state.messages) inner.append(renderMessage(m));
+  el.messages.append(inner);
+  scrollToBottom();
+}
+
+function renderEmptyState() {
+  return h("div", { class: "empty" }, [
+    h("h2", { text: "How can I help you manage your cluster?" }),
+    h("p", { text: "Ask about nodes, VMs, BMC health, or run a command over SSH — with approval." }),
+  ]);
+}
+
+function renderMessage(m) {
+  const row = h("article", { class: `msg msg-${m.role}`, dataset: { id: m.id } });
   if (m.role === "user") {
-    const body = document.createElement("div");
-    body.className = "msg-body";
-    body.textContent = m.content || "";
-    row.append(body);
-  } else {
-    const body = document.createElement("div");
-    body.className = "msg-body md";
-    body.innerHTML = renderMarkdown(m.content || "");
-    row.append(body);
+    row.append(h("div", { class: "msg-body", text: m.content || "" }));
+    return row;
   }
 
+  // Assistant
+  const modelLabel = modelMeta(m.model || state.model).name;
+  row.append(h("div", { class: "msg-head" }, [h("span", { text: modelLabel })]));
+
+  if (m.thinking_summary) {
+    row.append(renderThinking(m.thinking_summary, false));
+  }
+
+  const toolCardMap = new Map();
+  for (const tc of m.tool_calls || []) {
+    const card = renderToolCard(tc, m.id);
+    toolCardMap.set(tc.id, card);
+    row.append(card);
+  }
+
+  const body = h("div", { class: "msg-body" });
+  body.innerHTML = renderMarkdown(m.content || "");
+  row.append(body);
+
+  if (!m.streaming) {
+    row.append(h("div", { class: "msg-actions" }, [
+      h("button", {
+        class: "msg-action", "aria-label": "Copy",
+        onClick: () => {
+          navigator.clipboard?.writeText(m.content || "");
+        },
+      }, [icon("copy", 14)]),
+      h("button", { class: "msg-action", "aria-label": "Regenerate" }, [icon("regen", 14)]),
+    ]));
+  }
+
+  // Stash ref so streaming can mutate body + tool cards in place.
+  row._body = body;
+  row._toolCardMap = toolCardMap;
   return row;
 }
 
-function renderToolCard(tc) {
-  const card = document.createElement("details");
-  const stateClass = tc.status === "awaiting_confirm"
-    ? "tool-awaiting"
-    : `tool-${tc.status || "pending"}`;
-  card.className = `tool-card ${stateClass}`;
-  card.dataset.id = tc.id;
-  // Auto-expand cards waiting for approval so the user sees the args.
-  if (tc.status === "awaiting_confirm") card.open = true;
+function renderThinking(text, active) {
+  const block = h("div", { class: `thinking${active ? " active" : ""}` });
+  const labelSpan = h("span", { class: "thinking-label", text: active ? "Thinking…" : "Thought for a moment" });
+  const bodyInner = h("div", { class: "thinking-body-inner", text });
+  const head = h("button", {
+    class: "thinking-head", type: "button",
+    onClick: () => block.classList.toggle("open"),
+  }, [icon("sparkles", 13), labelSpan, icon("chev-d", 13, "chev")]);
+  const body = h("div", { class: "thinking-body" }, [bodyInner]);
+  block.append(head, body);
+  block._labelSpan = labelSpan;
+  block._bodyInner = bodyInner;
+  return block;
+}
 
-  const sum = document.createElement("summary");
-  const icon = document.createElement("svg");
-  icon.setAttribute("width", "14");
-  icon.setAttribute("height", "14");
-  icon.setAttribute("aria-hidden", "true");
-  const iconId = tc.status === "ok" ? "#i-check"
-    : tc.status === "error" ? "#i-warn"
-    : tc.status === "rejected" ? "#i-x"
-    : tc.status === "awaiting_confirm" ? "#i-warn"
-    : "#i-spin";
-  icon.innerHTML = `<use href="${iconId}"/>`;
-  sum.append(icon);
+function renderToolCard(tc, msgId) {
+  const cat = toolCategory(tc.name);
+  const card = h("div", {
+    class: "tool-card" + (tc.status === "awaiting_confirm" ? " open" : ""),
+    dataset: { id: tc.id, state: tc.status || "pending", cat: cat || "" },
+  });
+  const statusText = {
+    pending: "Running…",
+    ok: tc.duration_ms != null ? `${tc.duration_ms} ms` : "Done",
+    success: tc.duration_ms != null ? `${tc.duration_ms} ms` : "Done",
+    error: "Failed",
+    awaiting_confirm: "Approval required",
+    rejected: "Rejected",
+  }[tc.status] || "";
 
-  const name = document.createElement("span");
-  name.className = "tool-name";
-  name.textContent = tc.name;
-  sum.append(name);
-
-  if (tc.status === "awaiting_confirm") {
-    const badge = document.createElement("span");
-    badge.className = "tool-badge";
-    badge.textContent = "approbation requise";
-    sum.append(badge);
+  // Special prominent confirm card for shell commands awaiting approval.
+  if (tc.status === "awaiting_confirm" && toolNeedsConfirm(tc.name)) {
+    return renderConfirmCard(tc, msgId);
   }
 
-  if (tc.duration_ms != null) {
-    const dur = document.createElement("span");
-    dur.className = "tool-dur";
-    dur.textContent = `${tc.duration_ms} ms`;
-    sum.append(dur);
-  }
-  card.append(sum);
+  const head = h("button", {
+    class: "tool-head", type: "button",
+    onClick: () => card.classList.toggle("open"),
+  }, [
+    h("div", { class: "tool-icon" }, [icon(toolIconName(tc.name), 14)]),
+    h("span", { class: "tool-name", text: tc.name }),
+    h("span", { class: "tool-status", text: statusText }),
+    icon("chev-d", 13, "tool-chev"),
+  ]);
 
-  const detail = document.createElement("div");
-  detail.className = "tool-detail";
-
-  if (Object.keys(tc.args || {}).length) {
-    const argsBlock = document.createElement("pre");
-    argsBlock.className = "tool-block";
-    argsBlock.textContent = `args: ${JSON.stringify(tc.args, null, 2)}`;
-    detail.append(argsBlock);
+  const inner = h("div", { class: "tool-body-inner" });
+  if (tc.args && Object.keys(tc.args).length) {
+    inner.append(h("div", { class: "tool-section-label", text: "Arguments" }));
+    inner.append(h("pre", { class: "tool-block", text: JSON.stringify(tc.args, null, 2) }));
   }
   if (tc.preview) {
-    const resBlock = document.createElement("pre");
-    resBlock.className = "tool-block";
-    resBlock.textContent = `result: ${tc.preview}`;
-    detail.append(resBlock);
+    inner.append(h("div", { class: "tool-section-label", text: "Result" }));
+    inner.append(h("pre", { class: "tool-block", text: tc.preview }));
   }
-
   if (tc.status === "awaiting_confirm") {
-    const actions = document.createElement("div");
-    actions.className = "tool-confirm-actions";
-
-    const approve = document.createElement("button");
-    approve.type = "button";
-    approve.className = "btn btn-approve";
-    approve.textContent = "Autoriser";
-    approve.addEventListener("click", () => sendConfirmation(tc.id, true, approve, reject));
-
-    const reject = document.createElement("button");
-    reject.type = "button";
-    reject.className = "btn btn-reject";
-    reject.textContent = "Refuser";
-    reject.addEventListener("click", () => sendConfirmation(tc.id, false, approve, reject));
-
-    actions.append(approve, reject);
-    detail.append(actions);
+    const approve = h("button", {
+      type: "button", class: "btn btn-approve",
+      onClick: () => sendConfirmation(tc.id, true, approve, reject),
+    }, [icon("check", 13), h("span", { text: "Approve" })]);
+    const reject = h("button", {
+      type: "button", class: "btn btn-reject",
+      onClick: () => sendConfirmation(tc.id, false, approve, reject),
+    }, [icon("x", 13), h("span", { text: "Reject" })]);
+    inner.append(h("div", { class: "confirm-actions", style: { marginTop: "10px" } }, [approve, reject]));
   }
+  card.append(head, h("div", { class: "tool-body" }, [inner]));
+  return card;
+}
 
-  card.append(detail);
+function renderConfirmCard(tc, msgId) {
+  const host = (tc.args && (tc.args.host || tc.args.hostname)) || "";
+  const cmd = (tc.args && (tc.args.command || tc.args.cmd || "")) || "";
+
+  const actions = h("div", { class: "confirm-actions" });
+  const approve = h("button", {
+    type: "button", class: "btn btn-approve",
+    onClick: () => sendConfirmation(tc.id, true, approve, reject),
+  }, [icon("check", 13), h("span", { text: "Approve and run" })]);
+  const reject = h("button", {
+    type: "button", class: "btn btn-reject",
+    onClick: () => sendConfirmation(tc.id, false, approve, reject),
+  }, [icon("x", 13), h("span", { text: "Reject" })]);
+  actions.append(approve, reject);
+
+  const card = h("div", {
+    class: "confirm-card", dataset: { id: tc.id, state: "awaiting_confirm" },
+  }, [
+    h("div", { class: "confirm-head" }, [
+      h("div", { class: "confirm-icon" }, [icon("shield", 16)]),
+      h("div", { style: { flex: "1" } }, [
+        h("div", { class: "confirm-title", text: "Approval required to run command" }),
+        h("div", { class: "confirm-sub" }, [
+          h("code", { text: tc.name }),
+          host ? document.createTextNode(" on ") : null,
+          host ? h("span", { class: "host", text: host }) : null,
+        ]),
+      ]),
+    ]),
+    cmd ? h("pre", { class: "confirm-code", text: "$ " + cmd }) : null,
+    actions,
+  ]);
   return card;
 }
 
@@ -566,8 +729,7 @@ async function sendConfirmation(callId, approve, approveBtn, rejectBtn) {
   rejectBtn.disabled = true;
   try {
     await apiJson("/app/api/chat/confirm", {
-      method: "POST",
-      body: { call_id: callId, approve },
+      method: "POST", body: { call_id: callId, approve },
     });
   } catch (err) {
     console.error(err);
@@ -582,21 +744,18 @@ function scrollToBottom() {
 
 // ---------------- Usage footer + modal ----------------
 
-const state_usage = { last: null, lastLoadedAt: 0 };
+const stateUsage = { last: null, lastLoadedAt: 0 };
 
 function pctOf(spent, limit) {
   if (!limit || limit <= 0) return 0;
   return Math.max(0, (spent / limit) * 100);
 }
-
 function formatPct(spent, limit) {
   if (!limit || limit <= 0) return "—";
   const p = pctOf(spent, limit);
-  // Show 1 decimal under 10%, integer above for readability.
   if (p < 10) return `${p.toFixed(1)}%`;
   return `${Math.round(p)}%`;
 }
-
 function formatResetIn(resetEpoch) {
   if (!resetEpoch) return "No active session";
   const now = Date.now() / 1000;
@@ -607,51 +766,44 @@ function formatResetIn(resetEpoch) {
   if (hours === 0) return `Resets in ${mins} min`;
   return `Resets in ${hours} h ${String(mins).padStart(2, "0")}`;
 }
-
 function formatAgo(loadedAtMs) {
   if (!loadedAtMs) return "—";
   const diff = Math.max(0, Date.now() - loadedAtMs);
   const secs = Math.floor(diff / 1000);
-  if (secs < 60) return "less than a minute ago";
+  if (secs < 60) return "Updated just now";
   const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins} min ago`;
+  if (mins < 60) return `Updated ${mins} min ago`;
   const hours = Math.floor(mins / 60);
-  return `${hours} h ago`;
+  return `Updated ${hours} h ago`;
 }
 
 function renderUsage(u) {
   if (!u) return;
-  state_usage.last = u;
-  state_usage.lastLoadedAt = Date.now();
+  stateUsage.last = u;
+  stateUsage.lastLoadedAt = Date.now();
 
-  const hasAnyCap = (u.limit_5h_usd > 0) || (u.limit_week_usd > 0);
+  const hasAnyCap = u.limit_5h_usd > 0 || u.limit_week_usd > 0;
   if (!hasAnyCap) {
-    el.usageBar.hidden = true;
+    el.composerHint.hidden = true;
     return;
   }
-  el.usageBar.hidden = false;
+  el.composerHint.hidden = false;
 
-  // Footer: compact percentages.
   if (u.limit_5h_usd > 0) {
     el.usage5hValue.textContent = formatPct(u.spent_5h_usd, u.limit_5h_usd);
-    el.usage5hValue.parentElement.classList.toggle(
-      "usage-over", u.spent_5h_usd >= u.limit_5h_usd,
-    );
-    el.usage5hValue.parentElement.hidden = false;
+    el.usage5h.hidden = false;
+    el.usage5h.classList.toggle("usage-over", u.spent_5h_usd >= u.limit_5h_usd);
   } else {
-    el.usage5hValue.parentElement.hidden = true;
+    el.usage5h.hidden = true;
   }
   if (u.limit_week_usd > 0) {
     el.usageWeekValue.textContent = formatPct(u.spent_week_usd, u.limit_week_usd);
-    el.usageWeekValue.parentElement.classList.toggle(
-      "usage-over", u.spent_week_usd >= u.limit_week_usd,
-    );
-    el.usageWeekValue.parentElement.hidden = false;
+    el.usageWeek.hidden = false;
+    el.usageWeek.classList.toggle("usage-over", u.spent_week_usd >= u.limit_week_usd);
   } else {
-    el.usageWeekValue.parentElement.hidden = true;
+    el.usageWeek.hidden = true;
   }
 
-  // Modal: progress bars + reset labels.
   renderUsageModal(u);
 }
 
@@ -661,55 +813,55 @@ function renderUsageModal(u) {
   el.usageModal5hPct.textContent = formatPct(u.spent_5h_usd, u.limit_5h_usd);
   el.usageModal5hFill.style.width = `${Math.min(100, p5)}%`;
   el.usageModal5hReset.textContent = formatResetIn(u.session_5h_reset_at);
-  el.usageModal5hFill.parentElement.parentElement.classList.toggle(
+  el.usageSection5h.classList.toggle(
     "usage-over", u.limit_5h_usd > 0 && u.spent_5h_usd >= u.limit_5h_usd,
   );
+  el.usageSection5h.hidden = !(u.limit_5h_usd > 0);
 
   const pw = pctOf(u.spent_week_usd, u.limit_week_usd);
   el.usageModalWeekPct.textContent = formatPct(u.spent_week_usd, u.limit_week_usd);
   el.usageModalWeekFill.style.width = `${Math.min(100, pw)}%`;
-  el.usageModalWeekFill.parentElement.parentElement.classList.toggle(
+  el.usageSectionWeek.classList.toggle(
     "usage-over", u.limit_week_usd > 0 && u.spent_week_usd >= u.limit_week_usd,
   );
+  el.usageSectionWeek.hidden = !(u.limit_week_usd > 0);
 
-  el.usageModalUpdated.textContent =
-    `Last updated: ${formatAgo(state_usage.lastLoadedAt)}`;
+  el.usageModalUpdated.textContent = formatAgo(stateUsage.lastLoadedAt);
 }
 
 function openUsageModal() {
-  if (!state_usage.last) return;
-  renderUsageModal(state_usage.last);
-  el.usageModalBackdrop.hidden = false;
+  if (!stateUsage.last) return;
+  renderUsageModal(stateUsage.last);
+  el.usageBackdrop.hidden = false;
   el.usageModal.hidden = false;
   el.usageModal.focus();
 }
-
 function closeUsageModal() {
-  el.usageModalBackdrop.hidden = true;
+  el.usageBackdrop.hidden = true;
   el.usageModal.hidden = true;
 }
+
+el.usage5h?.addEventListener("click", openUsageModal);
+el.usageWeek?.addEventListener("click", openUsageModal);
+el.usageModalClose?.addEventListener("click", closeUsageModal);
+el.usageBackdrop?.addEventListener("click", closeUsageModal);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !el.usageModal.hidden) closeUsageModal();
+});
+el.usageModalRefresh?.addEventListener("click", async () => {
+  el.usageModalRefresh.querySelector("svg")?.classList.add("spinning");
+  try { await loadUsage(); }
+  finally { el.usageModalRefresh.querySelector("svg")?.classList.remove("spinning"); }
+});
 
 async function loadUsage() {
   try {
     const data = await apiJson("/app/api/usage");
     renderUsage(data?.usage);
   } catch (err) {
-    // Not fatal: usage tracking is best-effort.
     console.warn("usage load failed", err);
   }
 }
-
-el.usageBar?.addEventListener("click", openUsageModal);
-el.usageModalClose?.addEventListener("click", closeUsageModal);
-el.usageModalBackdrop?.addEventListener("click", closeUsageModal);
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !el.usageModal.hidden) closeUsageModal();
-});
-el.usageModalRefresh?.addEventListener("click", async () => {
-  el.usageModalRefresh.classList.add("spinning");
-  try { await loadUsage(); }
-  finally { el.usageModalRefresh.classList.remove("spinning"); }
-});
 
 // ---------------- Conversation API ----------------
 
@@ -723,9 +875,10 @@ async function loadConversation(id) {
   const data = await apiJson(`/app/api/conversations/${id}`);
   state.active = data.conversation;
   state.messages = data.messages || [];
-  el.convTitle.textContent = state.active.title || "Nouveau chat";
-  el.selModel.value = state.active.model;
-  el.selEffort.value = state.active.thinking_effort;
+  el.convTitle.textContent = state.active.title || "New chat";
+  state.model = state.active.model || DEFAULT_MODEL;
+  state.effort = state.active.thinking_effort || DEFAULT_EFFORT;
+  updateModelChip();
   renderConvList();
   renderMessages();
 }
@@ -733,16 +886,13 @@ async function loadConversation(id) {
 async function createConversation() {
   const data = await apiJson("/app/api/conversations", {
     method: "POST",
-    body: {
-      model: el.selModel.value || DEFAULT_MODEL,
-      effort: el.selEffort.value || DEFAULT_EFFORT,
-    },
+    body: { model: state.model || DEFAULT_MODEL, effort: state.effort || DEFAULT_EFFORT },
   });
   const conv = data.conversation;
   state.conversations.unshift(conv);
   state.active = conv;
   state.messages = [];
-  el.convTitle.textContent = "Nouveau chat";
+  el.convTitle.textContent = "New chat";
   renderConvList();
   renderMessages();
   el.composer.focus();
@@ -752,8 +902,9 @@ async function createConversation() {
 
 function autogrow() {
   el.composer.style.height = "auto";
-  const max = 220; // ~10 lines
+  const max = 240;
   el.composer.style.height = Math.min(el.composer.scrollHeight, max) + "px";
+  el.send.disabled = !el.composer.value.trim() && !state.streaming;
 }
 
 el.composer.addEventListener("input", autogrow);
@@ -762,26 +913,12 @@ el.composer.addEventListener("keydown", (e) => {
     e.preventDefault();
     submit();
   }
-  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-    e.preventDefault();
-    submit();
-  }
 });
 el.send.addEventListener("click", submit);
-el.newChat.addEventListener("click", createConversation);
-
-el.selModel.addEventListener("change", () => persistSettings());
-el.selEffort.addEventListener("change", () => persistSettings());
-
-async function persistSettings() {
-  if (!state.active) return;
-  await apiJson(`/app/api/conversations/${state.active.id}`, {
-    method: "PATCH",
-    body: { model: el.selModel.value, effort: el.selEffort.value },
-  });
-  state.active.model = el.selModel.value;
-  state.active.thinking_effort = el.selEffort.value;
-}
+el.newChat.addEventListener("click", async () => {
+  await createConversation();
+  closeSidebar();
+});
 
 async function submit() {
   if (state.streaming) {
@@ -791,31 +928,35 @@ async function submit() {
   const text = el.composer.value.trim();
   if (!text) return;
 
-  if (!state.active) {
-    await createConversation();
+  if (!state.active) await createConversation();
+
+  // Empty-state becomes inner list.
+  if (el.messages.querySelector(".empty")) {
+    el.messages.innerHTML = "";
+    el.messages.append(h("div", { class: "messages-inner" }));
+  }
+  let inner = el.messages.querySelector(".messages-inner");
+  if (!inner) {
+    inner = h("div", { class: "messages-inner" });
+    el.messages.append(inner);
   }
 
-  // Optimistic user bubble
-  const optimistic = {
-    id: `tmp-${Date.now()}`,
-    role: "user",
-    content: text,
-    tool_calls: [],
-  };
+  const optimistic = { id: `tmp-${Date.now()}`, role: "user", content: text, tool_calls: [] };
   state.messages.push(optimistic);
-  el.messages.append(renderMessage(optimistic));
+  inner.append(renderMessage(optimistic));
   scrollToBottom();
 
   el.composer.value = "";
   autogrow();
 
-  await streamTurn(text);
+  await streamTurn(text, inner);
 }
 
 // ---------------- Streaming ----------------
 
-async function streamTurn(userText) {
+async function streamTurn(userText, inner) {
   state.streaming = true;
+  el.send.disabled = false;
   el.send.classList.add("stop");
   el.send.querySelector("svg use")?.setAttribute("href", "#i-stop");
   el.send.setAttribute("aria-label", "Stop");
@@ -828,23 +969,23 @@ async function streamTurn(userText) {
     role: "assistant",
     content: "",
     tool_calls: [],
-    model: el.selModel.value,
-    effort: el.selEffort.value,
+    model: state.model,
+    effort: state.effort,
+    streaming: true,
   };
   state.messages.push(assistantMsg);
   const row = renderMessage(assistantMsg);
-  el.messages.append(row);
+  inner.append(row);
 
-  const body = row.querySelector(".msg-body");
-  const toolCardMap = new Map();
+  // Live thinking block is injected on the first thinking_delta.
+  let thinkingBlock = null;
+  const toolCardMap = row._toolCardMap;
+  const body = row._body;
 
-  // "Generating…" indicator, pinned to the bottom of the turn so the user
-  // sees something alive during thinking and between tool calls. Removed
-  // in the finally block below.
-  const indicator = document.createElement("div");
-  indicator.className = "generating-indicator";
-  indicator.innerHTML =
-    '<span class="generating-dot"></span><span class="generating-label">Thinking…</span>';
+  const indicator = h("div", { class: "typing" }, [
+    h("div", { class: "typing-dots" }, [h("span"), h("span"), h("span")]),
+    h("span", { text: "Thinking…" }),
+  ]);
   row.append(indicator);
   scrollToBottom();
 
@@ -859,8 +1000,8 @@ async function streamTurn(userText) {
       body: JSON.stringify({
         conversation_id: state.active.id,
         content: userText,
-        model: el.selModel.value,
-        effort: el.selEffort.value,
+        model: state.model,
+        effort: state.effort,
       }),
       credentials: "same-origin",
       signal: controller.signal,
@@ -884,24 +1025,38 @@ async function streamTurn(userText) {
         const chunk = buf.slice(0, sepIdx);
         buf = buf.slice(sepIdx + 2);
         const ev = parseSseFrame(chunk);
-        if (ev) handleEvent(ev, assistantMsg, row, body, toolCardMap);
+        if (ev) handleEvent(ev, assistantMsg, row, body, toolCardMap, { getThinking: () => thinkingBlock, setThinking: (b) => { thinkingBlock = b; } });
       }
     }
   } catch (err) {
     if (err.name !== "AbortError") {
       console.error(err);
-      const errDiv = document.createElement("div");
-      errDiv.className = "banner banner-error";
-      errDiv.textContent = "Connection interrupted. Try again.";
-      row.append(errDiv);
+      row.append(h("div", { class: "banner banner-error", text: "Connection interrupted. Try again." }));
     }
   } finally {
     indicator.remove();
+    if (thinkingBlock) {
+      thinkingBlock.classList.remove("active");
+      if (thinkingBlock._labelSpan) thinkingBlock._labelSpan.textContent = "Thought for a moment";
+    }
+    assistantMsg.streaming = false;
     state.streaming = false;
     state.abortController = null;
     el.send.classList.remove("stop");
     el.send.querySelector("svg use")?.setAttribute("href", "#i-send");
     el.send.setAttribute("aria-label", "Send");
+    autogrow();
+
+    // Append action buttons now that streaming is done.
+    if (!row.querySelector(".msg-actions")) {
+      row.append(h("div", { class: "msg-actions" }, [
+        h("button", {
+          class: "msg-action", "aria-label": "Copy",
+          onClick: () => navigator.clipboard?.writeText(assistantMsg.content || ""),
+        }, [icon("copy", 14)]),
+        h("button", { class: "msg-action", "aria-label": "Regenerate" }, [icon("regen", 14)]),
+      ]));
+    }
   }
 }
 
@@ -921,7 +1076,7 @@ function parseSseFrame(chunk) {
   }
 }
 
-function handleEvent({ event, data }, assistantMsg, row, body, toolCardMap) {
+function handleEvent({ event, data }, assistantMsg, row, body, toolCardMap, thinkingCtx) {
   switch (event) {
     case "text_delta": {
       assistantMsg.content += data.text;
@@ -931,6 +1086,16 @@ function handleEvent({ event, data }, assistantMsg, row, body, toolCardMap) {
     }
     case "thinking_delta": {
       assistantMsg.thinking_summary = (assistantMsg.thinking_summary || "") + data.summary;
+      let tb = thinkingCtx.getThinking();
+      if (!tb) {
+        tb = renderThinking(assistantMsg.thinking_summary, true);
+        // Thinking block comes first, before any tool card or body.
+        row.insertBefore(tb, row.querySelector(".msg-head").nextSibling);
+        thinkingCtx.setThinking(tb);
+      } else {
+        tb._bodyInner.textContent = assistantMsg.thinking_summary;
+      }
+      scrollToBottom();
       break;
     }
     case "tool_call": {
@@ -939,16 +1104,13 @@ function handleEvent({ event, data }, assistantMsg, row, body, toolCardMap) {
         status: "pending", preview: null, duration_ms: null,
       };
       assistantMsg.tool_calls.push(tc);
-      const card = renderToolCard(tc);
+      const card = renderToolCard(tc, assistantMsg.id);
       toolCardMap.set(data.id, { tc, card });
       body.before(card);
       scrollToBottom();
       break;
     }
     case "tool_confirm_required": {
-      // Either the tool_call event already landed (upgrade existing
-      // card to awaiting_confirm), or it didn't (build a fresh card
-      // straight in that state).
       let entry = toolCardMap.get(data.id);
       if (!entry) {
         const tc = {
@@ -956,12 +1118,12 @@ function handleEvent({ event, data }, assistantMsg, row, body, toolCardMap) {
           status: "awaiting_confirm", preview: null, duration_ms: null,
         };
         assistantMsg.tool_calls.push(tc);
-        const card = renderToolCard(tc);
+        const card = renderToolCard(tc, assistantMsg.id);
         toolCardMap.set(data.id, { tc, card });
         body.before(card);
       } else {
         entry.tc.status = "awaiting_confirm";
-        const fresh = renderToolCard(entry.tc);
+        const fresh = renderToolCard(entry.tc, assistantMsg.id);
         entry.card.replaceWith(fresh);
         entry.card = fresh;
       }
@@ -974,11 +1136,9 @@ function handleEvent({ event, data }, assistantMsg, row, body, toolCardMap) {
       entry.tc.status = data.status;
       entry.tc.preview = data.preview;
       entry.tc.duration_ms = data.duration_ms;
-      // Re-render the card in place
-      const fresh = renderToolCard(entry.tc);
+      const fresh = renderToolCard(entry.tc, assistantMsg.id);
       entry.card.replaceWith(fresh);
       entry.card = fresh;
-      toolCardMap.set(data.id, entry);
       break;
     }
     case "session_expired": {
@@ -994,18 +1154,12 @@ function handleEvent({ event, data }, assistantMsg, row, body, toolCardMap) {
         state.active.title = data.title;
         el.convTitle.textContent = data.title;
         const conv = state.conversations.find((c) => c.id === data.conversation_id);
-        if (conv) {
-          conv.title = data.title;
-          renderConvList();
-        }
+        if (conv) { conv.title = data.title; renderConvList(); }
       }
       break;
     }
     case "error": {
-      const errDiv = document.createElement("div");
-      errDiv.className = "banner banner-error";
-      errDiv.textContent = `Erreur: ${data.message || data.code}`;
-      row.append(errDiv);
+      row.append(h("div", { class: "banner banner-error", text: `Error: ${data.message || data.code}` }));
       break;
     }
     case "done": {
@@ -1013,20 +1167,22 @@ function handleEvent({ event, data }, assistantMsg, row, body, toolCardMap) {
       row.dataset.id = data.message_id;
       break;
     }
-    case "aborted": {
-      // ignore, the fetch loop will stop
-      break;
-    }
+    case "aborted": break;
   }
 }
 
 // ---------------- Boot ----------------
 
 (async () => {
+  state.model = DEFAULT_MODEL;
+  state.effort = DEFAULT_EFFORT;
+  updateModelChip();
   try {
     await Promise.all([loadConversations(), loadUsage()]);
     if (state.conversations.length) {
       await loadConversation(state.conversations[0].id);
+    } else {
+      renderMessages();
     }
   } catch (err) {
     console.error(err);

@@ -2,46 +2,52 @@
 {% block title %}OAuth connectors · BeaconMCP{% endblock %}
 {% block body_class %}tokens-page{% endblock %}
 {% block body %}
-<div class="tokens-wrap">
-  <header class="tokens-header">
-    <a href="/app/tokens" class="back-link">
-      <svg width="16" height="16" aria-hidden="true"><use href="#i-chev-r" style="transform: rotate(180deg); transform-origin: center"/></svg>
+<svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <symbol id="i-chev-l" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v1"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></symbol>
+</svg>
+
+<div class="tk-wrap">
+  <div class="tk-top">
+    <div class="name">BeaconMCP</div>
+    <div class="sp"></div>
+    <a href="/app/tokens" class="back">
+      <svg width="13" height="13"><use href="#i-chev-l"/></svg>
       Back to API access
     </a>
-    <div>
-      <h1>OAuth connectors</h1>
-      <p class="muted">
-        Signed in as <strong>{{ client_name }}</strong>. Clients that use
-        OAuth Dynamic Client Registration (RFC 7591) — ChatGPT, OpenCode,
-        and similar — can't accept a pre-provisioned <code>client_id</code>
-        or a bearer header. Mint a single-use bootstrap URL here, paste it
-        into the client, and complete the 2FA prompt in-app. Each URL is
-        single-use and expires after {{ slug_ttl_minutes }} min.
-      </p>
-    </div>
-  </header>
+  </div>
+
+  <h1>OAuth connectors</h1>
+  <p class="tk-lede">
+    Signed in as <strong>{{ client_name }}</strong>. Clients that use OAuth Dynamic Client
+    Registration (RFC 7591) — ChatGPT, OpenCode, and similar — can't accept a pre-provisioned
+    <code>client_id</code> or a bearer header. Mint a single-use bootstrap URL here, paste it
+    into the client, and complete the 2FA prompt in-app. Each URL is single-use and expires after
+    {{ slug_ttl_minutes }} min.
+  </p>
 
   {% if just_created %}
-  <section class="tokens-section token-just-created">
-    <h2>Connector URL ready</h2>
-    <p>
-      Paste this URL in your OAuth-DCR client (ChatGPT: <em>Settings →
-      Connectors → Add custom</em>; OpenCode: <code>opencode.json</code>
-      with <code>"oauth": true</code>). Single-use, dies in
-      {{ slug_ttl_minutes }} min.
-    </p>
+  <div class="alert alert-success">
+    <strong>
+      <svg width="12" height="12"><use href="#i-check"/></svg>
+      Connector URL ready — single-use, dies in {{ slug_ttl_minutes }} min
+    </strong>
     <div class="token-value-wrap">
       <code class="token-value">{{ just_created.url }}</code>
       <button type="button" class="btn-copy" data-copy="{{ just_created.url }}">
-        <svg width="14" height="14"><use href="#i-copy"/></svg>
-        Copy
+        <svg width="12" height="12"><use href="#i-copy"/></svg>
+        <span>Copy</span>
       </button>
     </div>
-  </section>
+  </div>
   {% endif %}
 
-  <section class="tokens-section">
-    <h2>New connector</h2>
+  <article class="card">
+    <div class="card-head">
+      <div class="card-title"><h2>New connector</h2></div>
+    </div>
     {% if form_error %}
       <div class="banner banner-error">{{ form_error }}</div>
     {% endif %}
@@ -63,26 +69,27 @@
       </label>
       <button type="submit" {% if locked %}disabled{% endif %}>Mint URL</button>
     </form>
-  </section>
+  </article>
 
-  <section class="tokens-section">
-    <h2>Pending URLs</h2>
+  <article class="card">
+    <div class="card-head">
+      <div class="card-title"><h2>Pending URLs</h2></div>
+    </div>
     {% if pending_slugs %}
     <ul class="tokens-list">
       {% for s in pending_slugs %}
-      <li class="token-row">
-        <div class="token-row-head">
-          <strong>{{ s.label }}</strong>
-          <code class="token-prefix">{{ s.slug[:10] }}…</code>
-        </div>
-        <div class="token-row-meta muted small">
-          expires in {{ s.expires_in_minutes }} min
+      <li>
+        <div>
+          <div class="token-row-head">
+            <strong>{{ s.label }}</strong>
+          </div>
+          <div class="token-row-meta">{{ s.slug[:10] }}… · expires in {{ s.expires_in_minutes }} min</div>
         </div>
         <form method="POST" action="/app/connectors/slug/delete" class="token-revoke-form">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="slug" value="{{ s.slug }}">
           <button type="submit" class="btn-danger">
-            <svg width="14" height="14"><use href="#i-trash"/></svg>
+            <svg width="12" height="12"><use href="#i-trash"/></svg>
             Cancel
           </button>
         </form>
@@ -92,26 +99,27 @@
     {% else %}
     <p class="muted">No pending URLs.</p>
     {% endif %}
-  </section>
+  </article>
 
-  <section class="tokens-section">
-    <h2>Active connectors</h2>
+  <article class="card">
+    <div class="card-head">
+      <div class="card-title"><h2>Active connectors</h2></div>
+    </div>
     {% if derived_clients %}
     <ul class="tokens-list">
       {% for c in derived_clients %}
-      <li class="token-row">
-        <div class="token-row-head">
-          <strong>{{ c.name }}</strong>
-          <code class="token-prefix">{{ c.client_id }}</code>
-        </div>
-        <div class="token-row-meta muted small">
-          registered {{ c.created_at_human }}
+      <li>
+        <div>
+          <div class="token-row-head">
+            <strong>{{ c.name }}</strong>
+          </div>
+          <div class="token-row-meta">{{ c.client_id }} · registered {{ c.created_at_human }}</div>
         </div>
         <form method="POST" action="/app/connectors/revoke" class="token-revoke-form">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <input type="hidden" name="client_id" value="{{ c.client_id }}">
           <button type="submit" class="btn-danger">
-            <svg width="14" height="14"><use href="#i-trash"/></svg>
+            <svg width="12" height="12"><use href="#i-trash"/></svg>
             Revoke
           </button>
         </form>
@@ -121,30 +129,8 @@
     {% else %}
     <p class="muted">No active OAuth connectors.</p>
     {% endif %}
-  </section>
+  </article>
 </div>
 
-<svg width="0" height="0" style="position:absolute" aria-hidden="true">
-  <defs>
-    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="1.5" stroke="currentColor" stroke-width="2" fill="none"/><path d="M5 15H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v1" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></symbol>
-    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
-    <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
-  </defs>
-</svg>
-
-<script type="module">
-  for (const btn of document.querySelectorAll("[data-copy]")) {
-    btn.addEventListener("click", async () => {
-      const value = btn.getAttribute("data-copy") || "";
-      try {
-        await navigator.clipboard.writeText(value);
-        const html = btn.innerHTML;
-        btn.textContent = "Copied ✓";
-        setTimeout(() => { btn.innerHTML = html; }, 1500);
-      } catch (err) {
-        console.error(err);
-      }
-    });
-  }
-</script>
+<script src="/app/static/tokens.js"></script>
 {% endblock %}

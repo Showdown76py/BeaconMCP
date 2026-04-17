@@ -2,46 +2,59 @@
 {% block title %}API access · BeaconMCP{% endblock %}
 {% block body_class %}tokens-page{% endblock %}
 {% block body %}
-<div class="tokens-wrap">
-  <header class="tokens-header">
+<svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <symbol id="i-chev-r" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></symbol>
+  <symbol id="i-chev-l" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v1"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><circle cx="12" cy="16" r="0.5" fill="currentColor"/></symbol>
+</svg>
+
+<div class="tk-wrap">
+
+  <div class="tk-top">
+    <div class="name">BeaconMCP</div>
+    <div class="sp"></div>
     {% if chat_enabled %}
-    <a href="/app/chat" class="back-link">
-      <svg width="16" height="16" aria-hidden="true"><use href="#i-chev-r" style="transform: rotate(180deg); transform-origin: center"/></svg>
+    <a href="/app/chat" class="back">
+      <svg width="13" height="13"><use href="#i-chev-l"/></svg>
       Back to chat
     </a>
     {% endif %}
-    <div>
-      <h1>API access</h1>
-      <p class="muted">
-        Signed in as <strong>{{ client_name }}</strong>. Pick your client and
-        follow the matching flow — every flow keeps your TOTP on your phone.
-      </p>
-    </div>
-  </header>
+  </div>
 
-  <section class="mcp-endpoint-hero">
-    <div class="mcp-endpoint-hero-label">MCP server URL</div>
-    <div class="mcp-endpoint-hero-row">
+  <h1>API access</h1>
+  <p class="tk-lede">
+    Signed in as <strong>{{ client_name }}</strong>. Pick your client and follow the matching flow —
+    every flow keeps your TOTP on your phone.
+  </p>
+
+  <div class="endpoint-hero">
+    <div class="eyebrow">MCP server URL</div>
+    <div class="endpoint-row">
       <code>{{ mcp_url }}</code>
       <button type="button" class="btn-copy" data-copy="{{ mcp_url }}" aria-label="Copy URL">
-        <svg width="14" height="14"><use href="#i-copy"/></svg>
+        <svg width="13" height="13"><use href="#i-copy"/></svg>
+        <span>Copy</span>
       </button>
     </div>
-    <details class="hero-details">
-      <summary>
-        <svg width="14" height="14" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5" stroke-linecap="round"/><circle cx="12" cy="16" r="0.5" fill="currentColor"/></svg>
-        Browser clients need their origin allowlisted
-      </summary>
-      <div class="hero-details-body">
-        <p>
-          A browser calling a different host has to pass a CORS preflight.
-          Web UIs (<strong>Claude</strong>, <strong>ChatGPT</strong>,
-          <strong>Le&nbsp;Chat</strong>, <strong>Perplexity</strong>,
-          <strong>Gemini&nbsp;Web</strong>) all do this before they can
-          reach <code>/mcp</code>. If the origin isn't listed, every
-          request fails silently in the browser console.
-        </p>
-        <p>Add the origins you plan to use to <code>beaconmcp.yaml</code>:</p>
+  </div>
+
+  <details class="cors">
+    <summary>
+      <svg width="13" height="13"><use href="#i-info"/></svg>
+      Browser clients need their origin allowlisted
+    </summary>
+    <div class="cors-body">
+      <p>
+        A browser calling a different host has to pass a CORS preflight. Web UIs
+        (<strong>Claude</strong>, <strong>ChatGPT</strong>, <strong>Le Chat</strong>,
+        <strong>Perplexity</strong>, <strong>Gemini Web</strong>) all do this before they can reach
+        <code>/mcp</code>. If the origin isn't listed, every request fails silently in the
+        browser console.
+      </p>
+      <p>Add the origins you plan to use to <code>beaconmcp.yaml</code>:</p>
 <pre><code>server:
   allowed_origins:
     - https://claude.ai
@@ -49,18 +62,16 @@
     - https://chat.mistral.ai
     - https://www.perplexity.ai
     - https://gemini.google.com</code></pre>
-        <p class="muted small" style="margin-bottom:0">
-          Desktop apps and CLI clients (Claude Desktop, Gemini CLI,
-          Cursor, VS Code, Mistral Vibe, OpenCode) don't run in a browser
-          and don't need an entry here.
-        </p>
-      </div>
-    </details>
-  </section>
+      <p class="small muted">
+        Desktop apps and CLI clients (Claude Desktop, Gemini CLI, Cursor, VS Code, Mistral Vibe,
+        OpenCode) don't run in a browser and don't need an entry here.
+      </p>
+    </div>
+  </details>
 
   <div class="views">
-    <input type="radio" name="view" id="view-method" checked>
-    <input type="radio" name="view" id="view-platform">
+    <input type="radio" name="tk-view" id="view-method" checked>
+    <input type="radio" name="tk-view" id="view-platform">
     <div class="view-switch">
       <label for="view-method" class="view-tab" role="tab">By auth method</label>
       <label for="view-platform" class="view-tab" role="tab">By platform</label>
@@ -75,124 +86,112 @@
       <input type="radio" name="method-tab" id="tab-bearer">
       <nav class="inner-tabs" role="tablist">
         <label for="tab-oauth" class="inner-tab">
-          <span class="tab-badge tab-badge-oauth">OAuth 2.1</span>
+          <span class="chip oauth">OAuth 2.1</span>
           Pre-registered client
         </label>
         {% if dcr_enabled %}
         <label for="tab-dcr" class="inner-tab">
-          <span class="tab-badge tab-badge-dcr">OAuth + DCR</span>
+          <span class="chip dcr">OAuth + DCR</span>
           Auto-registered
         </label>
         {% endif %}
         <label for="tab-bearer" class="inner-tab">
-          <span class="tab-badge tab-badge-bearer">Bearer</span>
+          <span class="chip bearer">Bearer</span>
           Static token
         </label>
       </nav>
 
-      {# ---------- Panel: OAuth 2.1 ---------- #}
       <div class="tab-panel" data-panel="oauth">
         <article class="card">
-          <header class="card-head">
+          <div class="card-head">
             <div class="card-title">
               <h2>OAuth 2.1 with a pre-registered client</h2>
-              <p class="muted">
-                The path most clients take: provision
-                <code>client_id</code> / <code>client_secret</code> here,
-                paste them into the client, and let the client run
-                authorization code + PKCE against BeaconMCP. TOTP prompt
-                lives on BeaconMCP's authorization page; tokens last 24 h.
-              </p>
             </div>
-            <div class="card-logos">
-              <span class="logo-pill">Claude</span>
-              <span class="logo-pill">Codex</span>
-              <span class="logo-pill">Le Chat</span>
-              <span class="logo-pill">Gemini CLI</span>
-              <span class="logo-pill">Antigravity</span>
-              <span class="logo-pill">OpenCode</span>
-              <span class="logo-pill">Cursor</span>
-              <span class="logo-pill">VS Code</span>
-            </div>
-          </header>
-          <h3 class="subhead">1. Provision credentials on the server</h3>
+            <p class="muted">
+              The path most clients take: provision <code>client_id</code> /
+              <code>client_secret</code> here, paste them into the client, and let the client run
+              authorization code + PKCE against BeaconMCP. TOTP prompt lives on BeaconMCP's
+              authorization page; tokens last 24 h.
+            </p>
+          </div>
+          <div class="card-logos">
+            <span class="logo-pill">Claude</span>
+            <span class="logo-pill">Codex</span>
+            <span class="logo-pill">Le Chat</span>
+            <span class="logo-pill">Gemini CLI</span>
+            <span class="logo-pill">Antigravity</span>
+            <span class="logo-pill">OpenCode</span>
+            <span class="logo-pill">Cursor</span>
+            <span class="logo-pill">VS Code</span>
+          </div>
+
+          <div class="subhead">1 · Provision credentials on the server</div>
           <p>One client per install so you can revoke granularly:</p>
-          <pre><code>beaconmcp auth create --name "Claude iPhone"</code></pre>
+<pre><code>beaconmcp auth create --name "Claude iPhone"</code></pre>
+          <p>The CLI prints a <code>client_id</code>, a <code>client_secret</code>, and a TOTP QR code (scan it immediately — the secret is shown once).</p>
+
+          <div class="subhead">2 · Paste credentials into the client</div>
           <p>
-            The CLI prints a <code>client_id</code>, a
-            <code>client_secret</code>, and a TOTP QR code (scan it
-            immediately — the secret is shown once).
-          </p>
-          <h3 class="subhead">2. Paste credentials into the client</h3>
-          <p>
-            Every client has its own config file or UI panel. Switch to
-            the <strong>By platform</strong> view above for the exact
-            snippet per client. The MCP URL is always
-            <code>{{ mcp_url }}</code>.
+            Every client has its own config file or UI panel. Switch to the
+            <strong>By platform</strong> view above for the exact snippet per client. The MCP URL
+            is always <code>{{ mcp_url }}</code>.
           </p>
         </article>
       </div>
 
-      {# ---------- Panel: OAuth + DCR ---------- #}
       {% if dcr_enabled %}
       <div class="tab-panel" data-panel="dcr">
         <article class="card">
-          <header class="card-head">
+          <div class="card-head">
             <div class="card-title">
               <h2>OAuth with Dynamic Client Registration</h2>
-              <p class="muted">
-                Reserved for clients whose UI won't let you paste
-                <code>client_id</code> / <code>client_secret</code> — they
-                read BeaconMCP's <code>.well-known</code> metadata and
-                register themselves. On our side that needs a single-use
-                bootstrap slug to gate the registration.
-              </p>
             </div>
-            <div class="card-logos">
-              <span class="logo-pill">ChatGPT</span>
-            </div>
-          </header>
+            <p class="muted">
+              Reserved for clients whose UI won't let you paste <code>client_id</code> /
+              <code>client_secret</code> — they read BeaconMCP's <code>.well-known</code> metadata
+              and register themselves. On our side that needs a single-use bootstrap slug to gate
+              the registration.
+            </p>
+          </div>
+          <div class="card-logos"><span class="logo-pill">ChatGPT</span></div>
           <p>
-            Mint a one-off connector URL, paste it into the client, it
-            auto-registers. The slug is single-use, expires in 15 min,
-            and the derived client is bound to your account — 2FA at
-            <code>/oauth/authorize</code> delegates to your TOTP seed, so
-            a leaked client can't mint a token without your phone.
+            Mint a one-off connector URL, paste it into the client, it auto-registers. The slug is
+            single-use, expires in 15 min, and the derived client is bound to your account — 2FA
+            at <code>/oauth/authorize</code> delegates to your TOTP seed, so a leaked client can't
+            mint a token without your phone.
           </p>
-          <a href="/app/connectors" class="btn-primary-link">
-            Open OAuth connectors
-            <svg width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
+          <a class="cta" href="/app/connectors">Open OAuth connectors
+            <svg width="13" height="13"><use href="#i-chev-r"/></svg>
           </a>
         </article>
       </div>
       {% endif %}
 
-      {# ---------- Panel: Bearer ---------- #}
       <div class="tab-panel" data-panel="bearer">
         <article class="card">
-          <header class="card-head">
+          <div class="card-head">
             <div class="card-title">
               <h2>Static bearer tokens</h2>
-              <p class="muted">For clients that attach <code>Authorization: Bearer …</code> to every call.</p>
             </div>
-            <div class="card-logos">
-              <span class="logo-pill">Gemini</span>
-              <span class="logo-pill">Mistral</span>
-              <span class="logo-pill">VS Code</span>
-              <span class="logo-pill">Cursor</span>
-              <span class="logo-pill logo-pill-plus">+ REST</span>
-            </div>
-          </header>
+            <p class="muted">For clients that attach <code>Authorization: Bearer …</code> to every call.</p>
+          </div>
+          <div class="card-logos">
+            <span class="logo-pill">Gemini</span><span class="logo-pill">Mistral</span>
+            <span class="logo-pill">VS Code</span><span class="logo-pill">Cursor</span>
+            <span class="logo-pill logo-pill-plus">+ REST</span>
+          </div>
 
           {% if just_created %}
           <div class="alert alert-success">
-            <strong>New token: {{ just_created.name }}</strong>
-            <p>Copy it now — it will not be shown again.</p>
+            <strong>
+              <svg width="12" height="12"><use href="#i-check"/></svg>
+              New token: {{ just_created.name }} — copy it now, it won't be shown again
+            </strong>
             <div class="token-value-wrap">
               <code class="token-value">{{ just_created.token }}</code>
               <button type="button" class="btn-copy" data-copy="{{ just_created.token }}">
-                <svg width="14" height="14"><use href="#i-copy"/></svg>
-                Copy
+                <svg width="12" height="12"><use href="#i-copy"/></svg>
+                <span>Copy</span>
               </button>
             </div>
           </div>
@@ -203,8 +202,8 @@
           {% endif %}
 
           <div class="card-split">
-            <div class="card-split-col">
-              <h3 class="subhead">Create a token <span class="counter">{{ count }} / {{ cap }}</span></h3>
+            <div>
+              <div class="subhead">Create a token <span class="counter">{{ count }} / {{ cap }}</span></div>
               {% if can_create %}
               <form method="POST" action="/app/tokens" class="tokens-form">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -231,24 +230,23 @@
               {% endif %}
             </div>
 
-            <div class="card-split-col">
-              <h3 class="subhead">Active tokens</h3>
+            <div>
+              <div class="subhead">Active tokens</div>
               {% if tokens %}
               <ul class="tokens-list">
                 {% for t in tokens %}
-                <li class="token-row">
-                  <div class="token-row-head">
-                    <strong>{{ t.name }}</strong>
-                    <code class="token-prefix">{{ t.prefix }}…</code>
-                  </div>
-                  <div class="token-row-meta muted small">
-                    expires in {{ t.expires_in_hours }} h
+                <li>
+                  <div>
+                    <div class="token-row-head">
+                      <strong>{{ t.name }}</strong>
+                    </div>
+                    <div class="token-row-meta">{{ t.prefix }}… · expires in {{ t.expires_in_hours }} h</div>
                   </div>
                   <form method="POST" action="/app/tokens/revoke" class="token-revoke-form">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <input type="hidden" name="token_prefix" value="{{ t.prefix }}">
                     <button type="submit" class="btn-danger" aria-label="Revoke">
-                      <svg width="14" height="14"><use href="#i-trash"/></svg>
+                      <svg width="12" height="12"><use href="#i-trash"/></svg>
                       Revoke
                     </button>
                   </form>
@@ -261,16 +259,15 @@
             </div>
           </div>
 
-          <p class="muted small" style="margin-top:1rem">
-            Concrete setup per client is in the <strong>By platform</strong>
-            tab.
+          <p class="small muted" style="margin-top:14px">
+            Concrete setup per client is in the <strong>By platform</strong> tab.
           </p>
         </article>
       </div>
     </div>
 
     {# ============================================================ #}
-    {# VIEW: BY PLATFORM — with nested sub-tabs for variants         #}
+    {# VIEW: BY PLATFORM                                             #}
     {# ============================================================ #}
     <div class="view view-by-platform" role="tabpanel">
       <input type="radio" name="platform-tab" id="p-claude" checked>
@@ -292,31 +289,30 @@
         <label for="p-other" class="inner-tab">Other</label>
       </nav>
 
-      {# ---- Claude (sub-tabs: Web/Mobile, Desktop) ---- #}
+      {# ---- Claude ---- #}
       <div class="tab-panel" data-panel="claude">
         <article class="card">
-          <header class="card-head">
+          <div class="card-head">
             <div class="card-title">
               <h2>Claude</h2>
-              <span class="method-tag method-tag-oauth">OAuth 2.1</span>
+              <span class="chip oauth">OAuth 2.1</span>
             </div>
-          </header>
-          <p class="muted">
-            Claude uses OAuth with a user-provided client. Same CLI command
-            creates credentials for every surface — what changes is where
-            you paste them.
-          </p>
+            <p class="muted">
+              Claude uses OAuth with a user-provided client. Same CLI command creates credentials
+              for every surface — what changes is where you paste them.
+            </p>
+          </div>
 
           <input type="radio" name="claude-variant" id="cv-web" checked>
           <input type="radio" name="claude-variant" id="cv-desktop">
           <nav class="sub-tabs">
-            <label for="cv-web" class="sub-tab">Web & Mobile</label>
+            <label for="cv-web" class="sub-tab">Web &amp; Mobile</label>
             <label for="cv-desktop" class="sub-tab">Desktop</label>
           </nav>
 
           <div class="sub-panel" data-sub="claude-web">
             <ol class="steps">
-              <li>On the server: <pre><code>beaconmcp auth create --name "Claude Web"</code></pre></li>
+              <li>On the server:<pre><code>beaconmcp auth create --name "Claude Web"</code></pre></li>
               <li>claude.ai or iOS/Android app → <em>Settings → Integrations → Add custom connector</em>.</li>
               <li>URL: <code>{{ mcp_url }}</code>. Paste <code>client_id</code> / <code>client_secret</code>.</li>
               <li>Type your TOTP on the authorization page when Claude redirects you.</li>
@@ -338,26 +334,25 @@
     }
   }
 }</code></pre>
-            <p class="muted small">
-              <code>mcp-remote</code> is the community OAuth-to-stdio proxy.
-              It triggers the same authorization code flow as the web app
-              (TOTP prompt in your browser). Pre-provision the client with
-              <code>beaconmcp auth create</code> first.
+            <p class="small muted">
+              <code>mcp-remote</code> is the community OAuth-to-stdio proxy. It triggers the same
+              authorization code flow as the web app (TOTP prompt in your browser). Pre-provision
+              the client with <code>beaconmcp auth create</code> first.
             </p>
           </div>
         </article>
       </div>
 
-      {# ---- ChatGPT (sub-tabs: Web, Mobile) ---- #}
+      {# ---- ChatGPT ---- #}
       {% if dcr_enabled %}
       <div class="tab-panel" data-panel="chatgpt">
         <article class="card">
-          <header class="card-head">
+          <div class="card-head">
             <div class="card-title">
               <h2>ChatGPT</h2>
-              <span class="method-tag method-tag-dcr">OAuth + DCR</span>
+              <span class="chip dcr">OAuth + DCR</span>
             </div>
-          </header>
+          </div>
 
           <input type="radio" name="chatgpt-variant" id="gv-web" checked>
           <input type="radio" name="chatgpt-variant" id="gv-mobile">
@@ -367,13 +362,12 @@
             <label for="gv-mobile" class="sub-tab">iOS / Android</label>
             <label for="gv-codex" class="sub-tab">Codex CLI</label>
           </nav>
+
           <div class="sub-panel" data-sub="chatgpt-web">
             <p class="muted">
-              ChatGPT's Developer Mode connector UI only exposes "No auth"
-              and "OAuth" — no field for <code>client_id</code> /
-              <code>client_secret</code>. The OAuth path strictly requires
-              Dynamic Client Registration, so you have to mint a
-              single-use bootstrap URL.
+              ChatGPT's Developer Mode connector UI only exposes "No auth" and "OAuth" — no field
+              for <code>client_id</code> / <code>client_secret</code>. The OAuth path strictly
+              requires DCR, so you have to mint a single-use bootstrap URL.
             </p>
             <ol class="steps">
               <li>Mint a connector URL from <a href="/app/connectors">OAuth connectors</a> (single-use, 15 min).</li>
@@ -381,9 +375,8 @@
               <li>Paste the <code>/mcp/c/&lt;slug&gt;</code> URL. Auth: OAuth.</li>
               <li>ChatGPT runs DCR, then redirects you — type your TOTP.</li>
             </ol>
-            <a href="/app/connectors" class="btn-primary-link">
-              Mint a connector URL
-              <svg width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
+            <a class="cta" href="/app/connectors">Mint a connector URL
+              <svg width="13" height="13"><use href="#i-chev-r"/></svg>
             </a>
           </div>
           <div class="sub-panel" data-sub="chatgpt-mobile">
@@ -393,53 +386,40 @@
               <li>ChatGPT app → profile → <em>Settings → Connectors → Add custom</em>.</li>
               <li>Paste the <code>/mcp/c/&lt;slug&gt;</code> URL. OAuth. TOTP in the in-app browser.</li>
             </ol>
-            <p class="muted small">Mint a fresh slug per device if you want independent revocation.</p>
-            <a href="/app/connectors" class="btn-primary-link">
-              Mint a connector URL
-              <svg width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
-            </a>
+            <p class="small muted">Mint a fresh slug per device if you want independent revocation.</p>
           </div>
           <div class="sub-panel" data-sub="chatgpt-codex">
-            <p><span class="method-tag method-tag-oauth">OAuth 2.1</span></p>
+            <p><span class="chip oauth">OAuth 2.1</span></p>
             <p>
-              Unlike the web connector, Codex (OpenAI's terminal/IDE MCP
-              client) lets you pre-register credentials via its
-              <code>config.toml</code>. It catches the OAuth redirect on
-              an ephemeral local port and opens your default browser for
-              the TOTP prompt.
+              Unlike the web connector, Codex (OpenAI's terminal/IDE MCP client) lets you
+              pre-register credentials via its <code>config.toml</code>. It catches the OAuth
+              redirect on an ephemeral local port and opens your default browser for the TOTP
+              prompt.
             </p>
             <ol class="steps">
-              <li>
-                Provision a client on the server:
-                <pre><code>beaconmcp auth create --name "Codex"</code></pre>
-              </li>
-              <li>
-                Add BeaconMCP to your Codex config:
+              <li>Provision a client on the server:<pre><code>beaconmcp auth create --name "Codex"</code></pre></li>
+              <li>Add BeaconMCP to your Codex config:
 <pre><code>[mcp_servers.beaconmcp]
 url = "{{ mcp_url }}"
 client_id = "beaconmcp_..."
-client_secret = "sk_..."</code></pre>
-              </li>
+client_secret = "sk_..."</code></pre></li>
               <li>Run <code>codex mcp login beaconmcp</code>. Your browser opens on BeaconMCP's authorization page — type your TOTP.</li>
             </ol>
-            <p class="muted small">
-              Remote devbox (Codespaces, SSH container)? Set
-              <code>mcp_oauth_callback_url</code> in config.toml to your
-              ingress URL so the redirect hits the right host.
+            <p class="small muted">
+              Remote devbox (Codespaces, SSH container)? Set <code>mcp_oauth_callback_url</code>
+              in config.toml to your ingress URL so the redirect hits the right host.
             </p>
           </div>
         </article>
       </div>
       {% endif %}
 
-      {# ---- Gemini (sub-tabs: CLI, Antigravity, Web) ---- #}
+      {# ---- Gemini ---- #}
       <div class="tab-panel" data-panel="gemini">
         <article class="card">
-          <header class="card-head">
-            <div class="card-title">
-              <h2>Gemini</h2>
-            </div>
-          </header>
+          <div class="card-head">
+            <div class="card-title"><h2>Gemini</h2></div>
+          </div>
           <input type="radio" name="gemini-variant" id="gem-cli" checked>
           <input type="radio" name="gemini-variant" id="gem-antigravity">
           <input type="radio" name="gemini-variant" id="gem-web">
@@ -448,14 +428,14 @@ client_secret = "sk_..."</code></pre>
             <label for="gem-antigravity" class="sub-tab">Antigravity</label>
             <label for="gem-web" class="sub-tab">Web / Mobile</label>
           </nav>
+
           <div class="sub-panel" data-sub="gem-cli">
-            <p><span class="method-tag method-tag-oauth">OAuth 2.1</span> <span class="method-tag method-tag-bearer">Bearer</span></p>
+            <p><span class="chip oauth">OAuth 2.1</span> <span class="chip bearer">Bearer</span></p>
             <p>
-              Gemini CLI accepts a pre-registered <code>client_id</code> /
-              <code>client_secret</code> in <code>settings.json</code>, so
-              you don't need a DCR slug — just provision a client via the
-              CLI and paste the credentials. <code>/mcp auth beaconmcp</code>
-              then runs the browser flow with your TOTP prompt.
+              Gemini CLI accepts a pre-registered <code>client_id</code> / <code>client_secret</code>
+              in <code>settings.json</code>, so you don't need a DCR slug — just provision a client
+              via the CLI and paste the credentials. <code>/mcp auth beaconmcp</code> then runs the
+              browser flow with your TOTP prompt.
             </p>
             <p><strong>Recommended — OAuth 2.1 (pre-registered):</strong></p>
             <ol class="steps">
@@ -471,8 +451,7 @@ client_secret = "sk_..."</code></pre>
       }
     }
   }
-}</code></pre>
-              </li>
+}</code></pre></li>
               <li>In the CLI: <code>/mcp auth beaconmcp</code>. Type your TOTP in the browser that opens.</li>
             </ol>
             <p><strong>Alternative — Bearer:</strong></p>
@@ -480,12 +459,12 @@ client_secret = "sk_..."</code></pre>
   --url {{ mcp_url }} \
   --header "Authorization: Bearer &lt;token&gt;"</code></pre>
           </div>
+
           <div class="sub-panel" data-sub="gem-antigravity">
-            <p><span class="method-tag method-tag-oauth">OAuth 2.1</span> <span class="method-tag method-tag-bearer">Bearer</span></p>
+            <p><span class="chip oauth">OAuth 2.1</span> <span class="chip bearer">Bearer</span></p>
             <p>
-              Antigravity's visual connection manager handles both paths.
-              OAuth keeps the TOTP prompt on BeaconMCP's side; Bearer is a
-              quick fallback when the OAuth flow misbehaves.
+              Antigravity's visual connection manager handles both paths. OAuth keeps the TOTP
+              prompt on BeaconMCP's side; Bearer is a quick fallback when the OAuth flow misbehaves.
             </p>
             <p><strong>Recommended — OAuth 2.1 (pre-registered):</strong></p>
             <ol class="steps">
@@ -505,30 +484,28 @@ client_secret = "sk_..."</code></pre>
     }
   }
 }</code></pre>
-            <p class="muted small">
-              Antigravity uses <code>serverUrl</code> (not <code>url</code>).
-              If the native HTTP transport misbehaves, fall back to
-              <code>npx mcp-remote</code> with <code>--header</code>.
+            <p class="small muted">
+              Antigravity uses <code>serverUrl</code> (not <code>url</code>). If the native HTTP
+              transport misbehaves, fall back to <code>npx mcp-remote</code> with <code>--header</code>.
             </p>
           </div>
+
           <div class="sub-panel" data-sub="gem-web">
             <p class="muted">
-              Gemini Web (gemini.google.com), the mobile apps, and the macOS
-              native app do <strong>not</strong> expose a custom-MCP connector
-              yet. Only Gemini CLI and Antigravity can reach BeaconMCP today.
+              Gemini Web (gemini.google.com), the mobile apps, and the macOS native app do
+              <strong>not</strong> expose a custom-MCP connector yet. Only Gemini CLI and
+              Antigravity can reach BeaconMCP today.
             </p>
           </div>
         </article>
       </div>
 
-      {# ---- Mistral (sub-tabs: Le Chat, Vibe) ---- #}
+      {# ---- Mistral ---- #}
       <div class="tab-panel" data-panel="mistral">
         <article class="card">
-          <header class="card-head">
-            <div class="card-title">
-              <h2>Mistral</h2>
-            </div>
-          </header>
+          <div class="card-head">
+            <div class="card-title"><h2>Mistral</h2></div>
+          </div>
           <input type="radio" name="mistral-variant" id="mi-lechat" checked>
           <input type="radio" name="mistral-variant" id="mi-vibe">
           <nav class="sub-tabs">
@@ -536,7 +513,7 @@ client_secret = "sk_..."</code></pre>
             <label for="mi-vibe" class="sub-tab">Vibe</label>
           </nav>
           <div class="sub-panel" data-sub="mi-lechat">
-            <p><span class="method-tag method-tag-oauth">OAuth 2.1</span></p>
+            <p><span class="chip oauth">OAuth 2.1</span></p>
             <p>
               Le Chat speaks OAuth 2.1 natively. In the app:
               <em>Intelligence → Connecteurs → Ajouter un connecteur → Connecteur MCP personnalisé</em>.
@@ -546,17 +523,17 @@ client_secret = "sk_..."</code></pre>
               <li><strong>MCP Server URL:</strong> <code>{{ mcp_url }}</code></li>
               <li>Validate. Le Chat discovers the OAuth metadata and redirects you to BeaconMCP's authorization page — type your TOTP from your phone. Token lifetime: 24 h.</li>
             </ol>
-            <p class="muted small">
-              Custom connectors are on Le Chat Pro / Enterprise plans; on the free tier the panel may be hidden.
-              Add <code>https://chat.mistral.ai</code> to <code>server.allowed_origins</code> so the browser CORS preflight succeeds.
+            <p class="small muted">
+              Custom connectors are on Le Chat Pro / Enterprise plans; on the free tier the panel
+              may be hidden. Add <code>https://chat.mistral.ai</code> to
+              <code>server.allowed_origins</code> so the browser CORS preflight succeeds.
             </p>
           </div>
           <div class="sub-panel" data-sub="mi-vibe">
-            <p><span class="method-tag method-tag-bearer">Bearer (unverified)</span></p>
-            <p class="muted small" style="margin-top:-0.25rem">
-              Vibe's bearer path hasn't been tested against a live
-              BeaconMCP. If the snippet below fails, check the latest
-              Vibe docs — the schema has been iterating fast.
+            <p><span class="chip bearer">Bearer (unverified)</span></p>
+            <p class="small muted">
+              Vibe's bearer path hasn't been tested against a live BeaconMCP. If the snippet below
+              fails, check the latest Vibe docs — the schema has been iterating fast.
             </p>
             <p>Vibe reads <code>./.vibe/config.toml</code> (per-project) or <code>~/.vibe/config.toml</code> (global). <strong>TOML format</strong>, not JSON.</p>
 <pre><code>[[mcp_servers]]
@@ -564,9 +541,9 @@ name = "beaconmcp"
 transport = "http"
 url = "{{ mcp_url }}"
 headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
-            <p class="muted small">
-              <code>transport</code> accepts <code>"http"</code>,
-              <code>"streamable-http"</code>, or <code>"stdio"</code>.
+            <p class="small muted">
+              <code>transport</code> accepts <code>"http"</code>, <code>"streamable-http"</code>,
+              or <code>"stdio"</code>.
             </p>
           </div>
         </article>
@@ -575,17 +552,16 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
       {# ---- OpenCode ---- #}
       <div class="tab-panel" data-panel="opencode">
         <article class="card">
-          <header class="card-head">
+          <div class="card-head">
             <div class="card-title">
               <h2>OpenCode</h2>
-              <span class="method-tag method-tag-oauth">OAuth 2.1</span>
-              <span class="method-tag method-tag-bearer">Bearer</span>
+              <span class="chip oauth">OAuth 2.1</span>
+              <span class="chip bearer">Bearer</span>
             </div>
-          </header>
+          </div>
           <p>
-            OpenCode supports three flavours in <code>opencode.json</code>:
-            pre-registered OAuth (recommended), auto-registration via DCR,
-            or a plain bearer token. Tokens land in
+            OpenCode supports three flavours in <code>opencode.json</code>: pre-registered OAuth
+            (recommended), auto-registration via DCR, or a plain bearer token. Tokens land in
             <code>~/.local/share/opencode/mcp-auth.json</code> and refresh on their own.
           </p>
 
@@ -605,13 +581,12 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
       }
     }
   }
-}</code></pre>
-            </li>
+}</code></pre></li>
             <li>Run <code>opencode mcp auth beaconmcp</code>. Type your TOTP in the browser.</li>
           </ol>
 
           {% if dcr_enabled %}
-          <p><strong>Alternative — DCR (no credentials to paste):</strong></p>
+          <p style="margin-top:14px"><strong>Alternative — DCR (no credentials to paste):</strong></p>
 <pre><code>{
   "mcp": {
     "beaconmcp": {
@@ -622,13 +597,12 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
     }
   }
 }</code></pre>
-          <a href="/app/connectors" class="btn-primary-link">
-            Mint a connector URL
-            <svg width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
+          <a class="cta" href="/app/connectors">Mint a connector URL
+            <svg width="13" height="13"><use href="#i-chev-r"/></svg>
           </a>
           {% endif %}
 
-          <p style="margin-top:1.25rem"><strong>Alternative — Bearer:</strong></p>
+          <p style="margin-top:14px"><strong>Alternative — Bearer:</strong></p>
 <pre><code>{
   "mcp": {
     "beaconmcp": {
@@ -648,20 +622,18 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
       {# ---- VS Code ---- #}
       <div class="tab-panel" data-panel="vscode">
         <article class="card">
-          <header class="card-head">
+          <div class="card-head">
             <div class="card-title">
               <h2>VS Code</h2>
-              <span class="method-tag method-tag-oauth">OAuth 2.1</span>
-              <span class="method-tag method-tag-bearer">Bearer</span>
+              <span class="chip oauth">OAuth 2.1</span>
+              <span class="chip bearer">Bearer</span>
             </div>
-          </header>
+          </div>
           <p>
-            VS Code routes MCP auth through its native Authentication
-            Provider system (same as GitHub / Microsoft Entra). It reads
-            <code>WWW-Authenticate</code>, shows a toast to Allow,
-            catches the redirect on <code>vscode://</code> (or
-            <code>vscode-insiders://</code>), and stores tokens in the OS
-            keychain.
+            VS Code routes MCP auth through its native Authentication Provider system (same as
+            GitHub / Microsoft Entra). It reads <code>WWW-Authenticate</code>, shows a toast to
+            Allow, catches the redirect on <code>vscode://</code> (or <code>vscode-insiders://</code>),
+            and stores tokens in the OS keychain.
           </p>
 
           <p><strong>Recommended — OAuth 2.1 (pre-registered):</strong></p>
@@ -681,13 +653,12 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
       "clientSecret": "${input:beaconmcp-client-secret}"
     }
   }
-}</code></pre>
-            </li>
+}</code></pre></li>
             <li>VS Code prompts you on first use — OS keychain stores the tokens after your TOTP.</li>
           </ol>
 
           {% if dcr_enabled %}
-          <p><strong>Alternative — DCR:</strong></p>
+          <p style="margin-top:14px"><strong>Alternative — DCR:</strong></p>
 <pre><code>{
   "servers": {
     "beaconmcp": {
@@ -696,13 +667,12 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
     }
   }
 }</code></pre>
-          <a href="/app/connectors" class="btn-primary-link">
-            Mint a connector URL
-            <svg width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
+          <a class="cta" href="/app/connectors">Mint a connector URL
+            <svg width="13" height="13"><use href="#i-chev-r"/></svg>
           </a>
           {% endif %}
 
-          <p style="margin-top:1.25rem"><strong>Alternative — Bearer:</strong></p>
+          <p style="margin-top:14px"><strong>Alternative — Bearer:</strong></p>
 <pre><code>{
   "servers": {
     "beaconmcp": {
@@ -714,10 +684,10 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
     }
   }
 }</code></pre>
-          <p class="muted small">
-            Command Palette → <em>MCP: List Servers</em> to verify. Revoke
-            access anytime from the Accounts menu (profile icon, bottom
-            left) — MCP sessions live next to your other trusted logins.
+          <p class="small muted">
+            Command Palette → <em>MCP: List Servers</em> to verify. Revoke access anytime from the
+            Accounts menu (profile icon, bottom left) — MCP sessions live next to your other
+            trusted logins.
           </p>
         </article>
       </div>
@@ -725,19 +695,17 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
       {# ---- Cursor ---- #}
       <div class="tab-panel" data-panel="cursor">
         <article class="card">
-          <header class="card-head">
+          <div class="card-head">
             <div class="card-title">
               <h2>Cursor</h2>
-              <span class="method-tag method-tag-oauth">OAuth 2.1</span>
-              <span class="method-tag method-tag-bearer">Bearer</span>
+              <span class="chip oauth">OAuth 2.1</span>
+              <span class="chip bearer">Bearer</span>
             </div>
-          </header>
+          </div>
           <p>
-            Cursor is a first-class OAuth 2.1 client since v1.0. It
-            surfaces a blue <em>Connect</em> button in
-            <em>Settings → Tools &amp; MCP</em> and catches the redirect
-            via the <code>cursor://</code> scheme (or a loopback fallback).
-            PKCE runs in-app.
+            Cursor is a first-class OAuth 2.1 client since v1.0. It surfaces a blue
+            <em>Connect</em> button in <em>Settings → Tools &amp; MCP</em> and catches the redirect
+            via the <code>cursor://</code> scheme (or a loopback fallback). PKCE runs in-app.
           </p>
 
           <p><strong>Recommended — OAuth 2.1 (pre-registered):</strong></p>
@@ -752,13 +720,12 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
       "clientSecret": "${env:BEACONMCP_CLIENT_SECRET}"
     }
   }
-}</code></pre>
-            </li>
+}</code></pre></li>
             <li>Export the credentials in your shell (<code>BEACONMCP_CLIENT_ID</code> / <code>BEACONMCP_CLIENT_SECRET</code>). Reload Cursor; click <em>Connect</em>.</li>
           </ol>
 
           {% if dcr_enabled %}
-          <p><strong>Alternative — DCR:</strong></p>
+          <p style="margin-top:14px"><strong>Alternative — DCR:</strong></p>
 <pre><code>{
   "mcpServers": {
     "beaconmcp": {
@@ -766,13 +733,12 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
     }
   }
 }</code></pre>
-          <a href="/app/connectors" class="btn-primary-link">
-            Mint a connector URL
-            <svg width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
+          <a class="cta" href="/app/connectors">Mint a connector URL
+            <svg width="13" height="13"><use href="#i-chev-r"/></svg>
           </a>
           {% endif %}
 
-          <p style="margin-top:1.25rem"><strong>Alternative — Bearer:</strong></p>
+          <p style="margin-top:14px"><strong>Alternative — Bearer:</strong></p>
 <pre><code>{
   "mcpServers": {
     "beaconmcp": {
@@ -783,11 +749,10 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
     }
   }
 }</code></pre>
-          <p class="muted small">
-            Reload the Cursor window after editing; the server shows up
-            under <em>Settings → Cursor Settings → MCP Servers</em>.
-            Cursor supports <code>${env:VAR}</code> expansion so you can
-            keep secrets out of the repo.
+          <p class="small muted">
+            Reload the Cursor window after editing; the server shows up under <em>Settings →
+            Cursor Settings → MCP Servers</em>. Cursor supports <code>${env:VAR}</code> expansion
+            so you can keep secrets out of the repo.
           </p>
         </article>
       </div>
@@ -795,17 +760,16 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
       {# ---- Other ---- #}
       <div class="tab-panel" data-panel="other">
         <article class="card">
-          <header class="card-head">
+          <div class="card-head">
             <div class="card-title">
               <h2>Other MCP-HTTP clients</h2>
-              <span class="method-tag method-tag-bearer">Bearer</span>
+              <span class="chip bearer">Bearer</span>
             </div>
-          </header>
+          </div>
           <p>
-            Any client that can send <code>Authorization: Bearer …</code> on
-            HTTP POST works. Mint a token, point the client at
-            <code>{{ mcp_url }}</code>, and attach the bearer on every
-            request. Tokens live 24 h.
+            Any client that can send <code>Authorization: Bearer …</code> on HTTP POST works. Mint
+            a token, point the client at <code>{{ mcp_url }}</code>, and attach the bearer on
+            every request. Tokens live 24 h.
           </p>
         </article>
       </div>
@@ -813,27 +777,5 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
   </div>
 </div>
 
-<svg width="0" height="0" style="position:absolute" aria-hidden="true">
-  <defs>
-    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="1.5" stroke="currentColor" stroke-width="2" fill="none"/><path d="M5 15H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v1" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></symbol>
-    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
-    <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
-  </defs>
-</svg>
-
-<script type="module">
-  for (const btn of document.querySelectorAll("[data-copy]")) {
-    btn.addEventListener("click", async () => {
-      const value = btn.getAttribute("data-copy") || "";
-      try {
-        await navigator.clipboard.writeText(value);
-        const html = btn.innerHTML;
-        btn.textContent = "Copied ✓";
-        setTimeout(() => { btn.innerHTML = html; }, 1500);
-      } catch (err) {
-        console.error(err);
-      }
-    });
-  }
-</script>
+<script src="/app/static/tokens.js"></script>
 {% endblock %}

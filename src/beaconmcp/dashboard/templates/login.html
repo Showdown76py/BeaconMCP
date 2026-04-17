@@ -1,48 +1,95 @@
 {% extends "base.html" %}
 {% block title %}Sign in · BeaconMCP{% endblock %}
-{% block body_class %}centered-page{% endblock %}
+{% block body_class %}auth-page{% endblock %}
 {% block body %}
 <div class="auth-card">
-  <h1>BeaconMCP</h1>
-  <p class="muted">Dashboard sign-in</p>
+  <div class="auth-brand">
+    <span class="name">BeaconMCP</span>
+  </div>
 
-  {% if banner %}
-    <div class="banner banner-{{ banner_kind|default('error') }}">{{ banner }}</div>
-  {% endif %}
-
-  <form method="POST" action="/app/login" autocomplete="on">
+  <form method="POST" action="/app/login" autocomplete="on" id="login-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
 
-    <label>
-      <span>Client ID</span>
-      <input type="text" name="client_id" value="{{ client_id|default('') }}"
-             autocomplete="username" required spellcheck="false"
-             placeholder="beaconmcp_…" {% if locked %}disabled{% endif %}>
-    </label>
+    {# Step 1 — Client ID + Client Secret #}
+    <section id="step-1">
+      <h1>Sign in</h1>
+      <p class="sub">Paste your OAuth client credentials to continue.</p>
 
-    <label>
-      <span>Client Secret</span>
-      <input type="password" name="client_secret"
-             autocomplete="current-password" required
-             placeholder="sk_…" {% if locked %}disabled{% endif %}>
-    </label>
+      {% if banner %}
+        <div class="banner banner-{{ banner_kind|default('error') }}">{{ banner }}</div>
+      {% endif %}
 
-    <label>
-      <span>2FA code</span>
-      <input type="text" name="totp" inputmode="numeric"
-             pattern="\d{6}" maxlength="6"
-             autocomplete="one-time-code" required
-             placeholder="000000" {% if locked %}disabled{% endif %}>
-    </label>
+      <div class="form-group">
+        <label for="client_id">Client ID</label>
+        <div class="form-input-wrap">
+          <input id="client_id" type="text" name="client_id"
+                 class="mono" placeholder="beaconmcp_…"
+                 autocomplete="username" required spellcheck="false"
+                 value="{{ client_id|default('') }}"
+                 {% if locked %}disabled{% endif %}>
+        </div>
+      </div>
 
-    <label class="checkbox">
-      <input type="checkbox" name="remember" checked
-             {% if locked %}disabled{% endif %}>
-      <span>Stay signed in for 90 days</span>
-    </label>
+      <div class="form-group">
+        <label for="client_secret">Client Secret</label>
+        <div class="form-input-wrap">
+          <input id="client_secret" type="password" name="client_secret"
+                 class="mono" placeholder="sk_…"
+                 autocomplete="current-password" required
+                 {% if locked %}disabled{% endif %}>
+          <button class="trail-btn" type="button" id="toggle-pw" aria-label="Show secret">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        </div>
+      </div>
 
-    <button type="submit" {% if locked %}disabled{% endif %}>Sign in</button>
+      <div class="checkbox-row">
+        <label><input type="checkbox" name="remember" checked {% if locked %}disabled{% endif %}> Keep me signed in</label>
+      </div>
+
+      <button type="button" class="btn-primary" id="to-step-2" {% if locked %}disabled{% endif %}>
+        Continue
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </button>
+
+      <div class="card-foot">
+        No account? <a href="#">Ask your administrator</a>
+      </div>
+    </section>
+
+    {# Step 2 — TOTP #}
+    <section id="step-2" hidden>
+      <button type="button" class="back-btn" id="back-to-1">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+        Back
+      </button>
+
+      <h1>Two-factor</h1>
+      <p class="sub">Enter the 6-digit code from your authenticator app.</p>
+
+      <div class="toast-banner">
+        <span class="dot"></span>
+        Client verified: <b class="mono" style="font-family:var(--font-mono);margin-left:2px" id="client-verified">—</b>
+      </div>
+
+      <div class="totp-inputs" id="totp-inputs">
+        <input maxlength="1" inputmode="numeric" aria-label="Digit 1">
+        <input maxlength="1" inputmode="numeric" aria-label="Digit 2">
+        <input maxlength="1" inputmode="numeric" aria-label="Digit 3">
+        <input maxlength="1" inputmode="numeric" aria-label="Digit 4">
+        <input maxlength="1" inputmode="numeric" aria-label="Digit 5">
+        <input maxlength="1" inputmode="numeric" aria-label="Digit 6">
+      </div>
+      <input type="hidden" name="totp" id="totp" required pattern="\d{6}">
+
+      <button type="submit" class="btn-primary" id="verify-btn" disabled>
+        Verify and sign in
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>
+      </button>
+    </section>
   </form>
 </div>
+
+<script src="/app/static/login.js"></script>
 {% endblock %}
