@@ -1439,7 +1439,6 @@ a.sidebar-link { cursor: pointer; }
 #tab-bearer:checked ~ .inner-tabs [for=tab-bearer],
 #p-claude:checked     ~ .inner-tabs [for=p-claude],
 #p-chatgpt:checked    ~ .inner-tabs [for=p-chatgpt],
-#p-perplexity:checked ~ .inner-tabs [for=p-perplexity],
 #p-gemini:checked     ~ .inner-tabs [for=p-gemini],
 #p-mistral:checked    ~ .inner-tabs [for=p-mistral],
 #p-opencode:checked   ~ .inner-tabs [for=p-opencode],
@@ -1454,7 +1453,6 @@ a.sidebar-link { cursor: pointer; }
 /* Replace old platform-tab selector set */
 #p-claude:checked ~ .tab-panel[data-panel=claude],
 #p-chatgpt:checked ~ .tab-panel[data-panel=chatgpt],
-#p-perplexity:checked ~ .tab-panel[data-panel=perplexity],
 #p-gemini:checked ~ .tab-panel[data-panel=gemini],
 #p-mistral:checked ~ .tab-panel[data-panel=mistral],
 #p-opencode:checked ~ .tab-panel[data-panel=opencode],
@@ -1498,9 +1496,11 @@ a.sidebar-link { cursor: pointer; }
 
 /* ChatGPT variants */
 #gv-web:checked ~ .sub-panel[data-sub=chatgpt-web],
-#gv-mobile:checked ~ .sub-panel[data-sub=chatgpt-mobile] { display: block; }
+#gv-mobile:checked ~ .sub-panel[data-sub=chatgpt-mobile],
+#gv-codex:checked ~ .sub-panel[data-sub=chatgpt-codex] { display: block; }
 #gv-web:checked ~ .sub-tabs [for=gv-web],
-#gv-mobile:checked ~ .sub-tabs [for=gv-mobile] {
+#gv-mobile:checked ~ .sub-tabs [for=gv-mobile],
+#gv-codex:checked ~ .sub-tabs [for=gv-codex] {
   background: var(--bg);
   color: var(--fg);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);

@@ -5,8 +5,9 @@ auth paths the dashboard helps you drive:
 
 - **OAuth 2.1 (pre-registered client)** — Claude only. See the main
   [README](../README.md#connecting-clients) for that flow.
-- **OAuth + Dynamic Client Registration** — ChatGPT, Perplexity, OpenCode.
-  Requires `server.allow_dynamic_registration: true` in `beaconmcp.yaml`.
+- **OAuth + Dynamic Client Registration** — ChatGPT (Web / Mobile / Codex),
+  Gemini CLI, OpenCode, Cursor, VS Code. Requires
+  `server.allow_dynamic_registration: true` in `beaconmcp.yaml`.
 - **Static bearer token** — Gemini (Web/CLI/Antigravity), Mistral, VS Code,
   Cursor, any HTTP-only MCP client.
 
@@ -81,26 +82,33 @@ phone; the derived client has no TOTP seed of its own.
 
 ---
 
-## Perplexity (OAuth + DCR)
+## Perplexity (not supported)
 
-Perplexity's custom connector auto-discovers the auth method from the MCP
-server's `.well-known` metadata. With
-`server.allow_dynamic_registration: true`, point it at a slug URL and
-Perplexity completes DCR + the OAuth consent flow automatically.
+> ⚠ Perplexity is deprecating MCP. In March 2026, Perplexity's CTO
+> announced that the company is moving to direct REST APIs and a
+> "Code Mode" execution model, citing OAuth / DCR friction and
+> context-window waste from MCP tool schemas. No setup instructions
+> here — there is no working integration to document.
 
-Requires Perplexity **Pro**, **Max**, or **Enterprise** — custom connectors
-aren't on the free tier.
+## ChatGPT Codex (OAuth + DCR, terminal/IDE)
 
-1. Mint a connector URL from `https://<your-host>/app/connectors` (single-use, 15 min TTL).
-2. In Perplexity: **Settings → Connectors → Add custom**. Tick *"I understand custom connectors can introduce risks"*.
-3. Fill in:
-   - **Name:** BeaconMCP
-   - **Description:** (optional)
-   - **MCP Server URL:** paste the `/mcp/c/<slug>` URL.
-4. Perplexity auto-detects OAuth, runs DCR against the slug-gated `/oauth/register/c/<slug>`, then redirects you to BeaconMCP's authorization page. Type your TOTP from your phone.
-5. Bearer lifetime: 24 h. Perplexity refreshes via the authorization code flow on its own — you re-type the TOTP each rotation.
+Codex is OpenAI's terminal/IDE MCP client. It speaks full OAuth 2.1 and
+catches the redirect on an ephemeral local port.
 
-Revoke from `https://<your-host>/app/connectors` like any other DCR-derived client.
+1. Add BeaconMCP to Codex's `config.toml`:
+   ```toml
+   [mcp_servers.beaconmcp]
+   url = "https://<your-host>/mcp/c/<slug>"
+   ```
+2. Run `codex mcp login beaconmcp`. Codex binds a loopback listener and
+   opens your browser on BeaconMCP's authorization page.
+3. Type your TOTP. Codex caches the token locally and refreshes on its
+   own.
+
+**Remote dev environments** (Codespaces, SSH container): set
+`mcp_oauth_callback_url` in `config.toml` to your ingress URL so the
+redirect hits the right host instead of localhost. A matching port can
+be pinned via `mcp_oauth_callback_port`.
 
 ---
 
@@ -131,10 +139,26 @@ URLs are single-use and expire in 15 min — mint a fresh one per install.
 
 ## Gemini
 
-### Gemini CLI
+### Gemini CLI (OAuth + DCR, recommended)
 
-Gemini CLI sends a static `Authorization` header with every call. Create a
-token from `/app/tokens`, then:
+Gemini CLI speaks full OAuth 2.1 with Dynamic Client Registration — drop
+a remote URL in `settings.json`, run `/mcp auth <name>`, and the CLI
+opens a browser to BeaconMCP's authorization page (TOTP prompt).
+
+```json
+// ~/.gemini/settings.json
+{
+  "mcpServers": {
+    "beaconmcp": {
+      "httpUrl": "https://<your-host>/mcp/c/<slug>"
+    }
+  }
+}
+```
+
+Then: `/mcp auth beaconmcp`. Mint the slug from `/app/connectors`.
+
+Bearer header is also supported if you prefer it:
 
 ```bash
 gemini mcp add beaconmcp \
@@ -142,14 +166,12 @@ gemini mcp add beaconmcp \
   --header "Authorization: Bearer <token>"
 ```
 
-Replace the token via the dashboard flow when it expires — do not bake TOTP
-generation into a shell alias or wrapper script.
+### Gemini Web / Mobile / macOS native app (not supported yet)
 
-### Gemini Web
-
-In Gemini's custom-MCP panel (*Tools → Extensions → Custom MCP*), paste
-`https://<your-host>/mcp` and set the Authorization header to
-`Bearer <token>`.
+Gemini's consumer web UI (gemini.google.com), the iOS / Android apps, and
+the new macOS native app do **not** expose a custom-MCP connector today.
+The only Gemini surfaces that can reach BeaconMCP are **Gemini CLI** and
+**Antigravity**.
 
 ### Gemini API (google-genai SDK)
 
@@ -270,13 +292,35 @@ server is its own `[[mcp_servers]]` array entry.
 
 ---
 
-## VS Code
+## VS Code (OAuth + DCR)
 
-VS Code's built-in MCP client picks up servers from workspace or user
-settings:
+VS Code routes MCP authentication through its native Authentication
+Provider system — the same flow used for your GitHub / Microsoft Entra
+logins. It reads `WWW-Authenticate`, shows a toast to Allow, catches
+the redirect on the `vscode://` (or `vscode-insiders://`) OS URI scheme,
+and stores the resulting token in your OS keychain.
+
+**Recommended — OAuth + DCR:**
 
 ```json
 // .vscode/mcp.json  (or settings.json → "mcp.servers")
+{
+  "servers": {
+    "beaconmcp": {
+      "type": "http",
+      "url": "https://<your-host>/mcp/c/<slug>"
+    }
+  }
+}
+```
+
+Mint the slug from `/app/connectors`. VS Code prompts you to sign in the
+first time the server is used; revoke anytime from the Accounts menu
+(profile icon, bottom left).
+
+**Alternative — Bearer:**
+
+```json
 {
   "servers": {
     "beaconmcp": {
@@ -290,16 +334,35 @@ settings:
 }
 ```
 
-Verify with *Command Palette → MCP: List Servers*. If you rely on GitHub
-Copilot's MCP integration, field names may differ — check the extension's
-readme.
+Verify with *Command Palette → MCP: List Servers*.
 
 ---
 
-## Cursor
+## Cursor (OAuth + DCR)
 
-Cursor reads MCP servers from `.cursor/mcp.json` (per-project) or
-`~/.cursor/mcp.json` (global):
+Cursor is a first-class OAuth 2.1 client since v1.0. Drop a remote URL
+in `mcp.json`, Cursor surfaces a blue *Connect* button in
+*Settings → Tools & MCP* when it detects the 401, pops a browser for
+consent (PKCE + DCR are automatic), and catches the redirect via the
+`cursor://` OS scheme (or a loopback fallback).
+
+**Recommended — OAuth + DCR:**
+
+```json
+// ~/.cursor/mcp.json (global) or .cursor/mcp.json (per project)
+{
+  "mcpServers": {
+    "beaconmcp": {
+      "url": "https://<your-host>/mcp/c/<slug>"
+    }
+  }
+}
+```
+
+Mint the slug from `/app/connectors`. Click *Connect* in Cursor's
+settings when it surfaces the "Needs authentication" state.
+
+**Alternative — Bearer:**
 
 ```json
 {
@@ -307,15 +370,15 @@ Cursor reads MCP servers from `.cursor/mcp.json` (per-project) or
     "beaconmcp": {
       "url": "https://<your-host>/mcp",
       "headers": {
-        "Authorization": "Bearer <token>"
+        "Authorization": "Bearer ${env:BEACONMCP_TOKEN}"
       }
     }
   }
 }
 ```
 
-Reload the Cursor window after editing; the server shows up under
-*Settings → Cursor Settings → MCP Servers* with a live status indicator.
+Cursor expands `${env:VAR}` natively so the bearer can live in your
+shell environment rather than in the repo.
 
 ---
 

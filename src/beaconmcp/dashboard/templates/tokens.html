@@ -127,8 +127,11 @@
             </div>
             <div class="card-logos">
               <span class="logo-pill">ChatGPT</span>
-              <span class="logo-pill">Perplexity</span>
+              <span class="logo-pill">Codex</span>
+              <span class="logo-pill">Gemini CLI</span>
               <span class="logo-pill">OpenCode</span>
+              <span class="logo-pill">Cursor</span>
+              <span class="logo-pill">VS Code</span>
             </div>
           </header>
           <p>
@@ -252,7 +255,6 @@
     <div class="view view-by-platform" role="tabpanel">
       <input type="radio" name="platform-tab" id="p-claude" checked>
       {% if dcr_enabled %}<input type="radio" name="platform-tab" id="p-chatgpt">{% endif %}
-      <input type="radio" name="platform-tab" id="p-perplexity">
       <input type="radio" name="platform-tab" id="p-gemini">
       <input type="radio" name="platform-tab" id="p-mistral">
       <input type="radio" name="platform-tab" id="p-opencode">
@@ -262,7 +264,6 @@
       <nav class="inner-tabs" role="tablist">
         <label for="p-claude" class="inner-tab">Claude</label>
         {% if dcr_enabled %}<label for="p-chatgpt" class="inner-tab">ChatGPT</label>{% endif %}
-        <label for="p-perplexity" class="inner-tab">Perplexity</label>
         <label for="p-gemini" class="inner-tab">Gemini</label>
         <label for="p-mistral" class="inner-tab">Mistral</label>
         <label for="p-opencode" class="inner-tab">OpenCode</label>
@@ -349,9 +350,11 @@
 
           <input type="radio" name="chatgpt-variant" id="gv-web" checked>
           <input type="radio" name="chatgpt-variant" id="gv-mobile">
+          <input type="radio" name="chatgpt-variant" id="gv-codex">
           <nav class="sub-tabs" style="margin-top:1rem">
             <label for="gv-web" class="sub-tab">Web / Desktop</label>
             <label for="gv-mobile" class="sub-tab">iOS / Android</label>
+            <label for="gv-codex" class="sub-tab">Codex CLI</label>
           </nav>
           <div class="sub-panel" data-sub="chatgpt-web">
             <ol class="steps">
@@ -367,82 +370,74 @@
               <li>Mint a fresh slug per device if you want independent revocation.</li>
             </ol>
           </div>
+          <div class="sub-panel" data-sub="chatgpt-codex">
+            <p>
+              Codex is OpenAI's terminal/IDE MCP client. It speaks full
+              OAuth 2.1 and catches the redirect on an ephemeral local
+              port — your TOTP prompt opens in your default browser.
+            </p>
+            <ol class="steps">
+              <li>
+                Add BeaconMCP to your Codex <code>config.toml</code>:
+<pre><code>[mcp_servers.beaconmcp]
+url = "https://&lt;your-host&gt;/mcp/c/&lt;slug&gt;"</code></pre>
+              </li>
+              <li>Run <code>codex mcp login beaconmcp</code>. Codex spins up a loopback listener, opens your browser on BeaconMCP's authorization page.</li>
+              <li>Type your TOTP. Token cached locally; Codex refreshes on its own.</li>
+            </ol>
+            <p class="muted small">
+              If Codex runs in a remote devbox (Codespaces, SSH container),
+              set <code>mcp_oauth_callback_url</code> in config.toml to your
+              ingress URL so the redirect hits the right host.
+            </p>
+          </div>
         </article>
       </div>
       {% endif %}
 
-      {# ---- Perplexity ---- #}
-      <div class="tab-panel" data-panel="perplexity">
-        <article class="card">
-          <header class="card-head">
-            <div class="card-title">
-              <h2>Perplexity</h2>
-              <span class="method-tag method-tag-dcr">OAuth + DCR</span>
-            </div>
-          </header>
-          <p>
-            Perplexity's custom connector auto-discovers the auth method
-            from the MCP server's <code>.well-known</code> metadata. Paste
-            a slug URL and Perplexity handles DCR, then runs you through
-            the OAuth consent flow (where you type your TOTP).
-          </p>
-          {% if dcr_enabled %}
-          <ol class="steps">
-            <li>Mint a connector URL from <a href="/app/connectors">OAuth connectors</a> (single-use, 15 min).</li>
-            <li>In Perplexity: <em>Settings → Connectors → Add custom</em>. Tick "I understand custom connectors can introduce risks".</li>
-            <li>Fill in:
-              <ul>
-                <li><strong>Name:</strong> BeaconMCP</li>
-                <li><strong>Description:</strong> (optional)</li>
-                <li><strong>MCP Server URL:</strong> paste the <code>/mcp/c/&lt;slug&gt;</code> URL</li>
-              </ul>
-            </li>
-            <li>Perplexity detects OAuth, runs DCR, then redirects you to BeaconMCP's authorization page. Type your TOTP.</li>
-          </ol>
-          <p class="muted small">
-            Requires Perplexity Pro, Max, or Enterprise — custom connectors aren't on the free tier.
-          </p>
-          <a href="/app/connectors" class="btn-primary-link">
-            Mint a connector URL
-            <svg width="14" height="14" aria-hidden="true"><use href="#i-chev-r"/></svg>
-          </a>
-          {% else %}
-          <p class="muted">
-            Enable <code>server.allow_dynamic_registration: true</code> in
-            <code>beaconmcp.yaml</code> and restart the server to use Perplexity.
-          </p>
-          {% endif %}
-        </article>
-      </div>
-
-      {# ---- Gemini (sub-tabs: Web, CLI, Antigravity) ---- #}
+      {# ---- Gemini (sub-tabs: CLI, Antigravity, Web) ---- #}
       <div class="tab-panel" data-panel="gemini">
         <article class="card">
           <header class="card-head">
             <div class="card-title">
               <h2>Gemini</h2>
-              <span class="method-tag method-tag-bearer">Bearer</span>
             </div>
           </header>
-          <p class="muted">Every Gemini surface takes a static bearer header. One token covers all three.</p>
           <input type="radio" name="gemini-variant" id="gem-cli" checked>
-          <input type="radio" name="gemini-variant" id="gem-web">
           <input type="radio" name="gemini-variant" id="gem-antigravity">
+          <input type="radio" name="gemini-variant" id="gem-web">
           <nav class="sub-tabs">
             <label for="gem-cli" class="sub-tab">CLI</label>
-            <label for="gem-web" class="sub-tab">Web</label>
             <label for="gem-antigravity" class="sub-tab">Antigravity</label>
+            <label for="gem-web" class="sub-tab">Web / Mobile</label>
           </nav>
           <div class="sub-panel" data-sub="gem-cli">
+            <p><span class="method-tag method-tag-dcr">OAuth + DCR</span> <span class="method-tag method-tag-bearer">Bearer</span></p>
+            <p>
+              Gemini CLI speaks full OAuth 2.1 with DCR — drop a remote
+              URL in <code>settings.json</code> and run
+              <code>/mcp auth beaconmcp</code> to trigger the browser
+              flow (TOTP prompt in your default browser).
+            </p>
+            {% if dcr_enabled %}
+            <p><strong>Recommended — OAuth + DCR:</strong></p>
+<pre><code>// ~/.gemini/settings.json
+{
+  "mcpServers": {
+    "beaconmcp": {
+      "httpUrl": "https://&lt;your-host&gt;/mcp/c/&lt;slug&gt;"
+    }
+  }
+}</code></pre>
+            <p>Then in the CLI: <code>/mcp auth beaconmcp</code>. Mint the slug from <a href="/app/connectors">OAuth connectors</a>.</p>
+            <p><strong>Alternative — Bearer:</strong></p>
+            {% endif %}
 <pre><code>gemini mcp add beaconmcp \
   --url {{ mcp_url }} \
   --header "Authorization: Bearer &lt;token&gt;"</code></pre>
-            <p class="muted small">Mint the bearer from the bearer tab above, or the By method view.</p>
-          </div>
-          <div class="sub-panel" data-sub="gem-web">
-            <p>gemini.google.com → <em>Tools → Extensions → Custom MCP</em>. Paste <code>{{ mcp_url }}</code> and set the Authorization header to <code>Bearer &lt;token&gt;</code>.</p>
           </div>
           <div class="sub-panel" data-sub="gem-antigravity">
+            <p><span class="method-tag method-tag-bearer">Bearer</span></p>
             <p>Edit <code>~/.gemini/antigravity/mcp_config.json</code> (macOS / Linux) or <code>%USERPROFILE%\.gemini\antigravity\mcp_config.json</code> (Windows):</p>
 <pre><code>{
   "mcpServers": {
@@ -459,6 +454,13 @@
               the top-level key is <code>mcpServers</code>. Reload the IDE
               after editing. If the native HTTP transport misbehaves, fall
               back to <code>npx mcp-remote</code> with <code>--header</code>.
+            </p>
+          </div>
+          <div class="sub-panel" data-sub="gem-web">
+            <p class="muted">
+              Gemini Web (gemini.google.com), the mobile apps, and the macOS
+              native app do <strong>not</strong> expose a custom-MCP connector
+              yet. Only Gemini CLI and Antigravity can reach BeaconMCP today.
             </p>
           </div>
         </article>
@@ -565,12 +567,33 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
           <header class="card-head">
             <div class="card-title">
               <h2>VS Code</h2>
+              <span class="method-tag method-tag-dcr">OAuth + DCR</span>
               <span class="method-tag method-tag-bearer">Bearer</span>
             </div>
           </header>
-          <p>VS Code's built-in MCP client reads from workspace or user settings.</p>
+          <p>
+            VS Code routes MCP auth through its native Authentication
+            Provider system (same as GitHub / Microsoft Entra). It reads
+            <code>WWW-Authenticate</code>, shows a toast to Allow,
+            catches the redirect on <code>vscode://</code> (or
+            <code>vscode-insiders://</code>), and stores tokens in the OS
+            keychain.
+          </p>
+          {% if dcr_enabled %}
+          <p><strong>Recommended — OAuth + DCR:</strong></p>
 <pre><code>// .vscode/mcp.json (or settings.json → "mcp.servers")
 {
+  "servers": {
+    "beaconmcp": {
+      "type": "http",
+      "url": "https://&lt;your-host&gt;/mcp/c/&lt;slug&gt;"
+    }
+  }
+}</code></pre>
+          <p>Mint the slug from <a href="/app/connectors">OAuth connectors</a>. VS Code prompts you on first use.</p>
+          <p><strong>Alternative — Bearer:</strong></p>
+          {% endif %}
+<pre><code>{
   "servers": {
     "beaconmcp": {
       "type": "http",
@@ -582,9 +605,9 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
   }
 }</code></pre>
           <p class="muted small">
-            Open the Command Palette → <em>MCP: List Servers</em> to verify
-            the connection. If you're using GitHub Copilot's MCP integration,
-            the field names may differ — check the extension's readme.
+            Command Palette → <em>MCP: List Servers</em> to verify. Revoke
+            access anytime from the Accounts menu (profile icon, bottom
+            left) — MCP sessions live next to your other trusted logins.
           </p>
         </article>
       </div>
@@ -595,25 +618,46 @@ headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
           <header class="card-head">
             <div class="card-title">
               <h2>Cursor</h2>
+              <span class="method-tag method-tag-dcr">OAuth + DCR</span>
               <span class="method-tag method-tag-bearer">Bearer</span>
             </div>
           </header>
-          <p>Add BeaconMCP to Cursor's MCP config:</p>
+          <p>
+            Cursor is a first-class OAuth 2.1 client since v1.0. Drop a
+            remote URL in <code>mcp.json</code>, Cursor surfaces a blue
+            <em>Connect</em> button in <em>Settings → Tools &amp; MCP</em>,
+            and catches the redirect via the <code>cursor://</code>
+            scheme (or a local loopback fallback). PKCE + DCR are
+            automatic.
+          </p>
+          {% if dcr_enabled %}
+          <p><strong>Recommended — OAuth + DCR:</strong></p>
 <pre><code>// ~/.cursor/mcp.json (global) or .cursor/mcp.json (per project)
 {
   "mcpServers": {
     "beaconmcp": {
+      "url": "https://&lt;your-host&gt;/mcp/c/&lt;slug&gt;"
+    }
+  }
+}</code></pre>
+          <p>Mint the slug from <a href="/app/connectors">OAuth connectors</a>. Click <em>Connect</em> in Cursor settings when it surfaces the "Needs authentication" state.</p>
+          <p><strong>Alternative — Bearer:</strong></p>
+          {% endif %}
+<pre><code>{
+  "mcpServers": {
+    "beaconmcp": {
       "url": "{{ mcp_url }}",
       "headers": {
-        "Authorization": "Bearer &lt;token&gt;"
+        "Authorization": "Bearer ${env:BEACONMCP_TOKEN}"
       }
     }
   }
 }</code></pre>
           <p class="muted small">
-            Reload the Cursor window after editing; the server appears under
-            <em>Settings → Cursor Settings → MCP Servers</em> with a live
-            status indicator.
+            Reload the Cursor window after editing; the server shows up
+            under <em>Settings → Cursor Settings → MCP Servers</em>.
+            Cursor supports <code>${env:VAR}</code> expansion so you can
+            keep secrets out of the repo.
           </p>
         </article>
       </div>
