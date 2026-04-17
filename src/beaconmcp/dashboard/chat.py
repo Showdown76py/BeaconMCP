@@ -465,7 +465,7 @@ class GeminiChatEngine:
         ) as (read_stream, write_stream, _get_session_id):
             async with ClientSession(read_stream, write_stream) as session:
                     try:
-                        await session.initialize()
+                        init_result = await session.initialize()
                     except Exception as e:  # noqa: BLE001
                         yield ErrorEvent(
                             code="mcp_init_failed",
@@ -476,6 +476,14 @@ class GeminiChatEngine:
                             ),
                         )
                         return
+
+                    # The MCP server ships a dynamic ``instructions`` string
+                    # describing which capabilities are currently active
+                    # (Proxmox N nodes / SSH N hosts / BMC N devices). Pass
+                    # it through as Gemini's system_instruction so the model
+                    # grounds its answers on what the server actually exposes
+                    # instead of hallucinating from tool-name shapes.
+                    server_instructions = (init_result.instructions or "").strip() or None
 
                     try:
                         tools_result = await session.list_tools()
@@ -492,8 +500,9 @@ class GeminiChatEngine:
                             code="mcp_no_tools",
                             message=(
                                 "The MCP server exposes no tools. Check that "
-                                "the bearer is valid and that the Proxmox "
-                                "modules are loaded."
+                                "the bearer is valid and that at least one "
+                                "capability (proxmox.nodes, ssh.hosts, or "
+                                "bmc.devices) is configured in beaconmcp.yaml."
                             ),
                         )
                         return
@@ -504,6 +513,7 @@ class GeminiChatEngine:
                     tools_cfg = [types.Tool(function_declarations=function_decls)]
 
                     config = types.GenerateContentConfig(
+                        system_instruction=server_instructions,
                         thinking_config=thinking,
                         tools=tools_cfg,
                         automatic_function_calling=(
