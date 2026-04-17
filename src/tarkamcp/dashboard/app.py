@@ -182,6 +182,24 @@ def _load_session(request: Request, deps: DashboardDeps) -> Session | None:
     return session
 
 
+def _bearer_live(deps: DashboardDeps, session: Session) -> bool:
+    """Timestamp says the bearer is valid AND TokenStore still knows it.
+
+    The TokenStore is in-memory; a systemctl restart wipes every token
+    while the SQLite-backed session keeps them. Without the second
+    check, redirects like /app/refresh -> /app/chat -> stream ->
+    session_expired -> /app/refresh loop forever because each step
+    trusts ``session.bearer_valid()`` in isolation.
+    """
+    if not session.bearer_valid():
+        return False
+    validator = getattr(deps.token_store, "validate", None)
+    if callable(validator) and session.mcp_bearer:
+        if validator(session.mcp_bearer) is None:
+            return False
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Route factories
 # ---------------------------------------------------------------------------
@@ -191,7 +209,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
 
     async def index(request: Request) -> Response:
         session = _load_session(request, deps)
-        if session and session.bearer_valid():
+        if session and _bearer_live(deps, session):
             return RedirectResponse("/app/chat", status_code=302)
         if session:
             return RedirectResponse("/app/refresh", status_code=302)
@@ -200,7 +218,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
     async def login_get(request: Request) -> Response:
         # If a valid session already exists, send straight to chat.
         session = _load_session(request, deps)
-        if session and session.bearer_valid():
+        if session and _bearer_live(deps, session):
             return RedirectResponse("/app/chat", status_code=302)
         if session:
             # Session valid but bearer stale -> refresh page is the right one.
@@ -286,7 +304,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         session = _load_session(request, deps)
         if not session:
             return RedirectResponse("/app/login", status_code=302)
-        if session.bearer_valid():
+        if _bearer_live(deps, session):
             return RedirectResponse("/app/chat", status_code=302)
 
         client_name = (
@@ -391,7 +409,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         session = _load_session(request, deps)
         if not session:
             return RedirectResponse("/app/login", status_code=302)
-        if not session.bearer_valid():
+        if not _bearer_live(deps, session):
             return RedirectResponse("/app/refresh", status_code=302)
         return _render(
             "chat.html",
@@ -516,21 +534,9 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             )
 
         async def stream():
-            if not session.bearer_valid():
+            if not _bearer_live(deps, session):
                 yield _sse("session_expired", {})
                 return
-
-            # Also check the bearer against the live TokenStore: the
-            # store is in-memory, so a `systemctl restart tarkamcp` wipes
-            # every token even though the SQLite-backed session still
-            # has it. Without this check we'd pass a stale bearer to
-            # /mcp, get a deterministic 401, and propagate a confusing
-            # HTTPStatusError. Trigger the same refresh flow instead.
-            validator = getattr(deps.token_store, "validate", None)
-            if callable(validator) and session.mcp_bearer:
-                if validator(session.mcp_bearer) is None:
-                    yield _sse("session_expired", {})
-                    return
 
             # History = everything prior to this turn. The engine appends
             # the user message itself via TurnInput.user_text.
@@ -658,7 +664,7 @@ def _require_active_session(
     session = _load_session(request, deps)
     if not session:
         return _json({"error": "unauthorized"}, status=401)
-    if not session.bearer_valid():
+    if not _bearer_live(deps, session):
         return _json({"error": "bearer_expired"}, status=401)
     return session
 

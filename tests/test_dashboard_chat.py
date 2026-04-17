@@ -305,14 +305,41 @@ def test_chat_stream_tool_call(app_and_client, engine, deps):
     assert tc.duration_ms == 42
 
 
-def test_chat_stream_detects_token_wiped_after_restart(tmp_path, engine):
-    """After a service restart TokenStore is empty but the session's
-    bearer is still there; we must emit session_expired before reaching
-    the MCP server with a stale token.
+def test_refresh_page_shows_totp_when_token_wiped(tmp_path, engine):
+    """After a restart, /app/refresh must render the TOTP form instead
+    of redirecting back to /app/chat and creating a redirect loop.
     """
-    class InvalidatingTokenStore(FakeTokenStore):
-        # Mimic TokenStore behaviour after restart: every token is
-        # unknown, so validate() always returns None.
+    class WipedTokenStore(FakeTokenStore):
+        def validate(self, token):
+            return None  # TokenStore wiped by restart
+
+    db = Database(tmp_path / "dashboard.db")
+    deps = DashboardDeps(
+        database=db,
+        session_store=SessionStore(db, key=os.urandom(32)),
+        client_store=FakeClientStore(),
+        token_store=WipedTokenStore(),
+        totp_locked=lambda cid: False,
+        totp_record_failure=lambda cid: None,
+        totp_record_success=lambda cid: None,
+        conversations=ConversationStore(db),
+        engine=engine,
+    )
+    app = Starlette(routes=build_dashboard_routes(deps))
+    client = TestClient(app, follow_redirects=False)
+
+    _login(client)
+    r = client.get("/app/refresh")
+    # Must render the TOTP form, NOT 302 back to /app/chat.
+    assert r.status_code == 200
+    assert "totp" in r.text.lower()
+
+
+def test_chat_page_redirects_to_refresh_when_token_wiped(tmp_path, engine):
+    """/app/chat must send the user to /app/refresh when the bearer
+    is wiped, to break the refresh<->chat redirect loop.
+    """
+    class WipedTokenStore(FakeTokenStore):
         def validate(self, token):
             return None
 
@@ -321,7 +348,45 @@ def test_chat_stream_detects_token_wiped_after_restart(tmp_path, engine):
         database=db,
         session_store=SessionStore(db, key=os.urandom(32)),
         client_store=FakeClientStore(),
-        token_store=InvalidatingTokenStore(),
+        token_store=WipedTokenStore(),
+        totp_locked=lambda cid: False,
+        totp_record_failure=lambda cid: None,
+        totp_record_success=lambda cid: None,
+        conversations=ConversationStore(db),
+        engine=engine,
+    )
+    app = Starlette(routes=build_dashboard_routes(deps))
+    client = TestClient(app, follow_redirects=False)
+
+    _login(client)
+    r = client.get("/app/chat")
+    assert r.status_code == 302
+    assert r.headers["location"] == "/app/refresh"
+
+
+def test_chat_stream_detects_token_wiped_after_restart(tmp_path, engine):
+    """After a service restart TokenStore is empty but the session's
+    bearer is still there; we must emit session_expired before reaching
+    the MCP server with a stale token.
+
+    We simulate the "restart mid-session" flow: login + create
+    conversation succeed while the token is live, then we flip the
+    store into its post-restart state and try to stream.
+    """
+    class SwitchableTokenStore(FakeTokenStore):
+        wiped = False
+        def validate(self, token):
+            if self.wiped:
+                return None
+            return super().validate(token)
+
+    db = Database(tmp_path / "dashboard.db")
+    token_store = SwitchableTokenStore()
+    deps = DashboardDeps(
+        database=db,
+        session_store=SessionStore(db, key=os.urandom(32)),
+        client_store=FakeClientStore(),
+        token_store=token_store,
         totp_locked=lambda cid: False,
         totp_record_failure=lambda cid: None,
         totp_record_success=lambda cid: None,
@@ -336,6 +401,10 @@ def test_chat_stream_detects_token_wiped_after_restart(tmp_path, engine):
                     headers={"X-CSRF-Token": csrf, "Content-Type": "application/json"},
                     content="{}")
     cid = r.json()["conversation"]["id"]
+
+    # Simulate `systemctl restart tarkamcp` wiping every issued token.
+    token_store.wiped = True
+
     r = client.post(
         "/app/api/chat/stream",
         headers={"X-CSRF-Token": csrf, "Content-Type": "application/json"},
