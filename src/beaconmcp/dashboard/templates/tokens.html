@@ -27,6 +27,16 @@
         <svg width="14" height="14"><use href="#i-copy"/></svg>
       </button>
     </div>
+    <p class="mcp-endpoint-hero-note">
+      <strong>Heads up — browser clients need their origin allowlisted.</strong>
+      Web UIs (Claude, ChatGPT, Le Chat, Perplexity, Gemini Web) send CORS
+      preflights before they can reach <code>/mcp</code>. Add their origin
+      to <code>server.allowed_origins</code> in <code>beaconmcp.yaml</code>
+      — e.g. <code>https://claude.ai</code>, <code>https://chatgpt.com</code>,
+      <code>https://chat.mistral.ai</code>, <code>https://www.perplexity.ai</code>,
+      <code>https://gemini.google.com</code>. Desktop / CLI clients don't
+      need this.
+    </p>
   </section>
 
   <div class="views">
@@ -97,8 +107,9 @@
             </div>
             <div class="card-logos">
               <span class="logo-pill">ChatGPT</span>
-              <span class="logo-pill">OpenCode</span>
+              <span class="logo-pill">Mistral</span>
               <span class="logo-pill">Perplexity</span>
+              <span class="logo-pill">OpenCode</span>
             </div>
           </header>
           <p>
@@ -440,6 +451,7 @@
           <header class="card-head">
             <div class="card-title">
               <h2>Mistral</h2>
+              <span class="method-tag method-tag-dcr">OAuth + DCR</span>
               <span class="method-tag method-tag-bearer">Bearer</span>
             </div>
           </header>
@@ -450,12 +462,21 @@
             <label for="mi-vibe" class="sub-tab">Vibe</label>
           </nav>
           <div class="sub-panel" data-sub="mi-lechat">
-            <p>In Le Chat: <em>Settings → Connectors → Add custom MCP server</em>.</p>
+            <p>In Le Chat: <em>Intelligence → Connecteurs → Ajouter un connecteur → Connecteur MCP personnalisé</em>. Le Chat auto-detects the auth method from the server's <code>.well-known</code> metadata.</p>
+            {% if dcr_enabled %}
+            <p><strong>Recommended — OAuth 2.1 (with DCR):</strong></p>
+            <ol class="steps">
+              <li>Mint a connector URL from <a href="/app/connectors">OAuth connectors</a>.</li>
+              <li>Paste the <code>/mcp/c/&lt;slug&gt;</code> URL as the connection server.</li>
+              <li>Le Chat detects OAuth, runs DCR, and redirects you to BeaconMCP's authorization page — type your TOTP.</li>
+            </ol>
+            <p><strong>Alternative — Bearer:</strong></p>
+            {% endif %}
             <ul>
               <li>URL: <code>{{ mcp_url }}</code></li>
-              <li>Authentication: <em>Bearer token</em> → paste <code>&lt;token&gt;</code></li>
+              <li>Authentication: <em>Bearer token</em> → paste a token minted from the bearer tab.</li>
             </ul>
-            <p class="muted small">Custom connectors are on Le Chat Pro / Enterprise plans; on the free tier the panel may be hidden.</p>
+            <p class="muted small">Custom connectors are on Le Chat Pro / Enterprise plans; on the free tier the panel may be hidden. <strong>Add <code>https://chat.mistral.ai</code> to <code>server.allowed_origins</code> in <code>beaconmcp.yaml</code></strong> so the browser's CORS preflight succeeds.</p>
           </div>
           <div class="sub-panel" data-sub="mi-vibe">
             <p>Mistral Vibe reads MCP servers from <code>./.vibe/config.toml</code> (per-project) or <code>~/.vibe/config.toml</code> (global). The config is <strong>TOML</strong>, not JSON.</p>

@@ -148,6 +148,8 @@ Claude performs the full OAuth 2.1 flow against BeaconMCP, so there is no long-l
 
 On first use (and after each 24-hour token expiry) Claude redirects to the BeaconMCP authorization page. Read the current 6-digit code from your authenticator app and type it in. Claude never holds the TOTP seed, and a leaked session cannot mint a new token without a fresh code from your phone.
 
+**Important — CORS allowlist.** Every browser-based MCP client (Claude Web, ChatGPT, Le Chat, Perplexity, Gemini Web) sends a CORS preflight before it can reach `/mcp`. Add each client's origin to `server.allowed_origins` in `beaconmcp.yaml` (see [`beaconmcp.yaml.example`](beaconmcp.yaml.example)). Desktop and CLI clients don't need this.
+
 ### Other clients
 
 Full setup for **ChatGPT**, **Perplexity**, **Gemini** (CLI / Web / Antigravity / API), **Mistral** (Le Chat + Vibe), **OpenCode**, **VS Code**, and **Cursor** lives in [docs/clients.md](docs/clients.md). The dashboard's `/app/tokens` page shows the same snippets interactively.

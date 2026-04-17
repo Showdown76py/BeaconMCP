@@ -1270,6 +1270,20 @@ a.sidebar-link { cursor: pointer; }
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
 }
+.mcp-endpoint-hero-note {
+  margin: 0.85rem 0 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+.mcp-endpoint-hero-note strong { color: var(--fg); }
+.mcp-endpoint-hero-note code {
+  font-size: 0.82rem;
+  padding: 0.05rem 0.3rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
 
 /* Outer view switch (Method / Platform) */
 .views { margin-top: 1.5rem; position: relative; }

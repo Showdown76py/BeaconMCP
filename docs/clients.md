@@ -18,6 +18,26 @@ auth paths the dashboard helps you drive:
 > code off your phone. Unattended-service automation is covered separately
 > in [totp-automation.md](totp-automation.md).
 
+> **CORS allowlist — required for every web client.**
+> Browser-based MCP clients (Claude Web, ChatGPT Web, Le Chat, Perplexity,
+> Gemini Web) fire a CORS preflight before they can reach `/mcp`. If the
+> request origin is missing from `server.allowed_origins` in
+> `beaconmcp.yaml`, every call fails silently with a browser console
+> error. Add each web client's origin explicitly:
+>
+> ```yaml
+> server:
+>   allowed_origins:
+>     - https://claude.ai
+>     - https://chatgpt.com
+>     - https://chat.mistral.ai
+>     - https://www.perplexity.ai
+>     - https://gemini.google.com
+> ```
+>
+> Desktop / CLI clients (Claude Desktop, Gemini CLI, Cursor, VS Code,
+> Mistral Vibe, OpenCode) are not browser-based and don't need an entry.
+
 The dashboard's [`/app/tokens`](../src/beaconmcp/dashboard/templates/tokens.html)
 page presents the same information with copy-pasteable snippets per platform
 — this document is the offline reference.
@@ -209,10 +229,22 @@ proxy with command-based config:
 
 ### Le Chat
 
-*Settings → Connectors → Add custom MCP server*. Le Chat auto-detects the
-auth method supported by the server; pick Bearer, paste your
-dashboard-issued token, and set the URL to `https://<your-host>/mcp`.
-Custom connectors are on Le Chat Pro / Enterprise plans.
+*Intelligence → Connecteurs → Ajouter un connecteur → Connecteur MCP
+personnalisé*. Le Chat **auto-detects** the auth method from the server's
+`.well-known` metadata. Two supported paths:
+
+- **OAuth 2.1 (recommended)** — enable `allow_dynamic_registration: true`
+  on the server and paste a slug URL minted from `/app/connectors`
+  (`https://<your-host>/mcp/c/<slug>`). Le Chat runs DCR + the OAuth
+  consent flow; you type your TOTP on the authorization page.
+- **Bearer** — paste `https://<your-host>/mcp` and a token from
+  `/app/tokens`.
+
+Custom connectors are on Le Chat Pro / Enterprise. The free tier may hide
+the panel entirely.
+
+**CORS:** add `https://chat.mistral.ai` to `server.allowed_origins`
+(see the allowlist note at the top of this file).
 
 ### Mistral Vibe
 

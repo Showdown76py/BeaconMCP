@@ -20,10 +20,16 @@ server:
     - "127.0.0.1:*"
     - "localhost:*"
     - "[::1]:*"
-  # CORS origin allowlist.
+  # CORS origin allowlist. Browser-based MCP clients send a CORS preflight
+  # before calling /mcp; their origin MUST be listed here. Desktop / CLI
+  # clients (Claude Desktop, Gemini CLI, Cursor, VS Code, Mistral Vibe,
+  # OpenCode, …) are NOT browser-based and don't need an entry.
   allowed_origins:
     - https://claude.ai
+    - https://chatgpt.com
     - https://chat.openai.com
+    - https://chat.mistral.ai
+    - https://www.perplexity.ai
     - https://gemini.google.com
   clients_file: /opt/beaconmcp/clients.json
   session_key: ${BEACONMCP_SESSION_KEY}   # optional, generated if omitted
