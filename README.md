@@ -227,31 +227,55 @@ For programmatic Gemini API usage, the BeaconMCP server is passed as a remote MC
 
 4. When the bearer expires, re-issue it through the dashboard. Long-running services should rotate tokens on a schedule (an operator typing the TOTP) rather than embedding the seed.
 
-### Mistral
+### Google Antigravity
 
-Mistral's clients (Le Chat web/mobile, Mistral Vibe) use a static bearer header, same as Gemini.
-
-**Le Chat** — *Settings → Connectors → Add custom MCP server* (Pro / Enterprise plans):
-- URL: `https://<your-host>/mcp`
-- Auth: Bearer token → paste your dashboard-issued token.
-
-**Mistral Vibe** — add BeaconMCP to the Vibe config file:
+Antigravity reads MCP servers from `~/.gemini/antigravity/mcp_config.json` (macOS / Linux) or `%USERPROFILE%\.gemini\antigravity\mcp_config.json` (Windows). The top-level key is `mcpServers` and the HTTP URL field is **`serverUrl`** (not `url`):
 
 ```json
-// ~/.mistral/vibe/config.json
 {
-  "mcp": {
-    "servers": {
-      "beaconmcp": {
-        "url": "https://<your-host>/mcp",
-        "headers": { "Authorization": "Bearer <token>" }
+  "mcpServers": {
+    "beaconmcp": {
+      "serverUrl": "https://<your-host>/mcp",
+      "headers": {
+        "Authorization": "Bearer <token>"
       }
     }
   }
 }
 ```
 
-Cross-check against the Vibe docs — the schema has been iterating.
+If the native HTTP transport misbehaves, fall back to the `mcp-remote` proxy:
+
+```json
+{
+  "mcpServers": {
+    "beaconmcp": {
+      "command": "npx",
+      "args": [
+        "-y", "mcp-remote",
+        "https://<your-host>/mcp",
+        "--header", "Authorization: Bearer <token>"
+      ]
+    }
+  }
+}
+```
+
+### Mistral
+
+**Le Chat** — *Settings → Connectors → Add custom MCP server*. Le Chat auto-detects the auth method supported by the server; pick Bearer, paste your dashboard-issued token, and set the URL to `https://<your-host>/mcp`. Custom connectors are on Le Chat Pro / Enterprise plans.
+
+**Mistral Vibe** — Vibe reads its config from `./.vibe/config.toml` (per-project) or `~/.vibe/config.toml` (global). **TOML format**, not JSON:
+
+```toml
+[[mcp_servers]]
+name = "beaconmcp"
+transport = "http"
+url = "https://<your-host>/mcp"
+headers = { "Authorization" = "Bearer <token>" }
+```
+
+`transport` accepts `"http"`, `"streamable-http"`, or `"stdio"`. Each server is its own `[[mcp_servers]]` array entry.
 
 ### OpenCode
 
@@ -263,6 +287,7 @@ OpenCode reads MCP servers from `opencode.json` (or `~/.config/opencode/opencode
     "beaconmcp": {
       "type": "remote",
       "url": "https://<your-host>/mcp",
+      "enabled": true,
       "headers": {
         "Authorization": "Bearer <token>"
       }
@@ -271,7 +296,7 @@ OpenCode reads MCP servers from `opencode.json` (or `~/.config/opencode/opencode
 }
 ```
 
-Use `"type": "remote"` for a hosted BeaconMCP; the `local` type is for stdio-based servers.
+OpenCode also natively supports OAuth with Dynamic Client Registration. If you enable `allow_dynamic_registration` on the server, you can point OpenCode at a slug URL (`https://<your-host>/mcp/c/<slug>` minted from `/app/connectors`) with `"oauth": true` and skip the bearer entirely. Tokens are stashed in `~/.local/share/opencode/mcp-auth.json`.
 
 ### VS Code
 

@@ -366,16 +366,23 @@
             <p>gemini.google.com → <em>Tools → Extensions → Custom MCP</em>. Paste <code>{{ mcp_url }}</code> and set the Authorization header to <code>Bearer &lt;token&gt;</code>.</p>
           </div>
           <div class="sub-panel" data-sub="gem-antigravity">
-            <p>Add BeaconMCP to your Antigravity MCP config:</p>
-<pre><code>// .antigravity/mcp.json
-{
-  "servers": {
+            <p>Edit <code>~/.gemini/antigravity/mcp_config.json</code> (macOS / Linux) or <code>%USERPROFILE%\.gemini\antigravity\mcp_config.json</code> (Windows):</p>
+<pre><code>{
+  "mcpServers": {
     "beaconmcp": {
-      "url": "{{ mcp_url }}",
-      "authorization": "Bearer &lt;token&gt;"
+      "serverUrl": "{{ mcp_url }}",
+      "headers": {
+        "Authorization": "Bearer &lt;token&gt;"
+      }
     }
   }
 }</code></pre>
+            <p class="muted small">
+              Antigravity uses <code>serverUrl</code> (not <code>url</code>) and
+              the top-level key is <code>mcpServers</code>. Reload the IDE
+              after editing. If the native HTTP transport misbehaves, fall
+              back to <code>npx mcp-remote</code> with <code>--header</code>.
+            </p>
           </div>
         </article>
       </div>
@@ -404,19 +411,17 @@
             <p class="muted small">Custom connectors are on Le Chat Pro / Enterprise plans; on the free tier the panel may be hidden.</p>
           </div>
           <div class="sub-panel" data-sub="mi-vibe">
-            <p>Mistral Vibe reads MCP servers from its config file.</p>
-<pre><code>// ~/.mistral/vibe/config.json
-{
-  "mcp": {
-    "servers": {
-      "beaconmcp": {
-        "url": "{{ mcp_url }}",
-        "headers": { "Authorization": "Bearer &lt;token&gt;" }
-      }
-    }
-  }
-}</code></pre>
-            <p class="muted small">Cross-check with the Vibe docs — the schema has been iterating.</p>
+            <p>Mistral Vibe reads MCP servers from <code>./.vibe/config.toml</code> (per-project) or <code>~/.vibe/config.toml</code> (global). The config is <strong>TOML</strong>, not JSON.</p>
+<pre><code>[[mcp_servers]]
+name = "beaconmcp"
+transport = "http"
+url = "{{ mcp_url }}"
+headers = { "Authorization" = "Bearer &lt;token&gt;" }</code></pre>
+            <p class="muted small">
+              <code>transport</code> accepts <code>"http"</code>,
+              <code>"streamable-http"</code>, or <code>"stdio"</code>. Each
+              server is its own <code>[[mcp_servers]]</code> array entry.
+            </p>
           </div>
         </article>
       </div>
@@ -427,22 +432,45 @@
           <header class="card-head">
             <div class="card-title">
               <h2>OpenCode</h2>
-              <span class="method-tag method-tag-bearer">Bearer</span>
+              <span class="method-tag method-tag-bearer">Bearer or OAuth DCR</span>
             </div>
           </header>
-          <p>Add the server to your OpenCode config (<code>opencode.json</code> or <code>~/.config/opencode/opencode.json</code>):</p>
+          <p>Add the server to <code>opencode.json</code> (or <code>~/.config/opencode/opencode.json</code>):</p>
 <pre><code>{
   "mcp": {
     "beaconmcp": {
       "type": "remote",
       "url": "{{ mcp_url }}",
+      "enabled": true,
       "headers": {
         "Authorization": "Bearer &lt;token&gt;"
       }
     }
   }
 }</code></pre>
-          <p class="muted small">OpenCode supports <code>"type": "local"</code> too; use <code>remote</code> for a hosted BeaconMCP over HTTPS.</p>
+          {% if dcr_enabled %}
+          <p>
+            <strong>OAuth alternative:</strong> OpenCode implements full
+            OAuth with Dynamic Client Registration. You can skip the bearer
+            by pointing it at a slug URL instead — it will auto-register
+            and prompt for your TOTP on first use.
+          </p>
+<pre><code>{
+  "mcp": {
+    "beaconmcp": {
+      "type": "remote",
+      "url": "https://&lt;your-host&gt;/mcp/c/&lt;slug&gt;",
+      "enabled": true,
+      "oauth": true
+    }
+  }
+}</code></pre>
+          <p class="muted small">
+            Mint the slug from <a href="/app/connectors">the ChatGPT
+            connectors page</a> — same flow, different client. Tokens land
+            in <code>~/.local/share/opencode/mcp-auth.json</code>.
+          </p>
+          {% endif %}
         </article>
       </div>
 
