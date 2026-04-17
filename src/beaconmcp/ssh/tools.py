@@ -56,9 +56,16 @@ def register_ssh_tools(mcp: FastMCP, ssh_client: SSHClient) -> None:
         - **Poll existing**: pass ``exec_id`` only. Returns the current
           status/output for that session.
 
-        ``host`` accepts a node name (``pve1``), a VMID template match
-        (``101`` -> ``192.168.1.101`` if ``vmid_to_ip`` is configured), or a
-        direct IP/hostname declared under ``ssh.hosts[]``.
+        ``host`` must resolve to a declared ``ssh.hosts[]`` entry. Accepts:
+        an entry ``name``; a numeric VMID when ``ssh.vmid_to_ip`` is set
+        (e.g. ``"110"`` -> ``"192.168.1.110"``); or a declared ``host``
+        address. If ``ssh.inherit_proxmox_nodes: true``, every Proxmox node
+        is auto-declared as an SSH host under its own name, so reaching the
+        hypervisor reuses the same identifier as ``proxmox_run(node=…)``.
+
+        To run **inside a VM or LXC** managed by Proxmox, prefer
+        ``proxmox_run`` (QEMU Guest Agent / ``pct exec``) — no SSH is needed
+        and it works even when the guest has no inbound network reachability.
         """
         if exec_id:
             session = SSHClient.get_session(exec_id)

@@ -143,10 +143,32 @@ class SSHClient:
             return by_addr
 
         declared = ", ".join(h.name for h in self._config.ssh.hosts) or "<none>"
+        hint = ""
+        # When the identifier matches a Proxmox node that wasn't declared as
+        # an SSH host, point the caller at the two common fixes instead of
+        # just reporting "not declared". This is the single most common
+        # foot-gun — pre-2.0 code let you SSH into a Proxmox node by name
+        # implicitly.
+        if any(n.name == identifier for n in self._config.pve_nodes):
+            hint = (
+                f" Note: {identifier!r} is a Proxmox node. To reach it via "
+                "SSH, either add it under ssh.hosts[] explicitly, or set "
+                "'ssh.inherit_proxmox_nodes: true' with 'ssh.defaults:' so "
+                "every node is auto-declared. If you meant to run something "
+                "*inside* a VM/LXC on that node, use proxmox_run(node=..., "
+                "vmid=..., command=...) instead — it goes through QEMU Guest "
+                "Agent / pct exec and doesn't need SSH."
+            )
+        elif identifier.isdigit():
+            hint = (
+                f" Note: {identifier!r} looks like a VMID. To run a command "
+                "inside that guest, prefer proxmox_run(node=..., "
+                f"vmid={identifier}, command=...)."
+            )
         raise SSHHostResolutionError(
             f"Host {identifier!r} is not declared in ssh.hosts[]. Add an "
             "entry (name, host, user, password or key_file) to enable SSH "
-            f"to this target. Declared hosts: {declared}."
+            f"to this target. Declared hosts: {declared}.{hint}"
         )
 
     def resolve_host(self, identifier: str) -> str:

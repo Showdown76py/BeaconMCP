@@ -64,6 +64,23 @@ class SSHHost:
 
 
 @dataclass
+class SSHDefaults:
+    """Default credentials applied by ``ssh.inherit_proxmox_nodes``.
+
+    When :attr:`SSHConfig.inherit_proxmox_nodes` is true, each declared
+    Proxmox node that isn't already covered by an explicit ``ssh.hosts[]``
+    entry gets one synthesized from the node's address + these defaults.
+    Exactly one of ``password`` or ``key_file`` is required — same rule as
+    an explicit host entry.
+    """
+
+    user: str
+    port: int = 22
+    password: str | None = None
+    key_file: str | None = None
+
+
+@dataclass
 class SSHConfig:
     hosts: list[SSHHost] = field(default_factory=list)
     # Template for resolving bare numeric IDs (VMIDs) to IP addresses,
@@ -71,6 +88,14 @@ class SSHConfig:
     # The resolved IP must match the ``host`` field of one of ``hosts``;
     # otherwise the SSH client returns an actionable error.
     vmid_to_ip: str | None = None
+    # Default SSH credentials, consumed when ``inherit_proxmox_nodes`` is on.
+    defaults: SSHDefaults | None = None
+    # When true, synthesize an ``ssh.hosts[]`` entry for every declared
+    # Proxmox node that isn't already covered by an explicit ``hosts[]``
+    # entry. Synthesized entries inherit address from ``proxmox.nodes[].host``
+    # and credentials from ``ssh.defaults``. Restores the pre-2.0 ergonomic
+    # where a single credential block covered every Proxmox node.
+    inherit_proxmox_nodes: bool = False
 
 
 @dataclass
@@ -303,22 +328,64 @@ class Config:
             # Reject the legacy single-credential shape explicitly so existing
             # deployments get a clear migration pointer instead of a confusing
             # "missing field" error.
-            if "hosts" not in ssh_raw and ("user" in ssh_raw or "password" in ssh_raw):
+            if (
+                "hosts" not in ssh_raw
+                and "defaults" not in ssh_raw
+                and ("user" in ssh_raw or "password" in ssh_raw)
+            ):
                 raise ConfigError(
                     "ssh: legacy shape with top-level 'user'/'password' is no "
-                    "longer supported. Migrate to 'ssh.hosts:' — see "
-                    "beaconmcp.yaml.example. Each host now carries its own "
-                    "credentials (password or key_file)."
+                    "longer supported. Migrate to 'ssh.hosts:' + optional "
+                    "'ssh.defaults:' + 'ssh.inherit_proxmox_nodes:' — see "
+                    "beaconmcp.yaml.example."
                 )
-            hosts_raw = ssh_raw.get("hosts") or []
-            if not isinstance(hosts_raw, list) or not hosts_raw:
+
+            # Optional default credentials, consumed when inheritance is on.
+            defaults: SSHDefaults | None = None
+            defaults_raw = ssh_raw.get("defaults")
+            if defaults_raw:
+                if not isinstance(defaults_raw, dict):
+                    raise ConfigError("ssh.defaults: must be a mapping.")
+                d_password = defaults_raw.get("password") or None
+                d_key_file = defaults_raw.get("key_file") or None
+                if bool(d_password) == bool(d_key_file):
+                    raise ConfigError(
+                        "ssh.defaults: provide exactly one of 'password' or "
+                        "'key_file' (got "
+                        + ("both" if d_password and d_key_file else "neither")
+                        + ")."
+                    )
+                defaults = SSHDefaults(
+                    user=_required(defaults_raw, "user", "ssh.defaults"),
+                    port=int(defaults_raw.get("port", 22)),
+                    password=d_password,
+                    key_file=d_key_file,
+                )
+
+            inherit_flag = _bool(ssh_raw.get("inherit_proxmox_nodes", False))
+            if inherit_flag and defaults is None:
                 raise ConfigError(
-                    "ssh.hosts: at least one host entry is required when the "
-                    "'ssh:' section is present. Remove the section entirely "
-                    "to disable SSH."
+                    "ssh.inherit_proxmox_nodes: requires 'ssh.defaults:' with "
+                    "user + password/key_file — the synthesized entries need "
+                    "credentials to authenticate."
                 )
+
+            hosts_raw = ssh_raw.get("hosts") or []
+            if not isinstance(hosts_raw, list):
+                raise ConfigError("ssh.hosts: must be a list of mappings.")
+            # An 'ssh:' section with neither 'hosts' nor 'inherit_proxmox_nodes'
+            # would load into an empty SSH config -- equivalent to no SSH at
+            # all. Be explicit so the user notices the mis-config early.
+            if not hosts_raw and not inherit_flag:
+                raise ConfigError(
+                    "ssh: either declare at least one 'ssh.hosts[]' entry or "
+                    "set 'ssh.inherit_proxmox_nodes: true' (with 'ssh.defaults'). "
+                    "Remove the 'ssh:' section entirely to disable SSH."
+                )
+
             ssh_hosts: list[SSHHost] = []
             seen_names: set[str] = set()
+            seen_addresses: set[str] = set()
             for h in hosts_raw:
                 if not isinstance(h, dict):
                     raise ConfigError(
@@ -339,19 +406,46 @@ class Config:
                         + ("both" if password and key_file else "neither")
                         + ")."
                     )
+                host_addr = _required(h, "host", f"ssh.hosts[{host_name}]")
+                seen_addresses.add(host_addr)
                 ssh_hosts.append(
                     SSHHost(
                         name=host_name,
-                        host=_required(h, "host", f"ssh.hosts[{host_name}]"),
+                        host=host_addr,
                         user=_required(h, "user", f"ssh.hosts[{host_name}]"),
                         port=int(h.get("port", 22)),
                         password=password,
                         key_file=key_file,
                     )
                 )
+
+            # Synthesize ssh.hosts[] entries for Proxmox nodes that aren't
+            # already covered by an explicit declaration. Skip a node when it
+            # already matches an explicit entry by name OR by address, so an
+            # operator who wants different creds for a specific node just
+            # declares it explicitly and the inheritance leaves it alone.
+            if inherit_flag and defaults is not None:
+                for node in pve_nodes:
+                    if node.name in seen_names or node.host in seen_addresses:
+                        continue
+                    ssh_hosts.append(
+                        SSHHost(
+                            name=node.name,
+                            host=node.host,
+                            user=defaults.user,
+                            port=defaults.port,
+                            password=defaults.password,
+                            key_file=defaults.key_file,
+                        )
+                    )
+                    seen_names.add(node.name)
+                    seen_addresses.add(node.host)
+
             ssh = SSHConfig(
                 hosts=ssh_hosts,
                 vmid_to_ip=ssh_raw.get("vmid_to_ip"),
+                defaults=defaults,
+                inherit_proxmox_nodes=inherit_flag,
             )
 
         srv_raw = raw.get("server") or {}
@@ -396,21 +490,11 @@ class Config:
                 "in beaconmcp.yaml."
             )
 
-        # Refuse to start if an SSH host name collides with a Proxmox node
-        # name. The two share the ``host`` argument of ssh_* tools, so a
-        # shared name would be ambiguous. Forcing distinct names means one
-        # declarative source of truth per SSH target.
-        if ssh and ssh.hosts:
-            pve_names = {n.name for n in pve_nodes}
-            for h in ssh.hosts:
-                if h.name in pve_names:
-                    raise ConfigError(
-                        f"host name {h.name!r} is declared both in "
-                        "ssh.hosts and proxmox.nodes — choose distinct "
-                        "names. To SSH into a Proxmox host, add it to "
-                        "ssh.hosts with a different name (e.g. "
-                        f"'{h.name}-ssh')."
-                    )
+        # SSH host names and Proxmox node names are allowed to match: the
+        # two live in separate tool namespaces (``ssh_*`` vs ``proxmox_*``)
+        # so there is no routing ambiguity. Letting them match removes the
+        # need for synthetic suffixes like ``pve1-ssh`` and lets
+        # ``ssh.inherit_proxmox_nodes`` auto-declare hosts cleanly.
 
         # BMC jump_host now references ssh.hosts[].name (was proxmox.nodes[].name
         # in pre-2.0 shape). Validate the reference exists so the user gets a

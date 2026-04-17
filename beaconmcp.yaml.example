@@ -68,18 +68,35 @@ proxmox:
 
 # -------- SSH capability (optional) ----------------------------------------
 # Delete this section if you have no SSH targets. Each `hosts[]` entry is one
-# addressable target declared with its own credentials (password OR key_file,
-# exactly one). No shared/global SSH creds — every target is explicit.
+# addressable target with its own credentials (password OR key_file, exactly
+# one). An `ssh.hosts[]` entry may share a name with a `proxmox.nodes[]`
+# entry — the two live in separate tool namespaces (`ssh_*` vs `proxmox_*`)
+# so there is no routing ambiguity.
 #
-# Host names must be distinct from `proxmox.nodes[].name` (collision is
-# rejected at load time). To SSH into a Proxmox host, add it here under a
-# different name (e.g. `pve1-ssh`).
+# Typical homelab shortcut: set `inherit_proxmox_nodes: true` + `defaults:`
+# and every Proxmox node becomes SSH-reachable under its own name with the
+# default creds. Explicit `hosts[]` entries still win when they match a node
+# by name or address, so you can override per-node.
 ssh:
   # Optional helper: a numeric identifier passed to ssh_* tools (e.g. a
   # Proxmox VMID) is fed into this template, and the resulting IP is matched
   # against `hosts[].host` to pick the right credentials. Leave unset to
   # disable the shortcut.
   vmid_to_ip: "192.168.1.{id}"
+
+  # Default credentials used when `inherit_proxmox_nodes: true` synthesizes
+  # one ssh.hosts[] entry per Proxmox node. Provide exactly one of
+  # `password` or `key_file`.
+  defaults:
+    user: root
+    key_file: ~/.ssh/beaconmcp
+    # password: ${SSH_ROOT_PW}
+
+  # When true, each Proxmox node from `proxmox.nodes[]` that isn't already
+  # covered by an explicit `hosts[]` entry (matched by name OR address) is
+  # auto-declared as an SSH target using `defaults`. So `ssh_run(host="pve1")`
+  # just works without repeating credentials per node.
+  inherit_proxmox_nodes: true
 
   hosts:
     - name: vps1
@@ -93,13 +110,12 @@ ssh:
       user: admin
       password: ${VPS2_PW}
 
-    # If you want to SSH into your Proxmox host (e.g. for `pct exec` on an
-    # LXC container), declare it here with a DIFFERENT name than the Proxmox
-    # node name. BMC tunneling also resolves `jump_host` against these names.
-    - name: pve1-ssh
-      host: localhost
-      user: root
-      key_file: ~/.ssh/beaconmcp
+    # Example override: if pve2 needs a different key than `defaults`, declare
+    # it explicitly — inheritance sees the name match and skips synthesizing.
+    # - name: pve2
+    #   host: pve2.example.com
+    #   user: root
+    #   key_file: ~/.ssh/pve2_only
 
 # -------- BMC capability (optional) ----------------------------------------
 # Delete this section if you have no HP iLO / IPMI / iDRAC / Supermicro
@@ -114,7 +130,7 @@ bmc:
       # Optional: tunnel the iLO connection through an ssh.hosts[] entry
       # (useful when the BMC lives on a private management VLAN only
       # reachable from a bastion). References `ssh.hosts[].name`.
-      jump_host: pve1-ssh
+      jump_host: pve1
 
     - id: rack2-bmc
       type: ipmi

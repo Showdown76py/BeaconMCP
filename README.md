@@ -183,7 +183,9 @@ Common keys:
 | `server.allowed_hosts` | DNS-rebinding allowlist — **must** include the public FQDN behind your reverse proxy. |
 | `server.allowed_origins` | CORS allowlist for browser-based MCP clients. |
 | `proxmox.nodes[]` | One entry per Proxmox node. Needs an API token per node. For the host BeaconMCP itself runs on, use `host: localhost` — both the API (`:8006`) and SSH (`:22`) are reachable locally without going through any reverse proxy or tunnel. Remote nodes in the cluster use their FQDN (append `:443` if a reverse proxy terminates the API). |
-| `ssh.vmid_to_ip` | Optional template (e.g. `"192.168.1.{id}"`) used by `ssh_exec_command` when the `host` argument is a bare VMID. Omit to disable numeric-ID shortcuts. |
+| `ssh.hosts[]` | One entry per SSH target (VPS, Proxmox node, jump box, …). Each entry carries its own `user` + exactly one of `password` / `key_file`. Names may match `proxmox.nodes[].name`. |
+| `ssh.defaults` + `ssh.inherit_proxmox_nodes` | Homelab shortcut. Set `defaults:` (user + password/key_file) and flip `inherit_proxmox_nodes: true` — every Proxmox node becomes SSH-reachable under its own name with those defaults, no duplication. Explicit `ssh.hosts[]` entries still win when they match a node by name or address. |
+| `ssh.vmid_to_ip` | Optional template (e.g. `"192.168.1.{id}"`) used by `ssh_run` when the `host` argument is a bare VMID. The resolved IP must match an `ssh.hosts[].host` to authenticate. Omit to disable numeric-ID shortcuts. |
 | `bmc.devices[]` | Zero or more BMCs. `type` is one of `hp_ilo`, `ipmi`, `idrac` (stub), `supermicro` (stub). `jump_host` is optional — set it to the name of a `proxmox.nodes[]` entry to route the connection over an SSH tunnel. |
 | `features.dashboard.limits` | Per-5h and per-week USD caps for the Gemini chat. Set to `0` to disable a window. |
 
