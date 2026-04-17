@@ -589,7 +589,7 @@ class GeminiChatEngine:
                         )
 
                         model_parts: list = []
-                        fc_invocations: list = []  # (fc_part, fc_id, args)
+                        fc_invocations: list = []  # (fc_part, fc, fc_id, args)
                         last_usage: Any = None
                         async for chunk in stream:
                             um = getattr(chunk, "usage_metadata", None)
@@ -622,7 +622,7 @@ class GeminiChatEngine:
                                         or f"fc_{len(seen_tool_ids)}"
                                     )
                                     args = dict(getattr(fc, "args", None) or {})
-                                    fc_invocations.append((fc, fc_id, args))
+                                    fc_invocations.append((part, fc, fc_id, args))
 
                                 # Server-side built-in tool invocation
                                 # (e.g. Google Search). These are emitted by
@@ -713,14 +713,14 @@ class GeminiChatEngine:
                                 len(fc_invocations),
                                 len(selected_fc),
                             )
-                        model_parts.extend(fc for fc, _fc_id, _args in selected_fc)
+                        model_parts.extend(fc_part for fc_part, _fc, _fc_id, _args in selected_fc)
 
                         current_contents.append(
                             types.Content(role="model", parts=model_parts)
                         )
 
                         response_parts: list = []
-                        for fc, fc_id, args in selected_fc:
+                        for _fc_part, fc, fc_id, args in selected_fc:
                             name = getattr(fc, "name", "")
                             seen_tool_ids.add(fc_id)
                             tool_starts[fc_id] = time.monotonic()
