@@ -56,6 +56,8 @@ Clients (Claude, ChatGPT, Gemini)
 
 BeaconMCP runs on any host that can reach the Proxmox API of every declared node and the BMC management network. It speaks MCP over Streamable HTTP and is typically placed behind a reverse proxy with DNS-rebinding protection configured via `server.allowed_hosts` in the YAML.
 
+**Recommended deployment:** run BeaconMCP **directly on one of your Proxmox nodes** (the primary one, conventionally `pve1`). That node becomes addressable as `host: localhost` in the YAML — both the Proxmox API (`:8006`) and SSH (`:22`) are reachable without a reverse proxy or tunnel, which also lets the `bmc_*` SSH-jump tunnel feature (HP iLO on a private management VLAN) work without extra configuration. Remote nodes in the cluster keep using their public FQDN.
+
 ---
 
 ## Requirements
@@ -71,6 +73,8 @@ BeaconMCP runs on any host that can reach the Proxmox API of every declared node
 ## Installation
 
 ### 1. Install
+
+SSH to the Proxmox node that will host BeaconMCP (we recommend your primary node — pve1 in typical setups), then:
 
 ```bash
 git clone https://github.com/Showdown76py/BeaconMCP.git /opt/beaconmcp
@@ -222,7 +226,7 @@ Common keys:
 |---------|-------|
 | `server.allowed_hosts` | DNS-rebinding allowlist — **must** include the public FQDN behind your reverse proxy. |
 | `server.allowed_origins` | CORS allowlist for browser-based MCP clients. |
-| `proxmox.nodes[]` | One entry per Proxmox node. Needs an API token per node. For the node BeaconMCP itself runs on, use `host: localhost` — both the API (`:8006`) and SSH (`:22`) are reachable locally without going through the reverse proxy or tunnel. Remote nodes can use `host: <fqdn>:443` if you have a reverse proxy in front of their API. |
+| `proxmox.nodes[]` | One entry per Proxmox node. Needs an API token per node. For the host BeaconMCP itself runs on, use `host: localhost` — both the API (`:8006`) and SSH (`:22`) are reachable locally without going through any reverse proxy or tunnel. Remote nodes in the cluster use their FQDN (append `:443` if a reverse proxy terminates the API). |
 | `ssh.vmid_to_ip` | Optional template (e.g. `"192.168.1.{id}"`) used by `ssh_exec_command` when the `host` argument is a bare VMID. Omit to disable numeric-ID shortcuts. |
 | `bmc.devices[]` | Zero or more BMCs. `type` is one of `hp_ilo`, `ipmi`, `idrac` (stub), `supermicro` (stub). `jump_host` is optional — set it to the name of a `proxmox.nodes[]` entry to route the connection over an SSH tunnel. |
 | `features.dashboard.limits` | Per-5h and per-week USD caps for the Gemini chat. Set to `0` to disable a window. |
