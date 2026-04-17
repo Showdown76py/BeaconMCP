@@ -553,8 +553,17 @@ function toolIconName(name) {
   if (cat === "ssh") return "terminal";
   return "bolt";
 }
-function toolNeedsConfirm(name) {
-  return /^(ssh_exec_command|proxmox_exec_command)/.test(name || "");
+function toolNeedsConfirm(name, args) {
+  // Unified run tools (ssh_run / proxmox_run) plus legacy *_exec_command*
+  // names kept for backwards compatibility with older servers. Pure poll
+  // calls (exec_id set, no command) are read-only and must not require a
+  // confirmation click.
+  const match = /^(ssh_run|proxmox_run|ssh_exec_command|proxmox_exec_command)(_|$)/.test(name || "");
+  if (!match) return false;
+  if ((name === "ssh_run" || name === "proxmox_run") && args && typeof args === "object") {
+    if (args.exec_id && !args.command) return false;
+  }
+  return true;
 }
 
 function renderMessages() {
@@ -592,15 +601,15 @@ function renderMessage(m) {
   }
 
   const toolCardMap = new Map();
+  const body = h("div", { class: "msg-body" });
+  body._raw = m.content || "";
+  body.innerHTML = renderMarkdown(body._raw);
+  row.append(body);
   for (const tc of m.tool_calls || []) {
     const card = renderToolCard(tc, m.id);
     toolCardMap.set(tc.id, card);
     row.append(card);
   }
-
-  const body = h("div", { class: "msg-body" });
-  body.innerHTML = renderMarkdown(m.content || "");
-  row.append(body);
 
   if (!m.streaming) {
     row.append(h("div", { class: "msg-actions" }, [
@@ -618,6 +627,29 @@ function renderMessage(m) {
   row._body = body;
   row._toolCardMap = toolCardMap;
   return row;
+}
+
+function insertStreamNode(row, node) {
+  const tail = row.querySelector(".typing") || row.querySelector(".msg-actions");
+  if (tail) row.insertBefore(node, tail);
+  else row.append(node);
+}
+
+function ensureStreamingBody(layout) {
+  let body = layout.bodyRef.current;
+  if (body) return body;
+  body = h("div", { class: "msg-body" });
+  body._raw = "";
+  insertStreamNode(layout.row, body);
+  layout.bodyRef.current = body;
+  return body;
+}
+
+function closeStreamingBody(layout) {
+  const body = layout.bodyRef.current;
+  if (!body) return;
+  if (!(body._raw || "").trim()) body.remove();
+  layout.bodyRef.current = null;
 }
 
 function renderThinking(text, active) {
@@ -651,7 +683,7 @@ function renderToolCard(tc, msgId) {
   }[tc.status] || "";
 
   // Special prominent confirm card for shell commands awaiting approval.
-  if (tc.status === "awaiting_confirm" && toolNeedsConfirm(tc.name)) {
+  if (tc.status === "awaiting_confirm" && toolNeedsConfirm(tc.name, tc.args)) {
     return renderConfirmCard(tc, msgId);
   }
 
@@ -980,7 +1012,7 @@ async function streamTurn(userText, inner) {
   // Live thinking block is injected on the first thinking_delta.
   let thinkingBlock = null;
   const toolCardMap = row._toolCardMap;
-  const body = row._body;
+  const layout = { row, bodyRef: { current: row._body } };
 
   const indicator = h("div", { class: "typing" }, [
     h("div", { class: "typing-dots" }, [h("span"), h("span"), h("span")]),
@@ -1025,7 +1057,16 @@ async function streamTurn(userText, inner) {
         const chunk = buf.slice(0, sepIdx);
         buf = buf.slice(sepIdx + 2);
         const ev = parseSseFrame(chunk);
-        if (ev) handleEvent(ev, assistantMsg, row, body, toolCardMap, { getThinking: () => thinkingBlock, setThinking: (b) => { thinkingBlock = b; } });
+        if (ev) {
+          handleEvent(
+            ev,
+            assistantMsg,
+            row,
+            toolCardMap,
+            { getThinking: () => thinkingBlock, setThinking: (b) => { thinkingBlock = b; } },
+            layout,
+          );
+        }
       }
     }
   } catch (err) {
@@ -1076,11 +1117,13 @@ function parseSseFrame(chunk) {
   }
 }
 
-function handleEvent({ event, data }, assistantMsg, row, body, toolCardMap, thinkingCtx) {
+function handleEvent({ event, data }, assistantMsg, row, toolCardMap, thinkingCtx, layout) {
   switch (event) {
     case "text_delta": {
-      assistantMsg.content += data.text;
-      body.innerHTML = renderMarkdown(assistantMsg.content);
+      const body = ensureStreamingBody(layout);
+      body._raw = (body._raw || "") + (data.text || "");
+      assistantMsg.content += data.text || "";
+      body.innerHTML = renderMarkdown(body._raw);
       scrollToBottom();
       break;
     }
@@ -1099,6 +1142,7 @@ function handleEvent({ event, data }, assistantMsg, row, body, toolCardMap, thin
       break;
     }
     case "tool_call": {
+      closeStreamingBody(layout);
       const tc = {
         id: data.id, name: data.name, args: data.args || {},
         status: "pending", preview: null, duration_ms: null,
@@ -1106,13 +1150,14 @@ function handleEvent({ event, data }, assistantMsg, row, body, toolCardMap, thin
       assistantMsg.tool_calls.push(tc);
       const card = renderToolCard(tc, assistantMsg.id);
       toolCardMap.set(data.id, { tc, card });
-      body.before(card);
+      insertStreamNode(layout.row, card);
       scrollToBottom();
       break;
     }
     case "tool_confirm_required": {
       let entry = toolCardMap.get(data.id);
       if (!entry) {
+        closeStreamingBody(layout);
         const tc = {
           id: data.id, name: data.name, args: data.args || {},
           status: "awaiting_confirm", preview: null, duration_ms: null,
@@ -1120,7 +1165,7 @@ function handleEvent({ event, data }, assistantMsg, row, body, toolCardMap, thin
         assistantMsg.tool_calls.push(tc);
         const card = renderToolCard(tc, assistantMsg.id);
         toolCardMap.set(data.id, { tc, card });
-        body.before(card);
+        insertStreamNode(layout.row, card);
       } else {
         entry.tc.status = "awaiting_confirm";
         const fresh = renderToolCard(entry.tc, assistantMsg.id);
