@@ -683,13 +683,23 @@ def _resolve_env_refs(
         m = _ENV_REF.match(value)
         if m:
             env_name = m.group(1)
+            location = ".".join(_crumbs) or "<root>"
             if env_name not in os.environ:
-                location = ".".join(_crumbs) or "<root>"
                 raise ConfigError(
                     f"{path}: environment variable ${{{env_name}}} referenced "
                     f"at '{location}' is not set."
                 )
-            return os.environ[env_name]
+            resolved = os.environ[env_name]
+            # Reject empty values here rather than letting _required() later
+            # blame the YAML ("missing required field") — the YAML is fine,
+            # the .env placeholder is just unfilled.
+            if resolved == "":
+                raise ConfigError(
+                    f"{path}: environment variable ${{{env_name}}} referenced "
+                    f"at '{location}' is set but empty. Fill in a value in "
+                    f"your .env (or unset the variable to get a clearer error)."
+                )
+            return resolved
     return value
 
 
