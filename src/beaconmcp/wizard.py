@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -71,6 +72,10 @@ class PVENodeDraft:
     host: str = ""
     token_id: str = ""
     token_secret_env: str = ""  # env var name, rendered as ${NAME}
+    # Raw (non-${VAR}) secret read from an existing YAML. Round-trip
+    # preservation for users who inlined their token — we re-emit it
+    # verbatim if token_secret_env is empty.
+    token_secret_literal: str = ""
 
 
 @dataclass
@@ -82,6 +87,7 @@ class SSHDefaultsDraft:
     # user can start typing.
     password_env: str = ""
     key_file: str = ""
+    password_literal: str = ""
 
 
 @dataclass
@@ -92,6 +98,7 @@ class SSHHostDraft:
     port: int = 22
     password_env: str = ""
     key_file: str = ""
+    password_literal: str = ""
 
 
 @dataclass
@@ -111,10 +118,13 @@ class BMCDeviceDraft:
     user: str = ""
     password_env: str = ""
     jump_host: str = ""  # references ssh.hosts[].name
+    password_literal: str = ""
 
 
 @dataclass
 class ServerDraft:
+    host: str = "0.0.0.0"
+    port: int = 8420
     allowed_hosts: list[str] = field(default_factory=lambda: ["127.0.0.1:*", "localhost:*", "[::1]:*"])
     allowed_origins: list[str] = field(
         default_factory=lambda: [
@@ -124,14 +134,28 @@ class ServerDraft:
             "https://gemini.google.com",
         ]
     )
+    session_key_env: str = ""  # env var name
+    allow_dynamic_registration: bool = False
+
+
+@dataclass
+class DashboardDraft:
+    enabled: bool = True
+    gemini_api_key_env: str = ""  # env var name
+    limit_5h_usd: float = 2.0
+    limit_week_usd: float = 10.0
+    public_url: str = ""
+    mcp_mode: str = "local"  # "local" | "remote"
 
 
 @dataclass
 class ConfigDraft:
     server: ServerDraft = field(default_factory=ServerDraft)
     pve_nodes: list[PVENodeDraft] = field(default_factory=list)
+    verify_ssl: bool = False  # proxmox.verify_ssl
     ssh: SSHDraft = field(default_factory=SSHDraft)
     bmc_devices: list[BMCDeviceDraft] = field(default_factory=list)
+    dashboard: DashboardDraft = field(default_factory=DashboardDraft)
 
     def referenced_env_vars(self) -> list[str]:
         """Collect every ``${VAR}`` name the draft references.
@@ -140,6 +164,8 @@ class ConfigDraft:
         one file to fill in after the wizard exits.
         """
         names: list[str] = []
+        if self.server.session_key_env:
+            names.append(self.server.session_key_env)
         for n in self.pve_nodes:
             if n.token_secret_env:
                 names.append(n.token_secret_env)
@@ -152,6 +178,8 @@ class ConfigDraft:
         for d in self.bmc_devices:
             if d.password_env:
                 names.append(d.password_env)
+        if self.dashboard.enabled and self.dashboard.gemini_api_key_env:
+            names.append(self.dashboard.gemini_api_key_env)
         # Dedupe while preserving order
         seen: set[str] = set()
         out: list[str] = []
@@ -188,8 +216,8 @@ def render_yaml(draft: ConfigDraft) -> str:
 
     # Server
     lines.append("server:")
-    lines.append("  host: 0.0.0.0")
-    lines.append("  port: 8420")
+    lines.append(f"  host: {_q(draft.server.host)}")
+    lines.append(f"  port: {draft.server.port}")
     if draft.server.allowed_hosts:
         lines.append("  allowed_hosts:")
         for h in draft.server.allowed_hosts:
@@ -198,18 +226,27 @@ def render_yaml(draft: ConfigDraft) -> str:
         lines.append("  allowed_origins:")
         for o in draft.server.allowed_origins:
             lines.append(f"    - {o}")
+    if draft.server.session_key_env:
+        lines.append(f"  session_key: ${{{draft.server.session_key_env}}}")
+    if draft.server.allow_dynamic_registration:
+        lines.append("  allow_dynamic_registration: true")
     lines.append("")
 
     # Proxmox
     if draft.pve_nodes:
         lines.append("proxmox:")
-        lines.append("  verify_ssl: false")
+        lines.append(f"  verify_ssl: {'true' if draft.verify_ssl else 'false'}")
         lines.append("  nodes:")
         for n in draft.pve_nodes:
             lines.append(f"    - name: {_q(n.name)}")
             lines.append(f"      host: {_q(n.host)}")
             lines.append(f"      token_id: {_q(n.token_id)}")
-            secret = f"${{{n.token_secret_env}}}" if n.token_secret_env else '""'
+            if n.token_secret_env:
+                secret = f"${{{n.token_secret_env}}}"
+            elif n.token_secret_literal:
+                secret = _q(n.token_secret_literal)
+            else:
+                secret = '""'
             lines.append(f"      token_secret: {secret}")
         lines.append("")
 
@@ -232,6 +269,8 @@ def render_yaml(draft: ConfigDraft) -> str:
                 lines.append(f"    key_file: {_q(d.key_file)}")
             elif d.password_env:
                 lines.append(f"    password: ${{{d.password_env}}}")
+            elif d.password_literal:
+                lines.append(f"    password: {_q(d.password_literal)}")
         if draft.ssh.inherit_proxmox_nodes:
             lines.append("  inherit_proxmox_nodes: true")
         if draft.ssh.hosts:
@@ -246,6 +285,8 @@ def render_yaml(draft: ConfigDraft) -> str:
                     lines.append(f"      key_file: {_q(h.key_file)}")
                 elif h.password_env:
                     lines.append(f"      password: ${{{h.password_env}}}")
+                elif h.password_literal:
+                    lines.append(f"      password: {_q(h.password_literal)}")
         lines.append("")
 
     # BMC
@@ -257,10 +298,42 @@ def render_yaml(draft: ConfigDraft) -> str:
             lines.append(f"      type: {b.type}")
             lines.append(f"      host: {_q(b.host)}")
             lines.append(f"      user: {_q(b.user)}")
-            secret = f"${{{b.password_env}}}" if b.password_env else '""'
+            if b.password_env:
+                secret = f"${{{b.password_env}}}"
+            elif b.password_literal:
+                secret = _q(b.password_literal)
+            else:
+                secret = '""'
             lines.append(f"      password: {secret}")
             if b.jump_host:
                 lines.append(f"      jump_host: {_q(b.jump_host)}")
+        lines.append("")
+
+    # Features (dashboard). Only emit when the user has departed from the
+    # defaults — keeps the generated file readable.
+    dash = draft.dashboard
+    non_default = (
+        not dash.enabled
+        or dash.gemini_api_key_env
+        or dash.public_url
+        or dash.mcp_mode != "local"
+        or dash.limit_5h_usd != 2.0
+        or dash.limit_week_usd != 10.0
+    )
+    if non_default:
+        lines.append("features:")
+        lines.append("  dashboard:")
+        lines.append(f"    enabled: {'true' if dash.enabled else 'false'}")
+        if dash.gemini_api_key_env:
+            lines.append(f"    gemini_api_key: ${{{dash.gemini_api_key_env}}}")
+        if dash.public_url:
+            lines.append(f"    public_url: {_q(dash.public_url)}")
+        if dash.mcp_mode and dash.mcp_mode != "local":
+            lines.append(f"    mcp_mode: {_q(dash.mcp_mode)}")
+        if dash.limit_5h_usd != 2.0 or dash.limit_week_usd != 10.0:
+            lines.append("    limits:")
+            lines.append(f"      per_5h_usd: {dash.limit_5h_usd}")
+            lines.append(f"      per_week_usd: {dash.limit_week_usd}")
         lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
@@ -272,15 +345,29 @@ def render_yaml(draft: ConfigDraft) -> str:
 # ---------------------------------------------------------------------------
 
 
-_ENV_REF = re.compile(r"^\$\{([A-Z_][A-Z0-9_]*)\}$")
+# Accept any shell-valid identifier, case-insensitive. Earlier versions
+# of the loader required uppercase and silently dropped secrets that
+# didn't match — a lossy round-trip we're not repeating.
+_ENV_REF = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 
 
-def _env_name(value: Any) -> str:
-    """Return the VAR name from a ``${VAR}`` scalar, or '' if it isn't one."""
+def _split_secret(value: Any) -> tuple[str, str]:
+    """Classify a secret scalar.
+
+    Returns ``(env_name, literal)`` where exactly one side is populated:
+    - ``(NAME, "")`` when ``value`` is ``${NAME}``
+    - ``("", raw)`` when ``value`` is a non-empty string that isn't a ``${VAR}``
+    - ``("", "")`` when ``value`` is empty / missing / non-string
+    """
     if not isinstance(value, str):
-        return ""
-    m = _ENV_REF.match(value.strip())
-    return m.group(1) if m else ""
+        return "", ""
+    s = value.strip()
+    if not s:
+        return "", ""
+    m = _ENV_REF.match(s)
+    if m:
+        return m.group(1), ""
+    return "", s
 
 
 def load_yaml_into_draft(path: Path) -> ConfigDraft:
@@ -297,32 +384,45 @@ def load_yaml_into_draft(path: Path) -> ConfigDraft:
     import yaml  # lazy: keep import cost off the module load path
 
     draft = ConfigDraft()
-    try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
-        return draft
+    # Deliberately not swallowing yaml.YAMLError / OSError here: a
+    # parse failure used to silently return an empty draft, which —
+    # combined with the wizard overwriting on save — wiped users'
+    # configs. run_wizard() now catches and refuses to start.
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, dict):
         return draft
 
     server = raw.get("server") or {}
     if isinstance(server, dict):
+        if server.get("host"):
+            draft.server.host = str(server["host"])
+        if isinstance(server.get("port"), int):
+            draft.server.port = int(server["port"])
         hosts = server.get("allowed_hosts")
         if isinstance(hosts, list):
             draft.server.allowed_hosts = [str(h) for h in hosts if h]
         origins = server.get("allowed_origins")
         if isinstance(origins, list):
             draft.server.allowed_origins = [str(o) for o in origins if o]
+        sk_env, _ = _split_secret(server.get("session_key"))
+        draft.server.session_key_env = sk_env
+        draft.server.allow_dynamic_registration = bool(
+            server.get("allow_dynamic_registration", False)
+        )
 
     proxmox = raw.get("proxmox") or {}
     if isinstance(proxmox, dict):
+        draft.verify_ssl = bool(proxmox.get("verify_ssl", False))
         for node in proxmox.get("nodes") or []:
             if not isinstance(node, dict):
                 continue
+            env_name, literal = _split_secret(node.get("token_secret"))
             draft.pve_nodes.append(PVENodeDraft(
                 name=str(node.get("name") or ""),
                 host=str(node.get("host") or ""),
                 token_id=str(node.get("token_id") or ""),
-                token_secret_env=_env_name(node.get("token_secret")),
+                token_secret_env=env_name,
+                token_secret_literal=literal,
             ))
 
     ssh = raw.get("ssh")
@@ -336,17 +436,21 @@ def load_yaml_into_draft(path: Path) -> ConfigDraft:
             port = defaults.get("port")
             draft.ssh.defaults.port = int(port) if isinstance(port, int) else 22
             draft.ssh.defaults.key_file = str(defaults.get("key_file") or "")
-            draft.ssh.defaults.password_env = _env_name(defaults.get("password"))
+            env_name, literal = _split_secret(defaults.get("password"))
+            draft.ssh.defaults.password_env = env_name
+            draft.ssh.defaults.password_literal = literal
         for host in ssh.get("hosts") or []:
             if not isinstance(host, dict):
                 continue
             port = host.get("port")
+            env_name, literal = _split_secret(host.get("password"))
             draft.ssh.hosts.append(SSHHostDraft(
                 name=str(host.get("name") or ""),
                 host=str(host.get("host") or ""),
                 user=str(host.get("user") or "root"),
                 port=int(port) if isinstance(port, int) else 22,
-                password_env=_env_name(host.get("password")),
+                password_env=env_name,
+                password_literal=literal,
                 key_file=str(host.get("key_file") or ""),
             ))
     else:
@@ -358,14 +462,37 @@ def load_yaml_into_draft(path: Path) -> ConfigDraft:
         for dev in bmc.get("devices") or []:
             if not isinstance(dev, dict):
                 continue
+            env_name, literal = _split_secret(dev.get("password"))
             draft.bmc_devices.append(BMCDeviceDraft(
                 id=str(dev.get("id") or ""),
                 type=str(dev.get("type") or "hp_ilo"),
                 host=str(dev.get("host") or ""),
                 user=str(dev.get("user") or ""),
-                password_env=_env_name(dev.get("password")),
+                password_env=env_name,
+                password_literal=literal,
                 jump_host=str(dev.get("jump_host") or ""),
             ))
+
+    features = raw.get("features") or {}
+    if isinstance(features, dict):
+        dash_raw = features.get("dashboard") or {}
+        if isinstance(dash_raw, dict):
+            draft.dashboard.enabled = bool(dash_raw.get("enabled", True))
+            gk_env, _ = _split_secret(dash_raw.get("gemini_api_key"))
+            draft.dashboard.gemini_api_key_env = gk_env
+            if dash_raw.get("public_url"):
+                draft.dashboard.public_url = str(dash_raw["public_url"])
+            if dash_raw.get("mcp_mode"):
+                draft.dashboard.mcp_mode = str(dash_raw["mcp_mode"]).strip().lower()
+            limits = dash_raw.get("limits") or {}
+            if isinstance(limits, dict):
+                try:
+                    if "per_5h_usd" in limits:
+                        draft.dashboard.limit_5h_usd = float(limits["per_5h_usd"])
+                    if "per_week_usd" in limits:
+                        draft.dashboard.limit_week_usd = float(limits["per_week_usd"])
+                except (TypeError, ValueError):
+                    pass
 
     return draft
 
@@ -379,6 +506,7 @@ SECTIONS = [
     ("ssh", "SSH"),
     ("bmc", "BMC devices"),
     ("server", "Server"),
+    ("dashboard", "Dashboard"),
     ("save", "Save & exit"),
 ]
 
@@ -554,6 +682,9 @@ class _ProxmoxPanel(Static):
             "address will be reused for SSH inheritance.",
             classes="hint",
         )
+        with Horizontal(classes="form-row"):
+            yield Label("verify_ssl:")
+            yield Switch(value=self.draft.verify_ssl, id="pve-verify-ssl")
         yield DataTable(id="pve-table", cursor_type="row", zebra_stripes=True)
         with Horizontal(classes="form-actions"):
             yield Button("Add", id="pve-add", variant="primary")
@@ -564,6 +695,11 @@ class _ProxmoxPanel(Static):
         table = self.query_one("#pve-table", DataTable)
         table.add_columns("name", "host", "token_id", "secret env")
         self._refresh_table()
+
+    def on_switch_changed(self, event: Switch.Changed) -> None:
+        if event.switch.id == "pve-verify-ssl":
+            self.draft.verify_ssl = event.value
+            self.on_change()
 
     def _refresh_table(self) -> None:
         table = self.query_one("#pve-table", DataTable)
@@ -912,21 +1048,63 @@ class _ServerPanel(Static):
     def compose(self) -> ComposeResult:
         yield Static("Server", classes="section-heading")
         yield Static(
-            "DNS-rebinding allowlist + CORS origins. One entry per line.",
+            "Bind address/port, DNS-rebinding allowlist + CORS origins. "
+            "One entry per line for the list fields.",
             classes="hint",
         )
+        srv = self.draft.server
+        with Horizontal(classes="form-row"):
+            yield Label("host:")
+            yield Input(value=srv.host, id="srv-host", placeholder="0.0.0.0")
+        with Horizontal(classes="form-row"):
+            yield Label("port:")
+            yield Input(value=str(srv.port), id="srv-port", placeholder="8420")
         yield Static("allowed_hosts")
         yield TextArea(
-            "\n".join(self.draft.server.allowed_hosts),
+            "\n".join(srv.allowed_hosts),
             id="srv-hosts",
             show_line_numbers=False,
         )
         yield Static("allowed_origins")
         yield TextArea(
-            "\n".join(self.draft.server.allowed_origins),
+            "\n".join(srv.allowed_origins),
             id="srv-origins",
             show_line_numbers=False,
         )
+        yield Static("Session key env (${VAR} name) — leave empty to auto-generate")
+        yield Input(
+            value=srv.session_key_env,
+            id="srv-sessionkey",
+            placeholder="BEACONMCP_SESSION_KEY",
+        )
+        with Horizontal(classes="form-row"):
+            yield Label("Dynamic reg:")
+            yield Switch(
+                value=srv.allow_dynamic_registration, id="srv-dynreg"
+            )
+        yield Static(
+            "Dynamic registration lets clients without a pre-provisioned "
+            "client_id (notably ChatGPT) self-register via a dashboard-minted "
+            "slug. Off by default.",
+            classes="hint",
+        )
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        srv = self.draft.server
+        if event.input.id == "srv-host":
+            srv.host = event.value.strip() or "0.0.0.0"
+        elif event.input.id == "srv-port":
+            raw = event.value.strip()
+            if raw.isdigit():
+                srv.port = int(raw)
+        elif event.input.id == "srv-sessionkey":
+            srv.session_key_env = event.value.strip()
+        self.on_change()
+
+    def on_switch_changed(self, event: Switch.Changed) -> None:
+        if event.switch.id == "srv-dynreg":
+            self.draft.server.allow_dynamic_registration = event.value
+            self.on_change()
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         lines = [line.strip() for line in event.text_area.text.splitlines() if line.strip()]
@@ -934,6 +1112,93 @@ class _ServerPanel(Static):
             self.draft.server.allowed_hosts = lines
         elif event.text_area.id == "srv-origins":
             self.draft.server.allowed_origins = lines
+        self.on_change()
+
+
+class _DashboardPanel(Static):
+    def __init__(self, draft: ConfigDraft, on_change: Callable[[], None]) -> None:
+        super().__init__()
+        self.draft = draft
+        self.on_change = on_change
+
+    def compose(self) -> ComposeResult:
+        yield Static("Dashboard", classes="section-heading")
+        yield Static(
+            "Optional web panel (/app/login, /app/chat, /app/tokens). "
+            "Runs an AI chat backed by Gemini; leave the key empty to "
+            "disable the chat while keeping the panel for token management.",
+            classes="hint",
+        )
+        dash = self.draft.dashboard
+        with Horizontal(classes="form-row"):
+            yield Label("Enabled:")
+            yield Switch(value=dash.enabled, id="dash-enabled")
+        yield Static("Gemini API key env (${VAR} name)")
+        yield Input(
+            value=dash.gemini_api_key_env,
+            id="dash-gemini",
+            placeholder="GEMINI_API_KEY (leave empty to disable chat)",
+        )
+        with Horizontal(classes="form-row"):
+            yield Label("Public URL:")
+            yield Input(
+                value=dash.public_url,
+                id="dash-url",
+                placeholder="https://beacon.example.com (for OAuth redirects)",
+            )
+        with Horizontal(classes="form-row"):
+            yield Label("MCP mode:")
+            yield Input(
+                value=dash.mcp_mode,
+                id="dash-mode",
+                placeholder="local | remote",
+            )
+        yield Static(
+            "Spending caps for Gemini chat (USD). Dashboard stops answering "
+            "when either threshold is hit.",
+            classes="hint",
+        )
+        with Horizontal(classes="form-row"):
+            yield Label("5h limit $:")
+            yield Input(
+                value=str(dash.limit_5h_usd),
+                id="dash-5h",
+                placeholder="2.0",
+            )
+        with Horizontal(classes="form-row"):
+            yield Label("Weekly limit $:")
+            yield Input(
+                value=str(dash.limit_week_usd),
+                id="dash-week",
+                placeholder="10.0",
+            )
+
+    def on_switch_changed(self, event: Switch.Changed) -> None:
+        if event.switch.id == "dash-enabled":
+            self.draft.dashboard.enabled = event.value
+            self.on_change()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        dash = self.draft.dashboard
+        if event.input.id == "dash-gemini":
+            dash.gemini_api_key_env = event.value.strip()
+        elif event.input.id == "dash-url":
+            dash.public_url = event.value.strip()
+        elif event.input.id == "dash-mode":
+            mode = event.value.strip().lower()
+            if mode in ("local", "remote"):
+                dash.mcp_mode = mode
+            elif not mode:
+                dash.mcp_mode = "local"
+        elif event.input.id in ("dash-5h", "dash-week"):
+            try:
+                val = float(event.value.strip())
+            except ValueError:
+                return
+            if event.input.id == "dash-5h":
+                dash.limit_5h_usd = val
+            else:
+                dash.limit_week_usd = val
         self.on_change()
 
 
@@ -1065,6 +1330,8 @@ class ConfigWizardApp(App[None]):
             panel = _BMCPanel(self.draft, self._refresh_preview)
         elif key == "server":
             panel = _ServerPanel(self.draft, self._refresh_preview)
+        elif key == "dashboard":
+            panel = _DashboardPanel(self.draft, self._refresh_preview)
         elif key == "save":
             panel = _SavePanel(
                 self.draft, self.yaml_path, self.env_path, self._write_files
@@ -1086,8 +1353,29 @@ class ConfigWizardApp(App[None]):
 
     def _write_files(self, yaml_path: Path, env_path: Path) -> None:
         yaml_path.parent.mkdir(parents=True, exist_ok=True)
+        _backup_existing(yaml_path)
         yaml_path.write_text(render_yaml(self.draft), encoding="utf-8")
         _merge_env_placeholders(env_path, self.draft.referenced_env_vars())
+
+
+def _backup_existing(path: Path) -> None:
+    """Copy ``path`` to a timestamped sibling before overwriting.
+
+    The wizard rewrites the YAML from the draft, which means any field
+    the loader didn't understand is lost on save. A timestamped backup
+    makes that recoverable instead of catastrophic.
+    """
+    if not path.exists():
+        return
+    from datetime import datetime
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup = path.with_name(f"{path.name}.bak.{stamp}")
+    try:
+        backup.write_bytes(path.read_bytes())
+    except OSError:
+        # A failed backup shouldn't block saving, but it shouldn't
+        # silently succeed either — surface it via preview later.
+        pass
 
 
 def _merge_env_placeholders(env_path: Path, names: list[str]) -> None:
@@ -1150,7 +1438,18 @@ def run_wizard(
 
     draft: ConfigDraft | None = None
     if yaml_path.exists() and not start_blank:
-        draft = load_yaml_into_draft(yaml_path)
+        try:
+            draft = load_yaml_into_draft(yaml_path)
+        except Exception as exc:  # noqa: BLE001 - YAML, OS, encoding, ...
+            print(
+                f"ERROR: could not parse existing {yaml_path}: {exc}\n"
+                f"Refusing to start the wizard because saving would "
+                f"overwrite the file with an empty config.\n"
+                f"Fix the YAML by hand, or rerun with --blank to start "
+                f"fresh (back up the file first).",
+                file=sys.stderr,
+            )
+            return 1
 
     ConfigWizardApp(yaml_path=yaml_path, env_path=env_path, draft=draft).run()
     return 0
