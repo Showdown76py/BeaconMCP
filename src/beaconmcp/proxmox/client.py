@@ -49,8 +49,8 @@ class ProxmoxClient:
         except (ConnectionError, Timeout) as e:
             return {
                 "error": f"Node '{node_name}' is unreachable: {e}. "
-                "Try ssh_exec_command to access the host directly, "
-                "or ilo_health_status if the server may be physically down."
+                "Try ssh_run to access the host directly, "
+                "or bmc_health_status if the server may be physically down."
             }
         except Exception as e:
             return {"error": f"Proxmox API error on '{node_name}': {e}"}

@@ -77,7 +77,7 @@ Constraints:
 3. The Gemini turn blocks server-side until the decision is made (5-minute timeout).
 4. On rejection, Gemini receives a `FunctionResponse {"error": "user_rejected"}` and can revise its reply.
 
-The allow-list is hard-coded in `src/beaconmcp/dashboard/chat.py` (`_NEEDS_CONFIRMATION` + `_needs_confirmation`). Only the integrated chat enforces this gate; external MCP clients (Claude Desktop, Gemini CLI, ChatGPT MCP) must enable their own per-call approval mode (see the **Security** section of the root README).
+The allow-list is hard-coded in `src/beaconmcp/dashboard/chat.py` (`_NEEDS_CONFIRMATION` + `_tool_call_requires_confirmation`). Only the integrated chat enforces this gate; external MCP clients (Claude Desktop, Gemini CLI, ChatGPT MCP) must enable their own per-call approval mode (see the **Security** section of the root README).
 
 ## Stored data
 
