@@ -21,24 +21,15 @@ version: 1
 server:
   host: 0.0.0.0
   port: 8420
-  # Host header allowlist for DNS-rebinding protection. Include the public
-  # FQDN behind the reverse proxy; 127.0.0.1 and localhost are already safe.
-  allowed_hosts:
-    - mcp.example.com
-    - "127.0.0.1:*"
-    - "localhost:*"
-    - "[::1]:*"
-  # CORS origin allowlist. Browser-based MCP clients send a CORS preflight
-  # before calling /mcp; their origin MUST be listed here. Desktop / CLI
-  # clients (Claude Desktop, Gemini CLI, Cursor, VS Code, Mistral Vibe,
-  # OpenCode, …) are NOT browser-based and don't need an entry.
-  allowed_origins:
-    - https://claude.ai
-    - https://chatgpt.com
-    - https://chat.openai.com
-    - https://chat.mistral.ai
-    - https://www.perplexity.ai
-    - https://gemini.google.com
+  
+  # CORS and Host header validation
+  allowed_hosts: ["*"]
+  allowed_origins: ["*"]
+
+  # Trust X-Forwarded-For from these direct peers to avoid IP spoofing bypassing rate limits
+  trusted_proxies: ["127.0.0.1", "::1"]
+
+  # Persistent storage for OAuth clients and TOTP secrets
   clients_file: /opt/beaconmcp/clients.json
   session_key: ${BEACONMCP_SESSION_KEY}   # optional, generated if omitted
   # Enable the OAuth Dynamic Client Registration bootstrap flow used by
@@ -107,6 +98,14 @@ ssh:
   # auto-declared as an SSH target using `defaults`. So `ssh_run(host="pve1")`
   # just works without repeating credentials per node.
   inherit_proxmox_nodes: true
+
+  # Host-key verification. Unset (default) means "accept any key on first
+  # contact" -- fine on a trusted LAN, unsafe over the public internet.
+  # Set `known_hosts` to an OpenSSH-format file to pin keys, or leave it
+  # unset and flip `strict_host_key_checking: true` to use the system
+  # `~/.ssh/known_hosts` instead.
+  # known_hosts: /etc/beaconmcp/known_hosts
+  # strict_host_key_checking: true
 
   hosts:
     - name: vps1

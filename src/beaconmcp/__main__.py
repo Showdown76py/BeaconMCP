@@ -225,7 +225,15 @@ def _run_http(mcp, host: str, port: int):
 
     from . import auth
     from .auth import ClientStore, CodeStore, TokenStore, current_bearer_token
+    from .ratelimit import RateLimiter, client_ip
     from .server import config
+
+    # Per-IP rate limit for auth-adjacent endpoints. Numbers sized so a
+    # human-driven login (with a few retries) always fits, while automated
+    # brute-force dies fast. TOTP lockout already guards per-client; this
+    # covers the "wrong client_id" probing the TOTP guard can't see.
+    _token_limiter = RateLimiter(limit=30, window_seconds=60.0)
+    _login_limiter = RateLimiter(limit=10, window_seconds=60.0)
 
     env_cf = os.environ.get("BEACONMCP_CLIENTS_FILE")
     clients_path = Path(env_cf) if env_cf else config.server.clients_file
@@ -675,6 +683,14 @@ h1 {{ margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015
         return Response(status_code=302, headers={"Location": location})
 
     async def oauth_token(request: Request) -> Response:
+        ip = client_ip(request, tuple(config.server.trusted_proxies))
+        if not _token_limiter.check(ip):
+            retry = _token_limiter.retry_after(ip)
+            return JSONResponse(
+                {"error": "rate_limited", "error_description": "too many requests"},
+                status_code=429,
+                headers={"Retry-After": str(retry)},
+            )
         try:
             if request.headers.get("content-type", "").startswith("application/json"):
                 raw = await request.json()
@@ -1008,6 +1024,8 @@ h1 {{ margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015
         client_store, token_store, totp_locked,
         totp_record_failure, totp_record_success,
         dyn_reg=dyn_reg_store, shared_database=shared_database,
+        login_limiter=_login_limiter,
+        trusted_proxies=tuple(config.server.trusted_proxies),
     )
 
     app = Starlette(
@@ -1047,7 +1065,8 @@ h1 {{ margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015
 
 def _build_dashboard_routes(client_store, token_store, totp_locked,
                              totp_record_failure, totp_record_success,
-                             *, dyn_reg=None, shared_database=None):
+                             *, dyn_reg=None, shared_database=None,
+                             login_limiter=None, trusted_proxies=()):
     """Build dashboard routes if enabled. Returns [] when disabled."""
     from . import dashboard
     if not dashboard.is_enabled():
@@ -1118,6 +1137,8 @@ def _build_dashboard_routes(client_store, token_store, totp_locked,
         mcp_public_url=mcp_public_url,
         mcp_mode=mcp_mode,
         dyn_reg=dyn_reg,
+        login_limiter=login_limiter,
+        trusted_proxies=trusted_proxies,
     )
     return build_dashboard_routes(deps)
 
