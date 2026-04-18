@@ -174,9 +174,10 @@ class SSHClient:
     def resolve_host(self, identifier: str) -> str:
         """Return the connect-target address for an identifier.
 
-        Back-compat helper used by ``ssh_exec_command_async`` to surface the
-        resolved IP/hostname in its response. Prefer :meth:`resolve` when the
-        full host spec (port, user, auth) is needed.
+        Helper used by ``ssh_run`` (and its ``wait=False`` / ``exec_id=…``
+        polling paths) to surface the resolved IP/hostname in the tool
+        response. Prefer :meth:`resolve` when the full host spec (port,
+        user, auth) is needed.
         """
         return self.resolve(identifier).host
 
@@ -227,7 +228,7 @@ class SSHClient:
                 "stderr": "",
                 "exit_code": None,
                 "status": "timeout",
-                "error": f"Command timed out after {timeout}s. Use ssh_exec_command_async for long-running commands.",
+                "error": f"Command timed out after {timeout}s. Use ssh_run(..., wait=False) to start async and poll with ssh_run(exec_id=...).",
             }
         except SSHNotConfiguredError:
             raise

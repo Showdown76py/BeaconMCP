@@ -1,5 +1,15 @@
 # BeaconMCP -- Proxmox Infrastructure MCP Server
 
+> **Note (post-v1):** the three-tool exec surface described below
+> (`proxmox_exec_command` / `_async` / `_get_result` and its SSH twin)
+> has been **superseded by the unified `proxmox_run` and `ssh_run`
+> tools**. Each unified tool exposes the same three call patterns via
+> parameters: sync (default), async start (`wait=False`), and poll
+> (`exec_id=…`). The design intent -- auto-detect VM vs CT, in-memory
+> session registry, timeout fallback to async -- is preserved; only the
+> public tool names changed. See `README.md` § *Available tools* and
+> `docs/dashboard.md` for the current contract.
+
 ## Context
 
 BeaconMCP is an MCP server that gives Claude direct access to a Proxmox VE infrastructure for diagnostics, VM management, system administration, and hardware management. The motivation: when a server crashes or misbehaves, Claude should be able to diagnose the issue, check hardware health, and propose/execute resolutions -- rather than the user having to manually SSH, check logs, and relay information back and forth.
@@ -72,15 +82,13 @@ src/beaconmcp/
 |------|-------------|----------------|
 | `proxmox_storage_status` | Storage status across the cluster | `node` (optional) |
 | `proxmox_network_config` | Network configuration of a node | `node` |
-| `proxmox_exec_command` | Execute a command inside a VM (QEMU Guest Agent) or CT (lxc exec), wait for result | `node`, `vmid`, `command`, `timeout` (default 60s) |
-| `proxmox_exec_command_async` | Start a long-running command inside a VM/CT, return exec_id | `node`, `vmid`, `command` |
-| `proxmox_exec_get_result` | Get result of an async command by exec_id | `exec_id` |
+| `proxmox_run` | Execute a command inside a QEMU VM (QEMU Guest Agent). Sync by default; pass `wait=False` to start async (returns `exec_id`), or `exec_id=…` to poll an existing session. LXC exec is not exposed by the Proxmox API; use `ssh_run` + `pct exec` on the host node. | `node`, `vmid`, `command`, `timeout` (default 60s), `wait`, `exec_id` |
 
 **Command execution design:**
-- The tool auto-detects whether the target is a VM (uses QEMU Guest Agent) or CT (uses Proxmox's built-in lxc exec). The caller does not need to know the difference.
-- `proxmox_exec_command` blocks until the command completes or timeout is reached. Returns `{"stdout": "...", "stderr": "...", "exit_code": N}`.
-- `proxmox_exec_command_async` returns immediately with `{"exec_id": "...", "status": "running"}`. Internally uses QEMU Guest Agent's native async exec for VMs (start -> PID -> poll) or background execution for CTs.
-- `proxmox_exec_get_result` returns `{"exec_id": "...", "status": "running|completed|timeout", "stdout": "...", "stderr": "...", "exit_code": N}`.
+- The tool auto-detects whether the target is a VM or CT. VMs execute via QEMU Guest Agent; CTs return an actionable error that points to `ssh_run` + `pct exec <vmid> -- <command>` on the node.
+- `proxmox_run` (default, `wait=True`) blocks until the command completes or timeout is reached. Returns `{"status": "ok", "stdout": "...", "stderr": "...", "exit_code": N, "duration_s": ...}`. On timeout it auto-switches to async and returns `{"status": "running", "exec_id": "..."}`.
+- `proxmox_run(..., wait=False)` returns immediately with `{"status": "running", "exec_id": "..."}`. Internally uses QEMU Guest Agent's native async exec for VMs (start -> PID -> poll).
+- `proxmox_run(exec_id="...")` polls an existing session and returns `{"status": "running|ok|failed|timeout", "stdout": "...", "stderr": "...", "exit_code": N}`.
 - Async exec state is held in-memory in the server process. A dict of `{exec_id: {pid, node, vmid, type, status, output}}`.
 
 ### Module iLO
@@ -106,9 +114,7 @@ Since iLO is only accessible from the local network, the module establishes an S
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
-| `ssh_exec_command` | Execute a command on any host via SSH, wait for result | `host`, `command`, `timeout` (default 60s) |
-| `ssh_exec_command_async` | Start a long-running SSH command, return exec_id | `host`, `command` |
-| `ssh_exec_get_result` | Get result of an async SSH command | `exec_id` |
+| `ssh_run` | Execute a command on any host via SSH. Sync by default; `wait=False` starts async and returns `exec_id`; `exec_id=…` polls an existing session. | `host`, `command`, `timeout` (default 60s), `wait`, `exec_id` |
 | `ssh_list_sessions` | List active async command sessions with their status | -- |
 
 SSH uses password authentication. The `host` parameter accepts:
