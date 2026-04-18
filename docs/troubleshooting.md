@@ -20,7 +20,7 @@
 | Dashboard loops between `/app/refresh` and `/app/chat` | Bearer wiped by a service restart while the session cookie is still valid | Enter the TOTP code on the refresh page to mint a new bearer. |
 | External MCP clients disconnected after a restart | `TokenStore` is in-memory and wiped on restart | Recreate tokens from `/app/tokens` (max 3, 24 h expiry). |
 | `remote_mode_disabled` error event in the chat | `BEACONMCP_DASHBOARD_MCP_MODE=remote` is set | Remove the variable; only `local` mode is supported. |
-| Chat blocked on an SSH/exec card with two buttons | Mandatory confirmation for `ssh_exec_command*` / `proxmox_exec_command*` | Click **Approve** or **Reject**. The card auto-rejects after 5 minutes of inactivity. |
+| Chat blocked on an SSH/exec card with two buttons | Mandatory confirmation for `ssh_run` / `proxmox_run` calls carrying a `command` | Click **Approve** or **Reject**. The card auto-rejects after 5 minutes of inactivity. Polling calls (`exec_id=` only) are read-only and skip the modal. |
 | `Limit reached: max 3 tokens` on the tokens page | 3 named tokens already active for this client | Revoke one before creating a new one. |
 | `Unknown BMC type 'X'` at startup | `bmc.devices[].type` set to an unsupported value | Valid types: `hp_ilo`, `ipmi`, `idrac` (stub), `supermicro` (stub). |
 
@@ -32,4 +32,4 @@
 
 > **"Upgrade packages on every container."**
 >
-> The Proxmox API does not expose an `exec` endpoint for LXCs, so the model falls back to `proxmox_list_vms` → filters containers → `ssh_exec_command_async` on the host node with `pct exec <vmid> -- sh -c 'apt update && apt upgrade -y'` per container → polls the results. Every `ssh_exec_command*` and `proxmox_exec_command*` call requires manual approval in the integrated chat; external MCP clients must enable equivalent per-call approval.
+> The Proxmox API does not expose an `exec` endpoint for LXCs, so the model falls back to `proxmox_list_vms` → filters containers → `ssh_run(host=<node>, command="pct exec <vmid> -- sh -c 'apt update && apt upgrade -y'", wait=False)` per container → polls each with `ssh_run(exec_id=…)`. Every `ssh_run` / `proxmox_run` call that carries a `command` requires manual approval in the integrated chat; external MCP clients must enable equivalent per-call approval.

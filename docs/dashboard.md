@@ -70,14 +70,14 @@ Constraints:
 
 ## Mandatory confirmation for shell-capable tools
 
-`ssh_exec_command`, `ssh_exec_command_async`, `proxmox_exec_command`, and `proxmox_exec_command_async` **never** run without manual approval from the chat UI. When Gemini calls one of them:
+`ssh_run` and `proxmox_run` **never** run a command without manual approval from the chat UI. A call carrying only `exec_id=` is treated as read-only polling and skips the modal; any call that carries a `command` triggers the gate. When Gemini fires a gated call:
 
 1. The tool card switches to an "approval required" state (orange badge, auto-expanded so arguments are visible).
 2. Two buttons: **Approve** / **Reject**.
 3. The Gemini turn blocks server-side until the decision is made (5-minute timeout).
 4. On rejection, Gemini receives a `FunctionResponse {"error": "user_rejected"}` and can revise its reply.
 
-The allow-list is hard-coded in `src/beaconmcp/dashboard/chat.py` (`_NEEDS_CONFIRMATION`). Only the integrated chat enforces this gate; external MCP clients (Claude Desktop, Gemini CLI, ChatGPT MCP) must enable their own per-call approval mode (see the **Security** section of the root README).
+The allow-list is hard-coded in `src/beaconmcp/dashboard/chat.py` (`_NEEDS_CONFIRMATION` + `_needs_confirmation`). Only the integrated chat enforces this gate; external MCP clients (Claude Desktop, Gemini CLI, ChatGPT MCP) must enable their own per-call approval mode (see the **Security** section of the root README).
 
 ## Stored data
 
