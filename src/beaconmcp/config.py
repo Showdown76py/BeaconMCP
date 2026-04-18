@@ -14,6 +14,7 @@ the old ``PVE*_``, ``ILO_``, and ``SSH_`` variables and emits a
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sys
@@ -23,6 +24,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+_logger = logging.getLogger("beaconmcp.config")
 
 
 # --- Dataclasses -----------------------------------------------------------
@@ -168,10 +171,9 @@ class Config:
                 stacklevel=2,
             )
             return cls._from_legacy_env()
-        print(
-            "ERROR: No configuration file found. Create beaconmcp.yaml in the "
-            "working directory or set BEACONMCP_CONFIG. See beaconmcp.yaml.example.",
-            file=sys.stderr,
+        _logger.error(
+            "No configuration file found. Create beaconmcp.yaml in the "
+            "working directory or set BEACONMCP_CONFIG. See beaconmcp.yaml.example."
         )
         sys.exit(1)
 
@@ -188,10 +190,7 @@ class Config:
     def _resolve_config_path(override: Path | None) -> Path | None:
         if override is not None:
             if not override.exists():
-                print(
-                    f"ERROR: Config file {override} does not exist.",
-                    file=sys.stderr,
-                )
+                _logger.error("Config file %s does not exist.", override)
                 sys.exit(1)
             return override
         env_path = os.environ.get("BEACONMCP_CONFIG", "").strip()
@@ -199,9 +198,8 @@ class Config:
             p = Path(env_path)
             if p.exists():
                 return p
-            print(
-                f"ERROR: BEACONMCP_CONFIG={env_path} points at a missing file.",
-                file=sys.stderr,
+            _logger.error(
+                "BEACONMCP_CONFIG=%s points at a missing file.", env_path
             )
             sys.exit(1)
         for candidate in (Path("beaconmcp.yaml"), Path("/etc/beaconmcp/config.yaml")):

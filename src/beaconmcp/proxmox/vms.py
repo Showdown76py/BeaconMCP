@@ -4,6 +4,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from ..utils import filter_fields
 from .client import ProxmoxClient
 
 
@@ -144,12 +145,20 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         }
 
     @mcp.tool()
-    def proxmox_vm_config(node: str, vmid: int, updates: dict[str, Any] | None = None) -> dict[str, Any]:
+    def proxmox_vm_config(
+        node: str,
+        vmid: int,
+        updates: dict[str, Any] | None = None,
+        fields: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Read or modify the configuration of a VM or container.
 
         Without 'updates': returns the full current configuration.
         With 'updates': applies the provided config changes (e.g., {"memory": 4096, "cores": 4}).
         Use to inspect or change VM settings like memory, CPU cores, network, disks, etc.
+        Pass ``fields=[...]`` (read-only mode) to trim the returned ``config``
+        blob -- helpful because full VM configs can be large (dozens of
+        disk/net/hostpci keys). Ignored when ``updates`` is given.
         """
         vm_type = _detect_vm_type(client, node, vmid)
         if not vm_type:
@@ -159,7 +168,12 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
             data = client.get(node, f"nodes/{node}/{vm_type}/{vmid}/config")
             if isinstance(data, dict) and "error" in data:
                 return data
-            return {"vmid": vmid, "node": node, "type": vm_type, "config": data}
+            return {
+                "vmid": vmid,
+                "node": node,
+                "type": vm_type,
+                "config": filter_fields(data, fields),
+            }
 
         result = client.put(node, f"nodes/{node}/{vm_type}/{vmid}/config", **updates)
         if isinstance(result, dict) and "error" in result:

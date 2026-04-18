@@ -19,10 +19,12 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
-import sys
 import time
+
+_logger = logging.getLogger("beaconmcp.auth")
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
@@ -201,10 +203,9 @@ class ClientStore:
         try:
             data = json.loads(self._path.read_text())
         except json.JSONDecodeError as e:
-            print(
-                f"ERROR: {self._path} is not valid JSON ({e}). "
-                "Fix or delete it before restarting.",
-                file=sys.stderr,
+            _logger.error(
+                "%s is not valid JSON (%s). Fix or delete it before restarting.",
+                self._path, e,
             )
             raise
 
@@ -234,11 +235,10 @@ class ClientStore:
                 revoked.append(f"{c.get('client_id', '?')} ({c.get('name', '?')})")
 
         if revoked:
-            print(
-                "WARNING: the following clients were revoked because they "
-                "predate the 2FA migration (no TOTP secret). Recreate them "
-                "with `beaconmcp auth create`: " + ", ".join(revoked),
-                file=sys.stderr,
+            _logger.warning(
+                "Revoked %d pre-2FA client(s) with no TOTP secret. "
+                "Recreate them with `beaconmcp auth create`: %s",
+                len(revoked), ", ".join(revoked),
             )
             self._save()
 
