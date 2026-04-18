@@ -123,11 +123,12 @@ The install script creates a `beaconmcp` system user, installs the package in ed
 
 Two ways to produce `beaconmcp.yaml`:
 
-**Guided (TUI wizard).** A terminal UI walks you through each capability (Proxmox nodes, SSH, BMC, server) with a live YAML preview on the right and adds `${VAR}` placeholders to `.env` for the secrets you'll fill in after:
+**Guided (TUI wizard).** A terminal UI walks you through each capability (Proxmox nodes, SSH, BMC, server) with a live YAML preview on the right and adds `${VAR}` placeholders to `.env` for the secrets you'll fill in after. The same command also **edits an existing** `beaconmcp.yaml` — it parses the file into the wizard, so you can tweak and re-save without losing anything:
 
 ```bash
 pip install 'beaconmcp[wizard]'   # pulls the optional textual dep
-beaconmcp init                    # writes beaconmcp.yaml + extends .env
+beaconmcp init                    # creates OR edits beaconmcp.yaml, extends .env
+beaconmcp init --blank            # force a fresh draft even if the YAML exists
 ```
 
 Arrow keys to browse sections, `enter` to open forms, `ctrl+s` to save without quitting, `q` to exit.

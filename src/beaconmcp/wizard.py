@@ -17,6 +17,7 @@ stays honest: what you see is the whole file.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -263,6 +264,110 @@ def render_yaml(draft: ConfigDraft) -> str:
         lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+# ---------------------------------------------------------------------------
+# YAML loading — inverse of render_yaml. Preserves ${VAR} placeholders
+# rather than resolving them so the draft round-trips cleanly.
+# ---------------------------------------------------------------------------
+
+
+_ENV_REF = re.compile(r"^\$\{([A-Z_][A-Z0-9_]*)\}$")
+
+
+def _env_name(value: Any) -> str:
+    """Return the VAR name from a ``${VAR}`` scalar, or '' if it isn't one."""
+    if not isinstance(value, str):
+        return ""
+    m = _ENV_REF.match(value.strip())
+    return m.group(1) if m else ""
+
+
+def load_yaml_into_draft(path: Path) -> ConfigDraft:
+    """Parse ``beaconmcp.yaml`` into a ``ConfigDraft`` for the wizard.
+
+    Unknown or malformed sections are skipped rather than raised — this is
+    an editing convenience, not a validating loader. ``beaconmcp
+    validate-config`` remains the source of truth.
+
+    Secret fields (``token_secret``, ``password``) are read as raw strings;
+    if they match ``${VAR}`` the env var name is stored in the ``*_env``
+    draft field so saving renders the same placeholder back.
+    """
+    import yaml  # lazy: keep import cost off the module load path
+
+    draft = ConfigDraft()
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return draft
+    if not isinstance(raw, dict):
+        return draft
+
+    server = raw.get("server") or {}
+    if isinstance(server, dict):
+        hosts = server.get("allowed_hosts")
+        if isinstance(hosts, list):
+            draft.server.allowed_hosts = [str(h) for h in hosts if h]
+        origins = server.get("allowed_origins")
+        if isinstance(origins, list):
+            draft.server.allowed_origins = [str(o) for o in origins if o]
+
+    proxmox = raw.get("proxmox") or {}
+    if isinstance(proxmox, dict):
+        for node in proxmox.get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            draft.pve_nodes.append(PVENodeDraft(
+                name=str(node.get("name") or ""),
+                host=str(node.get("host") or ""),
+                token_id=str(node.get("token_id") or ""),
+                token_secret_env=_env_name(node.get("token_secret")),
+            ))
+
+    ssh = raw.get("ssh")
+    if isinstance(ssh, dict):
+        draft.ssh.enabled = True
+        draft.ssh.vmid_to_ip = str(ssh.get("vmid_to_ip") or "")
+        draft.ssh.inherit_proxmox_nodes = bool(ssh.get("inherit_proxmox_nodes", False))
+        defaults = ssh.get("defaults") or {}
+        if isinstance(defaults, dict):
+            draft.ssh.defaults.user = str(defaults.get("user") or "root")
+            port = defaults.get("port")
+            draft.ssh.defaults.port = int(port) if isinstance(port, int) else 22
+            draft.ssh.defaults.key_file = str(defaults.get("key_file") or "")
+            draft.ssh.defaults.password_env = _env_name(defaults.get("password"))
+        for host in ssh.get("hosts") or []:
+            if not isinstance(host, dict):
+                continue
+            port = host.get("port")
+            draft.ssh.hosts.append(SSHHostDraft(
+                name=str(host.get("name") or ""),
+                host=str(host.get("host") or ""),
+                user=str(host.get("user") or "root"),
+                port=int(port) if isinstance(port, int) else 22,
+                password_env=_env_name(host.get("password")),
+                key_file=str(host.get("key_file") or ""),
+            ))
+    else:
+        # No ssh block means SSH is disabled in the saved config.
+        draft.ssh.enabled = False
+
+    bmc = raw.get("bmc") or {}
+    if isinstance(bmc, dict):
+        for dev in bmc.get("devices") or []:
+            if not isinstance(dev, dict):
+                continue
+            draft.bmc_devices.append(BMCDeviceDraft(
+                id=str(dev.get("id") or ""),
+                type=str(dev.get("type") or "hp_ilo"),
+                host=str(dev.get("host") or ""),
+                user=str(dev.get("user") or ""),
+                password_env=_env_name(dev.get("password")),
+                jump_host=str(dev.get("jump_host") or ""),
+            ))
+
+    return draft
 
 
 # ---------------------------------------------------------------------------
@@ -892,9 +997,14 @@ class ConfigWizardApp(App[None]):
         Binding("ctrl+s", "quick_save", "Save"),
     ]
 
-    def __init__(self, yaml_path: Path, env_path: Path) -> None:
+    def __init__(
+        self,
+        yaml_path: Path,
+        env_path: Path,
+        draft: ConfigDraft | None = None,
+    ) -> None:
         super().__init__()
-        self.draft = ConfigDraft()
+        self.draft = draft if draft is not None else ConfigDraft()
         self.yaml_path = yaml_path
         self.env_path = env_path
         self._current_section = "proxmox"
@@ -1013,8 +1123,19 @@ def _merge_env_placeholders(env_path: Path, names: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def run_wizard(yaml_path: Path | None = None, env_path: Path | None = None) -> int:
-    """Launch the wizard. Returns a process exit code."""
+def run_wizard(
+    yaml_path: Path | None = None,
+    env_path: Path | None = None,
+    *,
+    start_blank: bool = False,
+) -> int:
+    """Launch the wizard. Returns a process exit code.
+
+    If ``yaml_path`` already exists and ``start_blank`` is False, the file
+    is parsed into the draft so the user edits the existing config
+    in-place. ``start_blank=True`` discards whatever's on disk — the
+    caller is responsible for confirming this is safe.
+    """
     if _WIZARD_IMPORT_ERROR is not None:
         print(
             "The interactive wizard needs the optional 'textual' dependency.\n"
@@ -1026,5 +1147,10 @@ def run_wizard(yaml_path: Path | None = None, env_path: Path | None = None) -> i
 
     yaml_path = yaml_path or Path(os.environ.get("BEACONMCP_CONFIG", "beaconmcp.yaml"))
     env_path = env_path or Path(".env")
-    ConfigWizardApp(yaml_path=yaml_path, env_path=env_path).run()
+
+    draft: ConfigDraft | None = None
+    if yaml_path.exists() and not start_blank:
+        draft = load_yaml_into_draft(yaml_path)
+
+    ConfigWizardApp(yaml_path=yaml_path, env_path=env_path, draft=draft).run()
     return 0
