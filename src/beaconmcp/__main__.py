@@ -223,8 +223,10 @@ def _run_http(mcp, host: str, port: int):
 
     from urllib.parse import urlencode, urlparse
 
+    from . import audit
     from . import auth
     from .auth import ClientStore, CodeStore, TokenStore, current_bearer_token
+    from .metrics import REGISTRY, auth_events, http_requests
     from .server import config
 
     env_cf = os.environ.get("BEACONMCP_CLIENTS_FILE")
@@ -690,6 +692,8 @@ h1 {{ margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015
         client_secret = body.get("client_secret", "")
 
         if not client_store.verify(client_id, client_secret):
+            auth_events.inc(kind="token", outcome="invalid_client")
+            audit.emit("auth.token.fail", client_id=client_id, reason="invalid_client")
             return JSONResponse({"error": "invalid_client"}, status_code=401)
 
         if grant_type == "client_credentials":
@@ -716,6 +720,8 @@ h1 {{ margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015
                 )
             totp_record_success(client_id)
             token, expires_in = token_store.issue(client_id)
+            auth_events.inc(kind="token", outcome="ok")
+            audit.emit("auth.token.issue", client_id=client_id, grant_type=grant_type)
             return JSONResponse({
                 "access_token": token,
                 "token_type": "bearer",
@@ -751,11 +757,22 @@ h1 {{ margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015
     async def health(_request: Request) -> Response:
         return JSONResponse({"status": "ok", "server": "beaconmcp"})
 
+    async def metrics(_request: Request) -> Response:
+        # Prometheus text exposition format. Unauthenticated by design --
+        # scrape access is usually controlled via network ACL / reverse
+        # proxy rather than a bearer. No labels leak secrets; all values
+        # are counters/histograms. If you need auth, front with nginx.
+        return Response(
+            REGISTRY.render(),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
+
     async def auth_middleware(request: Request, call_next):
         path = request.url.path
         if path in (
             "/",
             "/health",
+            "/metrics",
             "/oauth/token",
             "/oauth/authorize",
             "/oauth/register",
@@ -1013,6 +1030,7 @@ h1 {{ margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015
     app = Starlette(
         routes=[
             Route("/health", health),
+            Route("/metrics", metrics),
             Route("/.well-known/oauth-authorization-server", oauth_metadata),
             Route("/.well-known/oauth-protected-resource", protected_resource_metadata),
             Route("/.well-known/oauth-protected-resource/mcp", protected_resource_metadata),
