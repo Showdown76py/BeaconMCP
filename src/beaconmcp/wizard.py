@@ -572,6 +572,20 @@ DataTable {
     margin: 1 0;
 }
 
+/* In-panel list editors (allowed_hosts, allowed_origins, ...). Without
+   a bound, TextArea defaults to 1fr and several of them in the same
+   VerticalScroll fight each other into unusable thin strips. */
+.list-area {
+    height: 7;
+    margin-bottom: 1;
+}
+
+.field-label {
+    color: $text-muted;
+    text-style: bold;
+    margin-top: 1;
+}
+
 .form-row {
     layout: horizontal;
     height: auto;
@@ -1059,19 +1073,24 @@ class _ServerPanel(Static):
         with Horizontal(classes="form-row"):
             yield Label("port:")
             yield Input(value=str(srv.port), id="srv-port", placeholder="8420")
-        yield Static("allowed_hosts")
+        yield Static("allowed_hosts (one per line)", classes="field-label")
         yield TextArea(
             "\n".join(srv.allowed_hosts),
             id="srv-hosts",
             show_line_numbers=False,
+            classes="list-area",
         )
-        yield Static("allowed_origins")
+        yield Static("allowed_origins (one per line)", classes="field-label")
         yield TextArea(
             "\n".join(srv.allowed_origins),
             id="srv-origins",
             show_line_numbers=False,
+            classes="list-area",
         )
-        yield Static("Session key env (${VAR} name) — leave empty to auto-generate")
+        yield Static(
+            "Session key env (${VAR} name) — leave empty to auto-generate",
+            classes="field-label",
+        )
         yield Input(
             value=srv.session_key_env,
             id="srv-sessionkey",
