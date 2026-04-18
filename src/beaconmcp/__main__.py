@@ -72,6 +72,10 @@ def main():
         "--env", type=Path, default=Path(".env"),
         help="Path to .env where referenced ${VAR} names are appended",
     )
+    init_parser.add_argument(
+        "--force", action="store_true",
+        help="Overwrite an existing beaconmcp.yaml (the wizard does not load it)",
+    )
 
     # --- auth ---
     auth_parser = sub.add_parser("auth", help="Manage OAuth client credentials")
@@ -105,6 +109,21 @@ def _cmd_init(args):
 
     yaml_path = args.config if args.config else Path(os.environ.get("BEACONMCP_CONFIG", "beaconmcp.yaml"))
     env_path = args.env
+
+    # The wizard always starts from a blank draft and will overwrite
+    # whatever is at yaml_path on save. Refuse to proceed if a config
+    # already exists so we don't silently clobber it.
+    if yaml_path.exists() and not args.force:
+        print(
+            f"ERROR: {yaml_path} already exists.\n"
+            f"The wizard does not load existing configs — running it would "
+            f"overwrite this file with an empty config.\n"
+            f"Edit the YAML directly, or pass --force to start from scratch "
+            f"(back up first).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     sys.exit(run_wizard(yaml_path=yaml_path, env_path=env_path))
 
 

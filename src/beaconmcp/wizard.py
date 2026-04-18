@@ -41,6 +41,20 @@ try:
     )
 except ImportError as _exc:  # pragma: no cover - import guard
     _WIZARD_IMPORT_ERROR = _exc
+
+    # Stubs so the class definitions below can be loaded without textual
+    # installed. Actual use is gated by `_WIZARD_IMPORT_ERROR` in
+    # `run_wizard`, which prints an install hint and exits.
+    class _Stub:
+        def __init__(self, *args: Any, **kwargs: Any) -> None: ...
+        def __class_getitem__(cls, item: Any) -> type:  # noqa: D401
+            return cls
+
+    App = ComposeResult = Binding = _Stub  # type: ignore[assignment,misc]
+    Horizontal = Vertical = VerticalScroll = _Stub  # type: ignore[assignment,misc]
+    ModalScreen = _Stub  # type: ignore[assignment,misc]
+    Button = DataTable = Footer = Header = Input = Label = _Stub  # type: ignore[assignment,misc]
+    ListItem = ListView = Static = Switch = TextArea = _Stub  # type: ignore[assignment,misc]
 else:
     _WIZARD_IMPORT_ERROR = None
 
