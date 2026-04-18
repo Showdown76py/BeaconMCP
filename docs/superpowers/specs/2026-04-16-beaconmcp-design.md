@@ -82,12 +82,12 @@ src/beaconmcp/
 |------|-------------|----------------|
 | `proxmox_storage_status` | Storage status across the cluster | `node` (optional) |
 | `proxmox_network_config` | Network configuration of a node | `node` |
-| `proxmox_run` | Execute a command inside a VM (QEMU Guest Agent) or CT (lxc exec). Sync by default; pass `wait=False` to start async (returns `exec_id`), or `exec_id=…` to poll an existing session. | `node`, `vmid`, `command`, `timeout` (default 60s), `wait`, `exec_id` |
+| `proxmox_run` | Execute a command inside a QEMU VM (QEMU Guest Agent). Sync by default; pass `wait=False` to start async (returns `exec_id`), or `exec_id=…` to poll an existing session. LXC exec is not exposed by the Proxmox API; use `ssh_run` + `pct exec` on the host node. | `node`, `vmid`, `command`, `timeout` (default 60s), `wait`, `exec_id` |
 
 **Command execution design:**
-- The tool auto-detects whether the target is a VM (uses QEMU Guest Agent) or CT (uses Proxmox's built-in lxc exec). The caller does not need to know the difference.
+- The tool auto-detects whether the target is a VM or CT. VMs execute via QEMU Guest Agent; CTs return an actionable error that points to `ssh_run` + `pct exec <vmid> -- <command>` on the node.
 - `proxmox_run` (default, `wait=True`) blocks until the command completes or timeout is reached. Returns `{"status": "ok", "stdout": "...", "stderr": "...", "exit_code": N, "duration_s": ...}`. On timeout it auto-switches to async and returns `{"status": "running", "exec_id": "..."}`.
-- `proxmox_run(..., wait=False)` returns immediately with `{"status": "running", "exec_id": "..."}`. Internally uses QEMU Guest Agent's native async exec for VMs (start -> PID -> poll) or background execution for CTs.
+- `proxmox_run(..., wait=False)` returns immediately with `{"status": "running", "exec_id": "..."}`. Internally uses QEMU Guest Agent's native async exec for VMs (start -> PID -> poll).
 - `proxmox_run(exec_id="...")` polls an existing session and returns `{"status": "running|ok|failed|timeout", "stdout": "...", "stderr": "...", "exit_code": N}`.
 - Async exec state is held in-memory in the server process. A dict of `{exec_id: {pid, node, vmid, type, status, output}}`.
 

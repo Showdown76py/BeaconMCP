@@ -276,13 +276,13 @@ BeaconMCP exposes tools that cause irreversible changes: `ssh_run`, `proxmox_run
 | `proxmox_vm_migrate` | Migrate across nodes. |
 | `proxmox_vm_config` | Read or update configuration. |
 
-### Proxmox — system (5)
+### Proxmox — system (3)
 
 | Tool | Description |
 |------|-------------|
 | `proxmox_storage_status` | Storage pool status. |
 | `proxmox_network_config` | Network configuration per node. |
-| `proxmox_run` | Command inside a VM or container via QEMU Guest Agent. Sync by default; pass `wait=False` to start async, or `exec_id=` to poll an existing session. |
+| `proxmox_run` | Command inside a QEMU VM via QEMU Guest Agent. Sync by default; pass `wait=False` to start async, or `exec_id=` to poll an existing session. For LXC containers, use `ssh_run` on the node with `pct exec <vmid> -- <command>`. |
 
 ### SSH fallback (2)
 
