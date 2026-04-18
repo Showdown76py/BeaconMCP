@@ -28,7 +28,7 @@ BeaconMCP exposes a Proxmox VE cluster, the hardware underneath it (HP iLO, gene
 - **Independent capabilities.** Enable only what you have: a full Proxmox cluster, a couple of VPS reachable by SSH, a rack with IPMI BMCs only, or any combination. The server registers tools per capability, so an SSH-only deployment never exposes `proxmox_*` tools.
 - **Three deployment modes out of the box:**
   - *Proxmox + BMC + SSH* — the reference setup (a Proxmox cluster with iLO/IPMI hardware).
-  - *SSH-only* — point it at a handful of VPS or bare-metal servers; get `ssh_exec_command` / `ssh_exec_command_async` tools backed by per-host credentials.
+  - *SSH-only* — point it at a handful of VPS or bare-metal servers; get the unified `ssh_run` tool backed by per-host credentials.
   - *Proxmox-only* or *BMC-only* — mix and match as your inventory grows.
 - **30+ MCP tools** across four modules: Proxmox (monitoring, VM lifecycle, system), SSH (per-host multi-target), BMC (hardware power/health), and security.
 - **N nodes, N BMC devices, N SSH hosts.** No hard-coded counts. Each SSH host carries its own credentials (password or key file) and is declared under `ssh.hosts[]`.
@@ -239,11 +239,11 @@ Common keys:
 
 > **Never let an LLM execute shell commands on infrastructure you care about without reading the command first.**
 
-BeaconMCP exposes tools that cause irreversible changes: `ssh_exec_command*`, `proxmox_exec_command*`, `bmc_power_off`, `proxmox_vm_stop`, `proxmox_vm_create`, and more. Models do not always grasp the consequences of a command — an errant `rm -rf`, a `systemctl stop` on the wrong unit, a `pct destroy` mistaken for `pct stop`. A few working rules:
+BeaconMCP exposes tools that cause irreversible changes: `ssh_run`, `proxmox_run`, `bmc_power_off`, `proxmox_vm_stop`, `proxmox_vm_create`, `vm_bulk_action`, and more. Models do not always grasp the consequences of a command — an errant `rm -rf`, a `systemctl stop` on the wrong unit, a `pct destroy` mistaken for `pct stop`. A few working rules:
 
 - **Disable auto-approve** on every external MCP client (Claude Desktop, Gemini CLI, ChatGPT MCP). Keep per-call approval enabled; refuse "always allow this tool".
-- **Read the `command` argument** before approving any `ssh_exec_command*` or `proxmox_exec_command*` call. Ask: if this ran against the wrong VM or host, could I recover?
-- **The integrated chat** at `/app/chat` already forces human confirmation for every `ssh_exec_command*` and `proxmox_exec_command*` call. Read the arguments shown on the confirmation card even when you click through fast. No answer within 5 minutes counts as refusal.
+- **Read the `command` argument** before approving any `ssh_run` or `proxmox_run` call. Ask: if this ran against the wrong VM or host, could I recover?
+- **The integrated chat** at `/app/chat` already forces human confirmation for every `ssh_run` / `proxmox_run` call that carries a `command` (polling-only calls with just `exec_id` are read-only and skip the modal). Read the arguments shown on the confirmation card even when you click through fast. No answer within 5 minutes counts as refusal.
 - **Prefer read-only tools** (`*_list_*`, `*_status`, `*_get_*`, `get_logs`, `health_status`) for exploration — they cannot break anything and are never gated by confirmation.
 - **Do not share a `/app/tokens` bearer** with a client you do not fully control. A leaked token grants arbitrary shell access on your Proxmox nodes for 24 hours.
 
@@ -276,23 +276,19 @@ BeaconMCP exposes tools that cause irreversible changes: `ssh_exec_command*`, `p
 | `proxmox_vm_migrate` | Migrate across nodes. |
 | `proxmox_vm_config` | Read or update configuration. |
 
-### Proxmox — system (5)
+### Proxmox — system (3)
 
 | Tool | Description |
 |------|-------------|
 | `proxmox_storage_status` | Storage pool status. |
 | `proxmox_network_config` | Network configuration per node. |
-| `proxmox_exec_command` | Command inside a VM or container (sync, via QEMU Guest Agent). |
-| `proxmox_exec_command_async` | Long-running command (async). |
-| `proxmox_exec_get_result` | Fetch the result of an async command. |
+| `proxmox_run` | Command inside a QEMU VM via QEMU Guest Agent. Sync by default; pass `wait=False` to start async, or `exec_id=` to poll an existing session. For LXC containers, use `ssh_run` on the node with `pct exec <vmid> -- <command>`. |
 
-### SSH fallback (4)
+### SSH fallback (2)
 
 | Tool | Description |
 |------|-------------|
-| `ssh_exec_command` | Command on a host (sync). `host` accepts node names, VMIDs, hostnames, or IPs. |
-| `ssh_exec_command_async` | Long-running command (async). |
-| `ssh_exec_get_result` | Fetch the result of an async SSH command. |
+| `ssh_run` | Command on a host via SSH. `host` accepts node names, VMIDs, hostnames, or IPs. Sync by default; pass `wait=False` to start async, or `exec_id=` to poll. |
 | `ssh_list_sessions` | List active and recent SSH sessions. |
 
 ### BMC — hardware management (8)

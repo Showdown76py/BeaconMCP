@@ -566,14 +566,14 @@ def test_chat_persists_history_for_second_turn(app_and_client, engine, deps):
 
 
 def test_chat_stream_ssh_tool_emits_confirm_event(app_and_client, engine, deps):
-    """ssh_exec_command triggers a tool_confirm_required SSE frame and the
+    """ssh_run triggers a tool_confirm_required SSE frame and the
     engine must wait for a decision via /app/api/chat/confirm.
     """
     import threading, time as _t
 
     engine.script = FakeScript(events=[
-        ToolCallStart(id="tc1", name="ssh_exec_command", args={"host": "pve1", "command": "ls"}),
-        ToolConfirmRequired(id="tc1", name="ssh_exec_command", args={"host": "pve1", "command": "ls"}),
+        ToolCallStart(id="tc1", name="ssh_run", args={"host": "pve1", "command": "ls"}),
+        ToolConfirmRequired(id="tc1", name="ssh_run", args={"host": "pve1", "command": "ls"}),
         ToolCallEnd(id="tc1", status="ok", preview="ok", duration_ms=50),
         TextDelta(text="done"),
     ])
@@ -850,16 +850,50 @@ def test_chat_page_renders_after_login(app_and_client):
     assert "gemini-3.1-pro-preview" in r.text
 
 
-def test_needs_confirmation_includes_proxmox_exec():
+def test_needs_confirmation_includes_run_tools():
     """Every tool that can fire arbitrary shell on a host/VM must require
-    human approval -- not just SSH, but also the QEMU Guest Agent exec
-    path (``proxmox_exec_command`` + its async twin).
+    human approval -- both the SSH and the QEMU Guest Agent exec paths,
+    now unified as ``ssh_run`` / ``proxmox_run``. Legacy ``*_exec_command*``
+    names stay in the allow-list defensively in case an older MCP server
+    is still wired up.
     """
-    from beaconmcp.dashboard.chat import _NEEDS_CONFIRMATION
-    assert "proxmox_exec_command" in _NEEDS_CONFIRMATION
-    assert "proxmox_exec_command_async" in _NEEDS_CONFIRMATION
+    from beaconmcp.dashboard.chat import (
+        _NEEDS_CONFIRMATION,
+        _tool_call_requires_confirmation,
+    )
+
+    # Unified names: required.
+    assert "ssh_run" in _NEEDS_CONFIRMATION
+    assert "proxmox_run" in _NEEDS_CONFIRMATION
+    # Legacy names: still guarded.
     assert "ssh_exec_command" in _NEEDS_CONFIRMATION
     assert "ssh_exec_command_async" in _NEEDS_CONFIRMATION
-    # The read-only result-fetcher must NOT require a click.
+    assert "proxmox_exec_command" in _NEEDS_CONFIRMATION
+    assert "proxmox_exec_command_async" in _NEEDS_CONFIRMATION
+
+    # Sync + async-start (command present) must confirm on unified tools.
+    assert _tool_call_requires_confirmation(
+        "ssh_run", {"host": "pve1", "command": "ls"}
+    )
+    assert _tool_call_requires_confirmation(
+        "proxmox_run", {"node": "pve1", "vmid": 101, "command": "ls"}
+    )
+    assert _tool_call_requires_confirmation(
+        "ssh_run", {"host": "pve1", "command": "ls", "wait": False}
+    )
+
+    # Poll-only call (exec_id, no command) is read-only: no modal.
+    assert not _tool_call_requires_confirmation("ssh_run", {"exec_id": "abc"})
+    assert not _tool_call_requires_confirmation("proxmox_run", {"exec_id": "abc"})
+
+    # Legacy sync tools still prompt (no poll-exempt shortcut -- they
+    # always carry a ``command``).
+    assert _tool_call_requires_confirmation(
+        "ssh_exec_command", {"host": "pve1", "command": "ls"}
+    )
+
+    # Read-only result-fetchers and unrelated tools never confirm.
     assert "proxmox_exec_get_result" not in _NEEDS_CONFIRMATION
     assert "ssh_exec_get_result" not in _NEEDS_CONFIRMATION
+    assert not _tool_call_requires_confirmation("proxmox_list_nodes", {})
+    assert not _tool_call_requires_confirmation("cluster_overview", {})
