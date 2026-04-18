@@ -43,20 +43,20 @@ BeaconMCP exposes a Proxmox VE cluster, the hardware underneath it (HP iLO, gene
 
 ```
 Clients (Claude, ChatGPT, Gemini)
-        │
-        │ HTTPS (reverse proxy / tunnel)
-        ▼
+             │
+             │ HTTPS (reverse proxy / tunnel)
+             ▼
 ┌──────────────────────────────────┐
-│   BeaconMCP  (HTTP :8420)         │
+│   BeaconMCP  (HTTP :8420)        │
 │   ├── proxmox/   → Proxmox API   │
 │   ├── ssh/       → SSH :22       │
 │   ├── bmc/       → iLO / IPMI    │
 │   └── dashboard/ → /app/*        │
 └──────────────────────────────────┘
-        │
-        │ managed cluster
-        ▼
-  Proxmox nodes (N)  ·  BMC devices (N)
+             │
+             │ managed cluster
+             ▼
+Proxmox nodes (N)  ·  BMC devices (N)
 ```
 
 BeaconMCP runs on any host that can reach the Proxmox API of every declared node and the BMC management network. It speaks MCP over Streamable HTTP and is typically placed behind a reverse proxy with DNS-rebinding protection configured via `server.allowed_hosts` in the YAML.
