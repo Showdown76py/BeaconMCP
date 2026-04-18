@@ -41,7 +41,7 @@ def _redact(value: Any) -> Any:
     """Walk ``value`` replacing obviously-sensitive leaf values with ``***``."""
     if isinstance(value, dict):
         return {
-            k: ("***" if k.lower() in _REDACT_KEYS else _redact(v))
+            k: ("***" if isinstance(k, str) and k.lower() in _REDACT_KEYS else _redact(v))
             for k, v in value.items()
         }
     if isinstance(value, list):
@@ -56,13 +56,13 @@ def emit(event: str, **fields: Any) -> None:
     ``auth.token.issue``, ...). Any number of additional keyword fields
     can be attached; they're redacted and merged into the JSON record.
     """
-    record = {
-        "ts": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
-        "event": event,
-    }
-    for k, v in fields.items():
-        record[k] = _redact(v)
     try:
+        record = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+            "event": event,
+        }
+        for k, v in fields.items():
+            record[k] = _redact(v)
         _logger.info(json.dumps(record, default=str, ensure_ascii=False))
     except Exception:  # noqa: BLE001  -- audit must never break a request
         pass

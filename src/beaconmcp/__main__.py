@@ -226,8 +226,33 @@ def _run_http(mcp, host: str, port: int):
     from . import audit
     from . import auth
     from .auth import ClientStore, CodeStore, TokenStore, current_bearer_token
-    from .metrics import REGISTRY, auth_events, http_requests
+    from .ratelimit import RateLimiter, client_ip
     from .server import config
+
+    from .metrics import REGISTRY, auth_events, http_requests
+
+    class MetricsMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            start = time.monotonic()
+            path = request.url.path
+            
+            # Group dashboard and static paths to avoid cardinality explosion
+            if path.startswith("/app/api/conversations"):
+                path = "/app/api/conversations"
+            elif path.startswith("/app/"):
+                path = "/app"
+            elif path.startswith("/static/"):
+                path = "/static"
+                
+            try:
+                response = await call_next(request)
+                status = str(response.status_code)
+                return response
+            except Exception:
+                status = "500"
+                raise
+            finally:
+                http_requests.inc(path=path, status=status)
 
     env_cf = os.environ.get("BEACONMCP_CLIENTS_FILE")
     clients_path = Path(env_cf) if env_cf else config.server.clients_file
@@ -1028,6 +1053,7 @@ h1 {{ margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015
     )
 
     app = Starlette(
+        middleware=[Middleware(MetricsMiddleware)],
         routes=[
             Route("/health", health),
             Route("/metrics", metrics),
