@@ -164,7 +164,19 @@ class RedfishBackend(BMCClient):
             return {"error": "No managers found."}
             
         manager_path = managers[0].get("@odata.id")
-        logs_path = f"{manager_path}/LogServices/Log1/Entries"
+        
+        # Discover LogServices dynamically instead of hardcoding Log1
+        services_res = await self._request("GET", f"{manager_path}/LogServices")
+        if "error" in services_res:
+            return {"error": f"Failed to fetch LogServices: {services_res['error']}"}
+            
+        log_services = services_res.get("Members", [])
+        if not log_services:
+            return {"error": "No log services found for manager."}
+            
+        # Take the first available log service (e.g. SEL, IML, Log1)
+        log_service_path = log_services[0].get("@odata.id")
+        logs_path = f"{log_service_path}/Entries"
         
         logs_res = await self._request("GET", logs_path)
         if "error" in logs_res:
