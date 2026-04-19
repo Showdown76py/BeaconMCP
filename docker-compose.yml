@@ -1,0 +1,19 @@
+services:
+  beaconmcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: beaconmcp:local
+    container_name: beaconmcp
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    volumes:
+      - ./beaconmcp.yaml:/config/beaconmcp.yaml:ro
+      - beaconmcp-state:/state
+      # - /root/.ssh:/home/beaconmcp/.ssh:ro
+
+volumes:
+  beaconmcp-state:
+    name: beaconmcp-state

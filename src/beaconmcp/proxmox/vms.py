@@ -4,6 +4,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from ..utils import filter_fields
 from .client import ProxmoxClient
 
 
@@ -144,12 +145,20 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         }
 
     @mcp.tool()
-    def proxmox_vm_config(node: str, vmid: int, updates: dict[str, Any] | None = None) -> dict[str, Any]:
+    def proxmox_vm_config(
+        node: str,
+        vmid: int,
+        updates: dict[str, Any] | None = None,
+        fields: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Read or modify the configuration of a VM or container.
 
         Without 'updates': returns the full current configuration.
         With 'updates': applies the provided config changes (e.g., {"memory": 4096, "cores": 4}).
         Use to inspect or change VM settings like memory, CPU cores, network, disks, etc.
+        Pass ``fields=[...]`` (read-only mode) to trim the returned ``config``
+        blob -- helpful because full VM configs can be large (dozens of
+        disk/net/hostpci keys). Ignored when ``updates`` is given.
         """
         vm_type = _detect_vm_type(client, node, vmid)
         if not vm_type:
@@ -159,9 +168,105 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
             data = client.get(node, f"nodes/{node}/{vm_type}/{vmid}/config")
             if isinstance(data, dict) and "error" in data:
                 return data
-            return {"vmid": vmid, "node": node, "type": vm_type, "config": data}
+            return {
+                "vmid": vmid,
+                "node": node,
+                "type": vm_type,
+                "config": filter_fields(data, fields),
+            }
 
         result = client.put(node, f"nodes/{node}/{vm_type}/{vmid}/config", **updates)
         if isinstance(result, dict) and "error" in result:
             return result
         return {"vmid": vmid, "node": node, "action": "config_update", "applied": updates}
+
+    @mcp.tool()
+    def proxmox_snapshot_list(node: str, vmid: int) -> dict[str, Any]:
+        """List all snapshots for a VM or container.
+        
+        Returns the snapshot hierarchy including names, descriptions, and creation times.
+        """
+        vm_type = _detect_vm_type(client, node, vmid)
+        if not vm_type:
+            return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
+            
+        result = client.get(node, f"nodes/{node}/{vm_type}/{vmid}/snapshot")
+        if isinstance(result, dict) and "error" in result:
+            return result
+            
+        return {"vmid": vmid, "node": node, "snapshots": result}
+
+    @mcp.tool()
+    def proxmox_snapshot_create(
+        node: str, 
+        vmid: int, 
+        snapname: str, 
+        description: str = "", 
+        vmstate: bool = False,
+        dry_run: bool = False
+    ) -> dict[str, Any]:
+        """Create a new snapshot of a VM or container.
+        
+        Use this before risky operations (OS upgrades, risky commands) to establish a safe checkpoint.
+        Set vmstate=true to capture RAM (slower, only for running QEMU VMs).
+        """
+        if dry_run: return {"status": "dry_run", "message": f"Would create snapshot {snapname!r} for VM/CT {vmid} on {node}."}
+        
+        vm_type = _detect_vm_type(client, node, vmid)
+        if not vm_type:
+            return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
+            
+        params = {"snapname": snapname}
+        if description:
+            params["description"] = description
+        if vmstate:
+            if vm_type == "lxc":
+                return {"error": "vmstate=True is only supported for QEMU VMs, not LXC containers."}
+            
+            # Check if VM is actually running
+            status_data = client.get(node, f"nodes/{node}/{vm_type}/{vmid}/status/current")
+            is_running = isinstance(status_data, dict) and status_data.get("status") == "running"
+            if not is_running:
+                return {"error": "vmstate=True requires the VM to be running to capture RAM."}
+            
+            params["vmstate"] = 1
+            
+        result = client.post(node, f"nodes/{node}/{vm_type}/{vmid}/snapshot", **params)
+        if isinstance(result, dict) and "error" in result:
+            return result
+        return {"vmid": vmid, "node": node, "action": "snapshot_create", "snapname": snapname, "upid": result}
+
+    @mcp.tool()
+    def proxmox_snapshot_rollback(node: str, vmid: int, snapname: str, dry_run: bool = False) -> dict[str, Any]:
+        """Roll back a VM or container to a previous snapshot.
+        
+        Restores the guest to the exact state of the named snapshot.
+        Use proxmox_snapshot_list to find the correct snapname.
+        """
+        if dry_run: return {"status": "dry_run", "message": f"Would roll back VM/CT {vmid} on {node} to snapshot {snapname!r}."}
+        
+        vm_type = _detect_vm_type(client, node, vmid)
+        if not vm_type:
+            return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
+            
+        result = client.post(node, f"nodes/{node}/{vm_type}/{vmid}/snapshot/{snapname}/rollback")
+        if isinstance(result, dict) and "error" in result:
+            return result
+        return {"vmid": vmid, "node": node, "action": "snapshot_rollback", "snapname": snapname, "upid": result}
+
+    @mcp.tool()
+    def proxmox_snapshot_delete(node: str, vmid: int, snapname: str, dry_run: bool = False) -> dict[str, Any]:
+        """Delete a VM or container snapshot.
+        
+        Removes the snapshot from the storage backing the VM.
+        """
+        if dry_run: return {"status": "dry_run", "message": f"Would delete snapshot {snapname!r} from VM/CT {vmid} on {node}."}
+        
+        vm_type = _detect_vm_type(client, node, vmid)
+        if not vm_type:
+            return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
+            
+        result = client.delete(node, f"nodes/{node}/{vm_type}/{vmid}/snapshot/{snapname}")
+        if isinstance(result, dict) and "error" in result:
+            return result
+        return {"vmid": vmid, "node": node, "action": "snapshot_delete", "snapname": snapname, "upid": result}

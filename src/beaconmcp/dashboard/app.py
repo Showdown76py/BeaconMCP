@@ -91,6 +91,10 @@ class DashboardDeps:
     # /app/connectors page is hidden and the slug-scoped OAuth endpoints
     # are not mounted.
     dyn_reg: DynamicSlugStore | None = None
+    # Per-IP limiter guarding /app/login against brute-force. Optional so
+    # tests/embedding paths can skip the limiter entirely.
+    login_limiter: object | None = None
+    trusted_proxies: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +261,24 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
     async def login_post(request: Request) -> Response:
         if not await csrf.verify(request):
             return JSONResponse({"error": "csrf"}, status_code=403)
+
+        # Per-IP rate limit. Comes before CSRF was fine too, but putting it
+        # after CSRF keeps the error ordering consistent with /oauth/token.
+        limiter = deps.login_limiter
+        if limiter is not None:
+            from ..ratelimit import client_ip as _client_ip  # local import: avoid cycle at module load
+            ip = _client_ip(request, deps.trusted_proxies)
+            if not limiter.check(ip):  # type: ignore[attr-defined]
+                retry = limiter.retry_after(ip)  # type: ignore[attr-defined]
+                return _render(
+                    "login.html",
+                    request,
+                    client_id="",
+                    next="",
+                    banner=f"Too many attempts from this address. Retry in {retry}s.",
+                    locked=True,
+                    status_code=429,
+                )
 
         form = await request.form()
 

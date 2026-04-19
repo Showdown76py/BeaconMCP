@@ -1,10 +1,14 @@
-// 6-digit TOTP inputs, shared with the login page.
+// Shared 6-box TOTP input handler.
+// Works on any form that contains #totp-inputs (inputs), #totp (hidden field),
+// and #verify-btn (submit button). Used by /app/refresh and /oauth/authorize.
 (function() {
-  var form = document.getElementById("refresh-form");
-  if (!form) return;
+  var container = document.getElementById("totp-inputs");
+  if (!container) return;
+  var form = container.closest("form");
   var totpHidden = document.getElementById("totp");
   var verifyBtn = document.getElementById("verify-btn");
-  var inputs = document.querySelectorAll("#totp-inputs input");
+  var inputs = container.querySelectorAll("input");
+  if (!form || !totpHidden || !verifyBtn || !inputs.length) return;
 
   function collectTotp() {
     var s = "";

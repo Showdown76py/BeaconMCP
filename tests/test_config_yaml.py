@@ -194,10 +194,16 @@ def test_ssh_legacy_shape_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPat
         Config.load(config_path=path)
 
 
-def test_ssh_host_name_collides_with_proxmox_node(
+def test_ssh_host_name_can_match_proxmox_node(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """If an ssh.hosts[].name matches a proxmox.nodes[].name, refuse to start."""
+    """An ssh.hosts[].name may match a proxmox.nodes[].name.
+
+    Pre-2.0 the loader rejected this collision. The two names live in
+    separate tool namespaces (``ssh_*`` vs ``proxmox_*``) so there is no
+    routing ambiguity, and matching names removes the need for synthetic
+    ``*-ssh`` suffixes.
+    """
     monkeypatch.setenv("PVE1_TOKEN_SECRET", "x")
     monkeypatch.setenv("SSH_PW", "y")
     path = _write(
@@ -206,19 +212,155 @@ def test_ssh_host_name_collides_with_proxmox_node(
         version: 1
         proxmox:
           nodes:
-            - name: serv1
-              host: serv1.example.com
+            - name: pve1
+              host: pve1.example.com
               token_id: root@pam!beaconmcp
               token_secret: ${PVE1_TOKEN_SECRET}
         ssh:
           hosts:
-            - name: serv1
-              host: serv1.example.com
+            - name: pve1
+              host: pve1.example.com
               user: root
               password: ${SSH_PW}
         """,
     )
-    with pytest.raises(ConfigError, match="declared both in"):
+    cfg = Config.load(config_path=path)
+    assert cfg.ssh is not None
+    assert [h.name for h in cfg.ssh.hosts] == ["pve1"]
+    assert cfg.pve_nodes[0].name == "pve1"
+
+
+def test_ssh_inherit_proxmox_nodes_synthesizes_hosts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With ``inherit_proxmox_nodes: true`` + defaults, every Proxmox node
+    that isn't covered by an explicit ssh.hosts[] entry gets one synthesized.
+    Restores the pre-2.0 single-credential-block ergonomic."""
+    monkeypatch.setenv("PVE1_TOKEN_SECRET", "x")
+    monkeypatch.setenv("PVE2_TOKEN_SECRET", "x")
+    path = _write(
+        tmp_path / "beaconmcp.yaml",
+        """
+        version: 1
+        proxmox:
+          nodes:
+            - name: pve1
+              host: 10.0.0.1
+              token_id: root@pam!beaconmcp
+              token_secret: ${PVE1_TOKEN_SECRET}
+            - name: pve2
+              host: 10.0.0.2
+              token_id: root@pam!beaconmcp
+              token_secret: ${PVE2_TOKEN_SECRET}
+        ssh:
+          defaults:
+            user: root
+            key_file: ~/.ssh/homelab
+          inherit_proxmox_nodes: true
+        """,
+    )
+    cfg = Config.load(config_path=path)
+    assert cfg.ssh is not None
+    names = sorted(h.name for h in cfg.ssh.hosts)
+    assert names == ["pve1", "pve2"]
+    pve1 = next(h for h in cfg.ssh.hosts if h.name == "pve1")
+    assert pve1.host == "10.0.0.1"
+    assert pve1.user == "root"
+    assert pve1.key_file == "~/.ssh/homelab"
+    assert pve1.password is None
+
+
+def test_ssh_inherit_proxmox_nodes_explicit_override_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicit ssh.hosts[] entry shadows inheritance by name or address.
+
+    Here pve2 is declared explicitly; inheritance must only synthesize pve1.
+    """
+    monkeypatch.setenv("PVE1_TOKEN_SECRET", "x")
+    monkeypatch.setenv("PVE2_TOKEN_SECRET", "x")
+    monkeypatch.setenv("PVE2_PW", "specific")
+    path = _write(
+        tmp_path / "beaconmcp.yaml",
+        """
+        version: 1
+        proxmox:
+          nodes:
+            - name: pve1
+              host: 10.0.0.1
+              token_id: root@pam!beaconmcp
+              token_secret: ${PVE1_TOKEN_SECRET}
+            - name: pve2
+              host: 10.0.0.2
+              token_id: root@pam!beaconmcp
+              token_secret: ${PVE2_TOKEN_SECRET}
+        ssh:
+          defaults:
+            user: root
+            key_file: ~/.ssh/homelab
+          inherit_proxmox_nodes: true
+          hosts:
+            - name: pve2
+              host: 10.0.0.2
+              user: admin
+              password: ${PVE2_PW}
+        """,
+    )
+    cfg = Config.load(config_path=path)
+    assert cfg.ssh is not None
+    pve2 = next(h for h in cfg.ssh.hosts if h.name == "pve2")
+    assert pve2.user == "admin"
+    assert pve2.password == "specific"
+    # pve1 still inherits.
+    pve1 = next(h for h in cfg.ssh.hosts if h.name == "pve1")
+    assert pve1.key_file == "~/.ssh/homelab"
+
+
+def test_ssh_inherit_proxmox_nodes_requires_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``inherit_proxmox_nodes: true`` without ``defaults:`` is rejected."""
+    monkeypatch.setenv("PVE1_TOKEN_SECRET", "x")
+    path = _write(
+        tmp_path / "beaconmcp.yaml",
+        """
+        version: 1
+        proxmox:
+          nodes:
+            - name: pve1
+              host: 10.0.0.1
+              token_id: root@pam!beaconmcp
+              token_secret: ${PVE1_TOKEN_SECRET}
+        ssh:
+          inherit_proxmox_nodes: true
+        """,
+    )
+    with pytest.raises(ConfigError, match=r"requires 'ssh\.defaults"):
+        Config.load(config_path=path)
+
+
+def test_ssh_defaults_requires_one_auth_method(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Defaults block follows the same rule as an explicit host entry."""
+    monkeypatch.setenv("PVE1_TOKEN_SECRET", "x")
+    path = _write(
+        tmp_path / "beaconmcp.yaml",
+        """
+        version: 1
+        proxmox:
+          nodes:
+            - name: pve1
+              host: 10.0.0.1
+              token_id: root@pam!beaconmcp
+              token_secret: ${PVE1_TOKEN_SECRET}
+        ssh:
+          defaults:
+            user: root
+          inherit_proxmox_nodes: true
+        """,
+    )
+    with pytest.raises(ConfigError, match="ssh.defaults.*neither"):
         Config.load(config_path=path)
 
 
@@ -261,7 +403,12 @@ def test_ssh_host_requires_one_auth_method(
 
 
 def test_ssh_empty_hosts_list_rejected(tmp_path: Path) -> None:
-    """An ssh: section with no hosts[] entries is a config mistake."""
+    """An ssh: section that resolves to zero hosts is a config mistake.
+
+    Empty ``hosts: []`` with no ``inherit_proxmox_nodes`` → the SSH section
+    contributes nothing, which is almost certainly an oversight. Require
+    the user to either declare a host or flip inheritance on.
+    """
     path = _write(
         tmp_path / "beaconmcp.yaml",
         """
@@ -270,7 +417,7 @@ def test_ssh_empty_hosts_list_rejected(tmp_path: Path) -> None:
           hosts: []
         """,
     )
-    with pytest.raises(ConfigError, match="at least one host entry"):
+    with pytest.raises(ConfigError, match="inherit_proxmox_nodes"):
         Config.load(config_path=path)
 
 
@@ -411,6 +558,58 @@ def test_redacted_masks_secrets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert "1234567890" not in s
     assert "***" in redacted["proxmox"]["nodes"][0]["token_secret"]
     assert "***" in redacted["ssh"]["hosts"][0]["password"]
+
+
+def test_server_trusted_proxies_cloudflare_macro_expands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VPS_PW", "pw")
+    path = _write(
+        tmp_path / "beaconmcp.yaml",
+        """
+        version: 1
+        server:
+          trusted_proxies:
+            - cloudflare
+            - 127.0.0.1
+            - 127.0.0.1
+        ssh:
+          hosts:
+            - name: vps1
+              host: 198.51.100.10
+              user: root
+              password: ${VPS_PW}
+        """,
+    )
+
+    cfg = Config.load(config_path=path)
+    assert "173.245.48.0/20" in cfg.server.trusted_proxies
+    assert "2a06:98c0::/29" in cfg.server.trusted_proxies
+    assert cfg.server.trusted_proxies.count("127.0.0.1") == 1
+    assert "trusted_proxies" in cfg.redacted()["server"]
+
+
+def test_server_trusted_proxies_must_be_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VPS_PW", "pw")
+    path = _write(
+        tmp_path / "beaconmcp.yaml",
+        """
+        version: 1
+        server:
+          trusted_proxies: cloudflare
+        ssh:
+          hosts:
+            - name: vps1
+              host: 198.51.100.10
+              user: root
+              password: ${VPS_PW}
+        """,
+    )
+
+    with pytest.raises(ConfigError, match="server.trusted_proxies"):
+        Config.load(config_path=path)
 
 
 def test_get_ssh_host_accessors(

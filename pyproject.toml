@@ -23,6 +23,11 @@ dependencies = [
     "httpx>=0.27",
 ]
 
+[project.optional-dependencies]
+# Interactive TUI config wizard (`beaconmcp init`). Kept optional so slim
+# server deployments don't pull the textual stack just to run the daemon.
+wizard = ["textual>=0.85"]
+
 [project.scripts]
 beaconmcp = "beaconmcp.__main__:main"
 

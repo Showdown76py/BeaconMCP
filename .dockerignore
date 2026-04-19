@@ -1,0 +1,53 @@
+# Keep the build context small — ship only what's needed to build the wheel.
+
+# VCS & editors
+.git
+.gitignore
+.github
+.vscode
+.idea
+
+# Python caches
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+*.egg-info
+build
+dist
+
+# Local venvs and env files — never bake secrets into the image
+.venv
+venv
+env
+.env
+.env.*
+!.env.example
+
+# Runtime state that should NOT go into the image
+clients.json
+dashboard.db
+*.sqlite
+*.sqlite3
+
+# Local config (user-specific — built image uses /config at runtime)
+beaconmcp.yaml
+
+# Docs / tooling / ops extras that aren't needed at runtime
+docs
+deploy/install.sh
+deploy/beaconmcp.service
+.playwright-mcp
+.assistant
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Tests aren't shipped in the wheel
+tests
