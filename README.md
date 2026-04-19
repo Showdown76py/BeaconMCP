@@ -229,6 +229,9 @@ BeaconMCP exposes tools that cause irreversible changes: `ssh_exec_command*`, `p
 | `proxmox_vm_clone` | Clone an existing one. |
 | `proxmox_vm_migrate` | Migrate across nodes. |
 | `proxmox_vm_config` | Read or update configuration. |
+| `proxmox_backup_create` | Trigger a new backup of a VM or container. |
+| `proxmox_backup_list` | List available vzdump backup archives on a storage pool. |
+| `proxmox_backup_restore` | Restore a VM or container from a backup archive. |
 
 ### Proxmox — system (5)
 
@@ -239,6 +242,8 @@ BeaconMCP exposes tools that cause irreversible changes: `ssh_exec_command*`, `p
 | `proxmox_exec_command` | Command inside a VM or container (sync, via QEMU Guest Agent). |
 | `proxmox_exec_command_async` | Long-running command (async). |
 | `proxmox_exec_get_result` | Fetch the result of an async command. |
+| `proxmox_read_file` | Safely read a file from a VM (via QEMU Guest Agent). |
+| `proxmox_write_file` | Safely write a file to a VM (via QEMU Guest Agent). |
 
 ### SSH fallback (4)
 

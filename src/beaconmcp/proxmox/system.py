@@ -119,6 +119,55 @@ def _exec_lxc_unsupported(vmid: int) -> dict[str, Any]:
 def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
     """Register Proxmox system administration and command execution tools."""
 
+
+    @mcp.tool()
+    async def proxmox_read_file(node: str, vmid: int, path: str) -> dict[str, Any]:
+        """Read a file from a VM or container.
+        
+        For VMs, this uses the QEMU Guest Agent safely.
+        For containers, this requires SSH to be configured.
+        """
+        vm_type = _detect_vm_type(client, node, vmid)
+        if not vm_type:
+            return {"error": f"VM/CT {vmid} not found on node '{node}'."}
+            
+        if vm_type == "qemu":
+            result = client.get(node, f"nodes/{node}/qemu/{vmid}/agent/file-read", file=path)
+            if isinstance(result, dict) and "error" in result:
+                return result
+            # QEMU Guest Agent returns file content base64-encoded
+            try:
+                if isinstance(result, dict) and "content" in result:
+                    import base64
+                    content = base64.b64decode(result["content"]).decode("utf-8")
+                    return {"vmid": vmid, "node": node, "path": path, "content": content}
+                return {"vmid": vmid, "node": node, "path": path, "content": str(result)}
+            except Exception as e:
+                return {"error": f"Failed to decode file content: {e}"}
+        
+        return {"error": "LXC file reading is currently unsupported via API. Please use ssh_run to cat the file."}
+
+    @mcp.tool()
+    async def proxmox_write_file(node: str, vmid: int, path: str, content: str) -> dict[str, Any]:
+        """Write a file to a VM or container.
+        
+        For VMs, this uses the QEMU Guest Agent safely to avoid shell escaping issues.
+        For containers, this requires SSH to be configured.
+        """
+        vm_type = _detect_vm_type(client, node, vmid)
+        if not vm_type:
+            return {"error": f"VM/CT {vmid} not found on node '{node}'."}
+            
+        if vm_type == "qemu":
+            import base64
+            encoded = base64.b64encode(content.encode("utf-8")).decode("utf-8")
+            result = client.post(node, f"nodes/{node}/qemu/{vmid}/agent/file-write", file=path, content=encoded, encode=1)
+            if isinstance(result, dict) and "error" in result:
+                return result
+            return {"vmid": vmid, "node": node, "path": path, "action": "file_write", "status": "success"}
+            
+        return {"error": "LXC file writing is currently unsupported via API. Please use ssh_run to write the file."}
+
     @mcp.tool()
     def proxmox_storage_status(node: str = "") -> dict[str, Any]:
         """Get storage status across the cluster: usage, type, content types.

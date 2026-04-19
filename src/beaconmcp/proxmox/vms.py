@@ -165,3 +165,97 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         if isinstance(result, dict) and "error" in result:
             return result
         return {"vmid": vmid, "node": node, "action": "config_update", "applied": updates}
+
+    @mcp.tool()
+    def proxmox_backup_create(node: str, vmid: int, storage: str, mode: str = "snapshot", compress: str = "zstd", notes: str = "") -> dict[str, Any]:
+        """Create a new backup of a VM or container.
+        
+        Args:
+            storage: The storage pool where the backup will be saved (e.g. 'local', 'pbs', 'nfs').
+            mode: 'stop', 'suspend', or 'snapshot' (default is 'snapshot' for zero downtime).
+            compress: Compression algorithm ('zstd', 'lzo', 'gzip', or '0' for none).
+            notes: Optional description for the backup.
+        """
+        vm_type = _detect_vm_type(client, node, vmid)
+        if not vm_type:
+            return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
+            
+        params = {
+            "vmid": vmid,
+            "storage": storage,
+            "mode": mode,
+            "compress": compress
+        }
+        if notes:
+            params["notes"] = notes
+            
+        result = client.post(node, "nodes/{node}/vzdump", **params)
+        if isinstance(result, dict) and "error" in result:
+            return result
+        return {"vmid": vmid, "node": node, "action": "backup_create", "storage": storage, "upid": result}
+
+    @mcp.tool()
+    def proxmox_backup_list(node: str, storage: str, vmid: int | None = None) -> dict[str, Any]:
+        """List available backups (vzdump archives) on a specific storage pool.
+        
+        Args:
+            storage: The storage pool to query (e.g. 'local', 'pbs', 'nfs').
+            vmid: Filter backups by a specific VM/CT.
+        """
+        # GET /nodes/{node}/storage/{storage}/content?content=backup
+        params = {"content": "backup"}
+        if vmid is not None:
+            params["vmid"] = vmid
+            
+        data = client.get(node, f"nodes/{node}/storage/{storage}/content", **params)
+        if isinstance(data, dict) and "error" in data:
+            return data
+            
+        if not isinstance(data, list):
+            return {"backups": []}
+            
+        # Standardize the output for the LLM
+        backups = []
+        for b in data:
+            backups.append({
+                "volid": b.get("volid"),
+                "vmid": b.get("vmid"),
+                "format": b.get("format"),
+                "size_gb": round(b.get("size", 0) / 1073741824, 2),
+                "ctime": b.get("ctime"),
+                "notes": b.get("notes", "")
+            })
+            
+        return {"node": node, "storage": storage, "backups": backups}
+
+    @mcp.tool()
+    def proxmox_backup_restore(node: str, vmid: int, archive: str, force: bool = False, storage: str = "local-lvm") -> dict[str, Any]:
+        """Restore a VM or container from a backup archive.
+        
+        Args:
+            archive: The full volume ID of the backup archive (e.g. 'local:backup/vzdump-qemu-100-2023_10_25-00_00_00.vma.zst').
+                     Use proxmox_backup_list to find the correct 'volid'.
+            force: If True, overwrites an existing VM/CT if it already exists.
+            storage: Target storage for the restored disks (default 'local-lvm').
+        """
+        # Determine if archive is for QEMU or LXC
+        if "qemu" in archive:
+            endpoint = f"nodes/{node}/qemu"
+            vm_type = "qemu"
+        elif "lxc" in archive:
+            endpoint = f"nodes/{node}/lxc"
+            vm_type = "lxc"
+        else:
+            return {"error": "Could not determine if backup is for 'qemu' or 'lxc' from archive name. Archive must contain 'qemu' or 'lxc'."}
+            
+        params = {
+            "vmid": vmid,
+            "archive": archive,
+            "force": 1 if force else 0,
+            "storage": storage
+        }
+            
+        result = client.post(node, endpoint, **params)
+        if isinstance(result, dict) and "error" in result:
+            return result
+        return {"vmid": vmid, "node": node, "action": "backup_restore", "archive": archive, "upid": result}

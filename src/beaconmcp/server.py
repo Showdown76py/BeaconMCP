@@ -158,6 +158,8 @@ def beaconmcp_context() -> str:
     if config.pve_nodes:
         steps.append("Check cluster state with proxmox_list_nodes.")
         steps.append("For a specific node, use proxmox_node_status.")
+        steps.append("For VM configuration issues, use proxmox_read_file to safely read configs via QEMU.")
+        steps.append("Always create a snapshot or proxmox_backup_create before making destructive changes to a VM.")
     if config.pve_nodes and config.ssh and config.ssh.hosts:
         steps.append(
             "If a Proxmox node is unreachable via API, try ssh_exec_command "
