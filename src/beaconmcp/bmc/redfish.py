@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from ..config import BMCConfig, Config
+from ..config import BMCDevice, Config
 from .base import BMCClient
 
 
@@ -16,12 +16,12 @@ class RedfishBackend(BMCClient):
 
     type = "redfish"
 
-    def __init__(self, device: BMCConfig, config: Config) -> None:
+    def __init__(self, device: BMCDevice, config: Config) -> None:
         self.device = device
         self.id = device.id
         self._url = f"https://{device.host}"
         self._auth = (device.user, device.password)
-        self._verify = False  # BMC certificates are usually self-signed
+        self._verify = device.verify_tls  # BMC certificates are usually self-signed
 
     async def _request(self, method: str, path: str, json: dict[str, Any] | None = None) -> dict[str, Any]:
         """Execute an async HTTP request to the Redfish API."""

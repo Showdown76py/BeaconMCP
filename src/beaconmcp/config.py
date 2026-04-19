@@ -39,11 +39,12 @@ class PVENode:
 @dataclass
 class BMCDevice:
     id: str
-    type: str  # "hp_ilo" | "ipmi" | "idrac" | "supermicro"
+    type: str  # "hp_ilo" | "ipmi" | "idrac" | "supermicro" | "redfish"
     host: str
     user: str
     password: str
     jump_host: str | None = None  # Proxmox node name, or None for direct access
+    verify_tls: bool = False  # Enable/disable strict TLS validation for HTTPS APIs
 
 
 @dataclass
