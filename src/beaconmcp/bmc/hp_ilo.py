@@ -66,7 +66,14 @@ class HPILOBackend:
             )
 
         try:
-            self._tunnel = await _connect_to_host(jump_spec)
+            kh = self._config.ssh.known_hosts if self._config.ssh else None
+            strict = (
+                self._config.ssh.strict_host_key_checking
+                if self._config.ssh else False
+            )
+            self._tunnel = await _connect_to_host(
+                jump_spec, known_hosts=kh, strict_host_key_checking=strict,
+            )
             self._tunnel_listener = await self._tunnel.forward_local_port(
                 "", 0, self._device.host, 443
             )

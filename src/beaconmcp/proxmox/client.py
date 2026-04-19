@@ -1,11 +1,24 @@
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 
 from proxmoxer import ProxmoxAPI
 from requests.exceptions import ConnectionError, Timeout
 
 from ..config import Config
+
+_logger = logging.getLogger("beaconmcp.proxmox")
+
+# Transient-error retry: Proxmox API over the wire frequently hiccups on
+# momentary network blips (TCP reset during cluster sync, TLS renegotiation
+# behind a reverse proxy, etc). One quick retry with a short backoff covers
+# the overwhelming majority without turning sustained outages into slow
+# failures. Keep the numbers small and obvious -- callers already get a
+# descriptive error dict back if retries don't help.
+_RETRY_ATTEMPTS = 2
+_RETRY_BACKOFF_SECONDS = 0.5
 
 
 class ProxmoxClient:
@@ -36,24 +49,41 @@ class ProxmoxClient:
     def api_call(self, node_name: str, method: str, path: str, **kwargs: Any) -> Any:
         """Execute an API call against a Proxmox node.
 
-        Returns the result or a dict with 'error' key on failure.
+        Returns the result or a dict with 'error' key on failure. Transient
+        network errors get one quick retry; sustained unreachability returns
+        the descriptive error message.
         """
-        try:
-            conn = self._get_connection(node_name)
-            obj = conn
-            for part in path.strip("/").split("/"):
-                obj = getattr(obj, part)
-            return getattr(obj, method)(**kwargs)
-        except NodeNotFoundError:
-            raise
-        except (ConnectionError, Timeout) as e:
-            return {
-                "error": f"Node '{node_name}' is unreachable: {e}. "
-                "Try ssh_exec_command to access the host directly, "
-                "or ilo_health_status if the server may be physically down."
-            }
-        except Exception as e:
-            return {"error": f"Proxmox API error on '{node_name}': {e}"}
+        last_exc: Exception | None = None
+        for attempt in range(_RETRY_ATTEMPTS):
+            try:
+                conn = self._get_connection(node_name)
+                obj = conn
+                for part in path.strip("/").split("/"):
+                    obj = getattr(obj, part)
+                return getattr(obj, method)(**kwargs)
+            except NodeNotFoundError:
+                raise
+            except (ConnectionError, Timeout) as e:
+                last_exc = e
+                # Drop the cached connection so the retry rebuilds TLS state
+                # rather than re-using a half-broken socket.
+                self._connections.pop(node_name, None)
+                if attempt + 1 < _RETRY_ATTEMPTS:
+                    _logger.warning(
+                        "transient error on %s %s (attempt %d/%d): %s",
+                        node_name, path, attempt + 1, _RETRY_ATTEMPTS, e,
+                    )
+                    time.sleep(_RETRY_BACKOFF_SECONDS)
+                    continue
+                return {
+                    "error": f"Node '{node_name}' is unreachable: {e}. "
+                    "Try ssh_run to access the host directly, "
+                    "or bmc_health_status if the server may be physically down."
+                }
+            except Exception as e:
+                return {"error": f"Proxmox API error on '{node_name}': {e}"}
+        # Defensive fallback -- loop should always return above.
+        return {"error": f"Node '{node_name}' is unreachable: {last_exc}"}
 
     def get(self, node_name: str, path: str, **kwargs: Any) -> Any:
         return self.api_call(node_name, "get", path, **kwargs)

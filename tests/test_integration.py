@@ -299,7 +299,7 @@ def test_proxmox_exec(runner: TestRunner, tools: dict) -> None:
 
     if not running_qemu:
         runner.record(
-            "proxmox_exec_command (skipped: no running QEMU VM)",
+            "proxmox_run (skipped: no running QEMU VM)",
             True,
             "Need a running QEMU VM with guest agent to test exec",
         )
@@ -309,33 +309,33 @@ def test_proxmox_exec(runner: TestRunner, tools: dict) -> None:
     print(f"  Using VMID {vmid} ({running_qemu.get('name', '?')}) for exec tests")
 
     # T9: Sync exec -- simple command
-    result = call_tool(tools, "proxmox_exec_command", node="pve1", vmid=vmid,
+    result = call_tool(tools, "proxmox_run", node="pve1", vmid=vmid,
                        command="echo BeaconMCP-test", timeout=30)
     runner.record(
-        f"proxmox_exec_command 'echo' in VM {vmid}",
-        isinstance(result, dict) and "BeaconMCP-test" in result.get("stdout", ""),
+        f"proxmox_run 'echo' in VM {vmid}",
+        isinstance(result, dict) and result.get("status") == "ok" and "BeaconMCP-test" in result.get("stdout", ""),
         f"Expected stdout containing 'BeaconMCP-test', got: {result}",
         result,
     )
 
     # T10: Sync exec -- exit code
-    result = call_tool(tools, "proxmox_exec_command", node="pve1", vmid=vmid,
+    result = call_tool(tools, "proxmox_run", node="pve1", vmid=vmid,
                        command="cat /etc/hostname", timeout=30)
     runner.record(
-        f"proxmox_exec_command 'cat /etc/hostname' returns exit_code 0",
+        f"proxmox_run 'cat /etc/hostname' returns exit_code 0",
         isinstance(result, dict) and result.get("exit_code") == 0,
         f"exit_code = {result.get('exit_code')}, stdout = {result.get('stdout', '')[:100]}",
         result,
     )
 
-    # T11: Async exec + poll
-    result = call_tool(tools, "proxmox_exec_command_async", node="pve1", vmid=vmid,
-                       command="sleep 3 && echo async-done")
+    # T11: Async start + poll via unified proxmox_run
+    result = call_tool(tools, "proxmox_run", node="pve1", vmid=vmid,
+                       command="sleep 3 && echo async-done", wait=False)
     has_exec_id = isinstance(result, dict) and "exec_id" in result
     runner.record(
-        f"proxmox_exec_command_async returns exec_id",
+        "proxmox_run(wait=False) returns exec_id",
         has_exec_id and result.get("status") == "running",
-        f"Expected status=running with exec_id",
+        "Expected status=running with exec_id",
         result,
     )
 
@@ -345,30 +345,30 @@ def test_proxmox_exec(runner: TestRunner, tools: dict) -> None:
         deadline = time.time() + 30
         final_result = None
         while time.time() < deadline:
-            final_result = call_tool(tools, "proxmox_exec_get_result", exec_id=exec_id)
+            final_result = call_tool(tools, "proxmox_run", exec_id=exec_id)
             if isinstance(final_result, dict) and final_result.get("status") != "running":
                 break
             time.sleep(2)
 
         runner.record(
-            f"proxmox_exec_get_result returns completed result",
-            isinstance(final_result, dict) and final_result.get("status") == "completed",
+            "proxmox_run(exec_id=...) returns completed result",
+            isinstance(final_result, dict) and final_result.get("status") == "ok",
             f"Final status: {final_result.get('status') if final_result else 'none'}",
             final_result,
         )
-        if isinstance(final_result, dict) and final_result.get("status") == "completed":
+        if isinstance(final_result, dict) and final_result.get("status") == "ok":
             runner.record(
-                "Async exec stdout contains 'async-done'",
+                "Async stdout contains 'async-done'",
                 "async-done" in final_result.get("stdout", ""),
                 f"stdout = {final_result.get('stdout', '')[:100]}",
             )
 
     # T12: Exec on non-existent VM
-    result = call_tool(tools, "proxmox_exec_command", node="pve1", vmid=99999,
+    result = call_tool(tools, "proxmox_run", node="pve1", vmid=99999,
                        command="echo test", timeout=10)
     runner.record(
-        "proxmox_exec_command on invalid VMID returns error",
-        isinstance(result, dict) and "error" in result,
+        "proxmox_run on invalid VMID returns error",
+        isinstance(result, dict) and result.get("status") == "error",
         f"Expected error, got: {result}",
         result,
     )
@@ -399,14 +399,14 @@ def test_proxmox_exec_lxc(runner: TestRunner, tools: dict) -> None:
     vmid = running_lxc["vmid"]
     print(f"  Using CT {vmid} ({running_lxc.get('name', '?')}) for LXC exec tests")
 
-    result = call_tool(tools, "proxmox_exec_command", node="pve1", vmid=vmid,
+    result = call_tool(tools, "proxmox_run", node="pve1", vmid=vmid,
                        command="echo LXC-test", timeout=30)
     # The Proxmox API does not expose an exec endpoint for LXC containers; the
-    # tool must return an actionable error pointing to ssh_exec_command + pct exec.
+    # tool must return an actionable error pointing to ssh_run + pct exec.
     runner.record(
-        f"proxmox_exec_command on CT {vmid} returns LXC-not-supported guidance",
+        f"proxmox_run on CT {vmid} returns LXC-not-supported guidance",
         isinstance(result, dict)
-        and "error" in result
+        and result.get("status") == "error"
         and "pct exec" in result.get("error", ""),
         f"Result: {result}",
         result,
@@ -525,7 +525,7 @@ def test_proxmox_vm_lifecycle(runner: TestRunner, tools: dict, test_vmid: int | 
 def test_ssh(runner: TestRunner, tools: dict) -> None:
     runner.section("SSH Module")
 
-    if "ssh_exec_command" not in tools:
+    if "ssh_run" not in tools:
         runner.record(
             "SSH tests (skipped: SSH not configured)",
             True,
@@ -547,37 +547,37 @@ def test_ssh(runner: TestRunner, tools: dict) -> None:
     ssh_target = _cfg.ssh.hosts[0].name
 
     # T20: SSH exec
-    result = call_tool(tools, "ssh_exec_command", host=ssh_target, command="uptime", timeout=30)
+    result = call_tool(tools, "ssh_run", host=ssh_target, command="uptime", timeout=30)
     runner.record(
-        f"ssh_exec_command 'uptime' on {ssh_target}",
-        isinstance(result, dict) and result.get("exit_code") == 0 and "load average" in result.get("stdout", ""),
+        f"ssh_run 'uptime' on {ssh_target}",
+        isinstance(result, dict) and result.get("status") == "ok" and "load average" in result.get("stdout", ""),
         f"Result: {result}",
         result,
     )
 
     # T21: SSH exec -- hostname
-    result = call_tool(tools, "ssh_exec_command", host=ssh_target, command="hostname", timeout=15)
+    result = call_tool(tools, "ssh_run", host=ssh_target, command="hostname", timeout=15)
     runner.record(
-        f"ssh_exec_command 'hostname' on {ssh_target}",
-        isinstance(result, dict) and result.get("exit_code") == 0 and len(result.get("stdout", "").strip()) > 0,
+        f"ssh_run 'hostname' on {ssh_target}",
+        isinstance(result, dict) and result.get("status") == "ok" and len(result.get("stdout", "").strip()) > 0,
         f"stdout = '{result.get('stdout', '').strip()}'",
         result,
     )
 
     # T22: SSH exec -- df (disk usage)
-    result = call_tool(tools, "ssh_exec_command", host=ssh_target, command="df -h /", timeout=15)
+    result = call_tool(tools, "ssh_run", host=ssh_target, command="df -h /", timeout=15)
     runner.record(
-        f"ssh_exec_command 'df -h /' on {ssh_target}",
-        isinstance(result, dict) and result.get("exit_code") == 0,
+        f"ssh_run 'df -h /' on {ssh_target}",
+        isinstance(result, dict) and result.get("status") == "ok",
         f"exit_code = {result.get('exit_code')}",
         result,
     )
 
     # T23: SSH exec -- failing command
-    result = call_tool(tools, "ssh_exec_command", host=ssh_target,
+    result = call_tool(tools, "ssh_run", host=ssh_target,
                        command="cat /nonexistent/file/12345", timeout=15)
     runner.record(
-        "ssh_exec_command on nonexistent file returns non-zero exit code",
+        "ssh_run on nonexistent file returns non-zero exit code",
         isinstance(result, dict) and result.get("exit_code", 0) != 0,
         f"exit_code = {result.get('exit_code')}, stderr = {result.get('stderr', '')[:100]}",
         result,
@@ -613,12 +613,12 @@ def test_ssh(runner: TestRunner, tools: dict) -> None:
             "",
         )
 
-    # T25: SSH async exec + poll
-    result = call_tool(tools, "ssh_exec_command_async", host=ssh_target,
-                       command="sleep 2 && echo ssh-async-done")
+    # T25: SSH async start + poll via unified ssh_run
+    result = call_tool(tools, "ssh_run", host=ssh_target,
+                       command="sleep 2 && echo ssh-async-done", wait=False)
     has_id = isinstance(result, dict) and "exec_id" in result
     runner.record(
-        "ssh_exec_command_async returns exec_id",
+        "ssh_run(wait=False) returns exec_id",
         has_id,
         f"Result: {result}",
         result,
@@ -630,13 +630,13 @@ def test_ssh(runner: TestRunner, tools: dict) -> None:
         deadline = time.time() + 30
         final = None
         while time.time() < deadline:
-            final = call_tool(tools, "ssh_exec_get_result", exec_id=exec_id)
+            final = call_tool(tools, "ssh_run", exec_id=exec_id)
             if isinstance(final, dict) and final.get("status") != "running":
                 break
             time.sleep(2)
         runner.record(
-            "ssh_exec_get_result returns completed",
-            isinstance(final, dict) and final.get("status") == "completed",
+            "ssh_run(exec_id=...) returns completed",
+            isinstance(final, dict) and final.get("status") == "ok",
             f"Final: {final}",
             final,
         )
@@ -766,6 +766,65 @@ def test_mcp_resources(runner: TestRunner) -> None:
     )
 
 
+def test_aggregators(runner: TestRunner, tools: dict) -> None:
+    runner.section("Aggregators & Field Filtering")
+
+    # A1: cluster_overview returns nodes + vms + storage in one call
+    result = call_tool(tools, "cluster_overview")
+    runner.record(
+        "cluster_overview returns nodes, vms, storage",
+        isinstance(result, dict)
+        and "nodes" in result and "vms" in result and "storage" in result,
+        f"Keys: {list(result.keys()) if isinstance(result, dict) else type(result).__name__}",
+        result,
+    )
+
+    # A2: cluster_overview(include_storage=False) omits storage
+    result = call_tool(tools, "cluster_overview", include_storage=False)
+    runner.record(
+        "cluster_overview(include_storage=False) omits storage",
+        isinstance(result, dict) and "nodes" in result and "vms" in result
+        and "storage" not in result,
+        f"storage key present: {'storage' in result if isinstance(result, dict) else 'N/A'}",
+        result,
+    )
+
+    # A3: cluster_health on first configured node
+    from beaconmcp.server import config as _cfg
+    first_node = _cfg.pve_nodes[0].name if _cfg.pve_nodes else ""
+    if first_node:
+        result = call_tool(tools, "cluster_health", node=first_node)
+        runner.record(
+            f"cluster_health(node='{first_node}') returns metrics + errors",
+            isinstance(result, dict) and ("cpu_pct" in result or "error" in result),
+            f"Keys: {list(result.keys()) if isinstance(result, dict) else type(result).__name__}",
+            result,
+        )
+
+    # A4: vm_find wildcard
+    result = call_tool(tools, "vm_find", pattern="*")
+    runner.record(
+        "vm_find('*') returns vms list",
+        isinstance(result, dict) and "vms" in result and "total" in result,
+        f"Got {result.get('total') if isinstance(result, dict) else 0} matches",
+        result,
+    )
+
+    # A5: fields filter on proxmox_list_nodes
+    result = call_tool(tools, "proxmox_list_nodes", fields=["name", "status"])
+    ok = (
+        isinstance(result, dict)
+        and isinstance(result.get("nodes"), list)
+        and all(set(n.keys()).issubset({"name", "status", "error"}) for n in result["nodes"])
+    )
+    runner.record(
+        "proxmox_list_nodes(fields=['name','status']) trims response",
+        ok,
+        f"Sample: {result['nodes'][:1] if isinstance(result, dict) and result.get('nodes') else 'empty'}",
+        result,
+    )
+
+
 def test_error_handling(runner: TestRunner, tools: dict) -> None:
     runner.section("Error Handling")
 
@@ -787,8 +846,8 @@ def test_error_handling(runner: TestRunner, tools: dict) -> None:
         result,
     )
 
-    # T37: Invalid exec_id
-    result = call_tool(tools, "proxmox_exec_get_result", exec_id="nonexistent")
+    # T37: Invalid exec_id (via unified proxmox_run poll mode)
+    result = call_tool(tools, "proxmox_run", exec_id="nonexistent")
     runner.record(
         "Invalid exec_id returns error",
         isinstance(result, dict) and "error" in result,
@@ -796,8 +855,8 @@ def test_error_handling(runner: TestRunner, tools: dict) -> None:
         result,
     )
 
-    if "ssh_exec_get_result" in tools:
-        result = call_tool(tools, "ssh_exec_get_result", exec_id="nonexistent")
+    if "ssh_run" in tools:
+        result = call_tool(tools, "ssh_run", exec_id="nonexistent")
         runner.record(
             "Invalid SSH exec_id returns error",
             isinstance(result, dict) and "error" in result,
@@ -835,6 +894,7 @@ def main() -> None:
         test_proxmox_exec(runner, tools)
         test_proxmox_exec_lxc(runner, tools)
         test_proxmox_vm_lifecycle(runner, tools, args.test_vmid)
+        test_aggregators(runner, tools)
         test_error_handling(runner, tools)
 
     if sections in ("ssh", "all"):

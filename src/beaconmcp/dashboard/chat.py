@@ -142,17 +142,41 @@ ChatEvent = (
 
 # Tool names that MUST go through a human approval step before we run
 # them from a Gemini turn. Anything that can fire arbitrary shell on a
-# host or VM (SSH directly, QEMU Guest Agent exec via proxmox_exec_*)
-# belongs here -- otherwise a single compromised/confused turn could
-# rm -rf a production box. ``proxmox_exec_get_result`` is read-only so
-# it stays unconfirmed. Keep this list tight; every entry adds a modal
-# click to the UX.
+# host or VM (SSH directly, QEMU Guest Agent exec via proxmox_run) belongs
+# here -- otherwise a single compromised/confused turn could rm -rf a
+# production box. Legacy ``*_exec_command*`` names are kept for
+# defense-in-depth in case an older MCP server is still wired up.
+# Keep this list tight; every entry adds a modal click to the UX.
 _NEEDS_CONFIRMATION: frozenset[str] = frozenset({
+    # Current (unified) tools.
+    "ssh_run",
+    "proxmox_run",
+    # Legacy names (pre-unified tools) -- kept defensively.
     "ssh_exec_command",
     "ssh_exec_command_async",
     "proxmox_exec_command",
     "proxmox_exec_command_async",
 })
+
+
+def _tool_call_requires_confirmation(name: str, args: Any) -> bool:
+    """Return True when a tool call needs human approval before running.
+
+    The unified ``ssh_run`` / ``proxmox_run`` tools have three call patterns
+    (sync start, async start, poll existing by ``exec_id``). Only the start
+    patterns actually execute shell; a pure poll call -- where ``exec_id``
+    is set and ``command`` is not -- is read-only and must not trigger a
+    confirmation modal. We keep the allow-list name-based for everything
+    else, then peel off the poll case here.
+    """
+    if name not in _NEEDS_CONFIRMATION:
+        return False
+    if name in {"ssh_run", "proxmox_run"} and isinstance(args, dict):
+        exec_id = args.get("exec_id")
+        command = args.get("command")
+        if exec_id and not command:
+            return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -274,12 +298,12 @@ class GeminiChatEngine:
     """Gemini-backed engine that orchestrates MCP tool calls in-process.
 
     We open a local MCP ``ClientSession`` against the BeaconMCP endpoint
-    using the user's bearer, and pass that session to google-genai as a
-    tool. The SDK auto-discovers the tools, handles function-call /
-    function-response bookkeeping, and emits text / function_call /
-    function_response parts through the streaming API. This path does
-    NOT use the ``McpServer`` remote tool (where Google's backend calls
-    our MCP directly) — that feature is preview-gated and returned
+    using the user's bearer, and run a manual function-calling loop over
+    MCP declarations. For Gemini 3 models we also enable the built-in
+    Google Search tool and surface its server-side tool invocations in
+    the same dashboard tool timeline. This path does NOT use the
+    ``McpServer`` remote tool (where Google's backend calls our MCP
+    directly) — that feature is preview-gated and returned
     ``PERMISSION_DENIED`` on standard API keys.
     """
 
@@ -388,12 +412,14 @@ class GeminiChatEngine:
 
         tool_starts: dict[str, float] = {}
         seen_tool_ids: set[str] = set()
+        server_tool_name_by_id: dict[str, str] = {}
 
         # Accumulated across every ``generate_content_stream`` round in
         # this turn so the dashboard can charge the client once per turn.
         usage_total_prompt = 0
         usage_total_cached = 0
         usage_total_output = 0
+        emitted_visible_text = False
 
         contents = self._build_contents(turn.history, turn.user_text)
         thinking = self._build_thinking_config(turn.model, turn.effort)
@@ -483,7 +509,9 @@ class GeminiChatEngine:
                     # it through as Gemini's system_instruction so the model
                     # grounds its answers on what the server actually exposes
                     # instead of hallucinating from tool-name shapes.
-                    server_instructions = (init_result.instructions or "").strip() or None
+                    server_instructions = _compose_system_instruction(
+                        (init_result.instructions or "").strip() or None
+                    )
 
                     try:
                         tools_result = await session.list_tools()
@@ -512,14 +540,45 @@ class GeminiChatEngine:
                     ]
                     tools_cfg = [types.Tool(function_declarations=function_decls)]
 
-                    config = types.GenerateContentConfig(
-                        system_instruction=server_instructions,
-                        thinking_config=thinking,
-                        tools=tools_cfg,
-                        automatic_function_calling=(
+                    # Gemini web access: enable built-in Google Search on
+                    # Gemini 3+ only. 2.5 models do not reliably support
+                    # multi-tool combination in this request path.
+                    if _is_gemini_3(turn.model):
+                        web_tool = _build_google_search_tool(types)
+                        if web_tool is not None:
+                            tools_cfg.append(web_tool)
+
+                    config_kwargs: dict[str, Any] = {
+                        "system_instruction": server_instructions,
+                        "thinking_config": thinking,
+                        "tools": tools_cfg,
+                        "automatic_function_calling": (
                             types.AutomaticFunctionCallingConfig(disable=True)
                         ),
-                    )
+                    }
+
+                    # Ask Gemini to include server-side tool invocation parts
+                    # (tool_call/tool_response) in streamed chunks so the UI
+                    # can display web-search calls like regular tool cards.
+                    tool_config_cls = getattr(types, "ToolConfig", None)
+                    if tool_config_cls is not None:
+                        try:
+                            config_kwargs["tool_config"] = tool_config_cls(
+                                include_server_side_tool_invocations=True,
+                            )
+                        except TypeError:
+                            config_kwargs[
+                                "include_server_side_tool_invocations"
+                            ] = True
+
+                    try:
+                        config = types.GenerateContentConfig(**config_kwargs)
+                    except TypeError:
+                        config_kwargs.pop(
+                            "include_server_side_tool_invocations", None,
+                        )
+                        config = types.GenerateContentConfig(**config_kwargs)
+
                     client = self._ensure_client()
 
                     current_contents = list(contents)
@@ -531,7 +590,8 @@ class GeminiChatEngine:
                         )
 
                         model_parts: list = []
-                        fc_invocations: list = []  # (fc_part, fc_id)
+                        fc_invocations: list = []  # (fc_part, fc, fc_id, args)
+                        emitted_visible_text_this_round = False
                         last_usage: Any = None
                         async for chunk in stream:
                             um = getattr(chunk, "usage_metadata", None)
@@ -547,7 +607,16 @@ class GeminiChatEngine:
                                     if getattr(part, "thought", False):
                                         yield ThinkingDelta(summary=text)
                                     else:
+                                        if emitted_visible_text and not emitted_visible_text_this_round:
+                                            # Tool rounds often produce a short
+                                            # sentence before each call; insert
+                                            # a paragraph break so they don't
+                                            # visually collapse into one blob.
+                                            yield TextDelta(text="\n\n")
+                                            model_parts.append(types.Part(text="\n\n"))
                                         yield TextDelta(text=text)
+                                        emitted_visible_text = True
+                                        emitted_visible_text_this_round = True
                                     model_parts.append(
                                         types.Part(
                                             text=text,
@@ -563,16 +632,69 @@ class GeminiChatEngine:
                                         getattr(fc, "id", None)
                                         or f"fc_{len(seen_tool_ids)}"
                                     )
-                                    seen_tool_ids.add(fc_id)
-                                    tool_starts[fc_id] = time.monotonic()
                                     args = dict(getattr(fc, "args", None) or {})
-                                    fc_invocations.append((fc, fc_id, args))
-                                    model_parts.append(part)
-                                    yield ToolCallStart(
-                                        id=fc_id,
-                                        name=getattr(fc, "name", "?"),
-                                        args=args,
+                                    fc_invocations.append((part, fc, fc_id, args))
+
+                                # Server-side built-in tool invocation
+                                # (e.g. Google Search). These are emitted by
+                                # Gemini when include_server_side_tool_invocations
+                                # is enabled and should be rendered as regular
+                                # tool cards in the dashboard.
+                                tc = getattr(part, "tool_call", None)
+                                if tc:
+                                    tc_id = (
+                                        getattr(tc, "id", None)
+                                        or f"tc_{len(seen_tool_ids)}"
                                     )
+                                    if tc_id not in seen_tool_ids:
+                                        seen_tool_ids.add(tc_id)
+                                        tool_starts[tc_id] = time.monotonic()
+                                        tool_name = _tool_name_from_server_tool_type(
+                                            getattr(tc, "tool_type", None),
+                                        )
+                                        server_tool_name_by_id[tc_id] = tool_name
+                                        raw_args = _normalize_json_like(
+                                            getattr(tc, "args", None)
+                                        )
+                                        args = raw_args if isinstance(raw_args, dict) else {}
+                                        yield ToolCallStart(
+                                            id=tc_id,
+                                            name=tool_name,
+                                            args=args,
+                                        )
+                                    model_parts.append(part)
+
+                                tr = getattr(part, "tool_response", None)
+                                if tr:
+                                    tr_id = getattr(tr, "id", None) or ""
+                                    tr_id = str(tr_id) if tr_id else f"tr_{len(seen_tool_ids)}"
+                                    tool_name = server_tool_name_by_id.get(tr_id)
+                                    if not tool_name:
+                                        tool_name = _tool_name_from_server_tool_type(
+                                            getattr(tr, "tool_type", None),
+                                        )
+                                    payload = _normalize_json_like(
+                                        getattr(tr, "response", None)
+                                    )
+                                    if tr_id not in seen_tool_ids:
+                                        # If we only got a response part, still
+                                        # synthesize a start card so the timeline
+                                        # remains coherent.
+                                        seen_tool_ids.add(tr_id)
+                                        yield ToolCallStart(
+                                            id=tr_id,
+                                            name=tool_name,
+                                            args={},
+                                        )
+                                    start = tool_starts.pop(tr_id, time.monotonic())
+                                    status = "error" if _tool_response_is_error(payload) else "ok"
+                                    yield ToolCallEnd(
+                                        id=tr_id,
+                                        status=status,
+                                        preview=_short_preview(payload),
+                                        duration_ms=int((time.monotonic() - start) * 1000),
+                                    )
+                                    model_parts.append(part)
 
                         if last_usage is not None:
                             usage_total_prompt += int(
@@ -594,17 +716,34 @@ class GeminiChatEngine:
                             )
                             return  # model is done
 
+                        selected_fc = fc_invocations[:_MAX_FUNCTION_CALLS_PER_ROUND]
+                        if len(fc_invocations) > len(selected_fc):
+                            _logger.info(
+                                "gemini chat: model emitted %d function calls in one round; "
+                                "executing %d to preserve text/tool interleaving",
+                                len(fc_invocations),
+                                len(selected_fc),
+                            )
+                        model_parts.extend(fc_part for fc_part, _fc, _fc_id, _args in selected_fc)
+
                         current_contents.append(
                             types.Content(role="model", parts=model_parts)
                         )
 
                         response_parts: list = []
-                        for fc, fc_id, args in fc_invocations:
+                        for _fc_part, fc, fc_id, args in selected_fc:
                             name = getattr(fc, "name", "")
+                            seen_tool_ids.add(fc_id)
+                            tool_starts[fc_id] = time.monotonic()
+                            yield ToolCallStart(
+                                id=fc_id,
+                                name=name or "?",
+                                args=args,
+                            )
                             start = tool_starts.pop(fc_id, time.monotonic())
 
                             approved = True
-                            if name in _NEEDS_CONFIRMATION:
+                            if _tool_call_requires_confirmation(name, args):
                                 req = ToolConfirmRequired(
                                     id=fc_id, name=name, args=args,
                                 )
@@ -735,10 +874,27 @@ class GeminiChatEngine:
 
 
 # Max rounds of function_call / function_response before we give up.
-# Each round is one generate_content_stream + one batch of tool calls.
-# 10 is comfortably above realistic orchestration depth while still
+# Each round is one generate_content_stream + one tool call.
+# 50 leaves room for longer orchestrations while still
 # bounding run-away loops.
-_MAX_TOOL_ROUNDS = 10
+_MAX_TOOL_ROUNDS = 50
+
+# Keep MCP tool orchestration conversational: one tool at a time lets
+# the model add a short sentence between calls (Copilot/Assistant style).
+_MAX_FUNCTION_CALLS_PER_ROUND = 1
+
+
+def _compose_system_instruction(server_instructions: str | None) -> str:
+    """Compose dashboard system instructions for interleaved tool usage."""
+    base = (
+        "When tools are needed, never batch multiple MCP function calls in one reply. "
+        "Before each tool call, first send one short natural-language sentence "
+        "about what you are about to check. Then emit exactly one function_call "
+        "and wait for its result before deciding the next step."
+    )
+    if server_instructions:
+        return f"{base}\n\n{server_instructions}"
+    return base
 
 
 def _iter_parts(chunk: Any):
@@ -800,6 +956,110 @@ def _mcp_call_result_to_response(result: Any) -> dict:
     if structured is not None:
         out["structured"] = structured
     return out
+
+
+def _build_google_search_tool(types_mod: Any) -> Any | None:
+    """Return a google-genai built-in web-search tool when available.
+
+    SDK type names changed across releases (``GoogleSearch`` vs
+    ``ToolGoogleSearch``). We support both to keep the dashboard forward
+    compatible with minor library updates.
+    """
+    tool_cls = getattr(types_mod, "Tool", None)
+    if tool_cls is None:
+        return None
+
+    for cls_name in ("GoogleSearch", "ToolGoogleSearch", "WebSearch"):
+        search_cls = getattr(types_mod, cls_name, None)
+        if search_cls is None:
+            continue
+        try:
+            return tool_cls(google_search=search_cls())
+        except TypeError:
+            continue
+
+    # Older SDK variants expose retrieval style search.
+    gsr_cls = getattr(types_mod, "GoogleSearchRetrieval", None)
+    if gsr_cls is not None:
+        try:
+            return tool_cls(google_search_retrieval=gsr_cls())
+        except TypeError:
+            return None
+    return None
+
+
+def _normalize_json_like(value: Any) -> Any:
+    """Best-effort conversion of SDK value objects into plain JSON-ish data."""
+    if value is None or isinstance(value, (str, int, float, bool, list, dict)):
+        return value
+
+    to_dict = getattr(value, "to_json_dict", None)
+    if callable(to_dict):
+        try:
+            return to_dict()
+        except Exception:  # noqa: BLE001
+            pass
+
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return model_dump()
+        except Exception:  # noqa: BLE001
+            pass
+
+    raw = getattr(value, "__dict__", None)
+    if isinstance(raw, dict):
+        return {
+            str(k): _normalize_json_like(v)
+            for k, v in raw.items()
+            if not str(k).startswith("_")
+        }
+    return str(value)
+
+
+def _normalize_server_tool_type(tool_type: Any) -> str:
+    if tool_type is None:
+        return "TOOL_TYPE_UNSPECIFIED"
+    text = str(tool_type)
+    if "." in text:
+        text = text.split(".")[-1]
+    return text.upper()
+
+
+def _tool_name_from_server_tool_type(tool_type: Any) -> str:
+    """Map SDK server-side tool type enums to stable dashboard names."""
+    normalized = _normalize_server_tool_type(tool_type)
+    mapping = {
+        "GOOGLE_SEARCH_WEB": "google_search_web",
+        "GOOGLE_SEARCH_IMAGE": "google_search_image",
+        "GOOGLE_MAPS": "google_maps",
+        "URL_CONTEXT": "url_context",
+        "FILE_SEARCH": "file_search",
+    }
+    if normalized in mapping:
+        return mapping[normalized]
+    if normalized.startswith("TOOL_TYPE_"):
+        normalized = normalized[len("TOOL_TYPE_") :]
+    return normalized.lower() or "server_tool"
+
+
+def _tool_response_is_error(payload: Any) -> bool:
+    """Heuristic: built-in tool responses may encode failure in payload fields."""
+    if not isinstance(payload, dict):
+        return False
+
+    err = payload.get("error")
+    if err:
+        return True
+
+    status = str(payload.get("status") or "").lower()
+    if status in {"error", "failed", "failure"}:
+        return True
+
+    retrieval = _normalize_json_like(payload.get("url_retrieval_status"))
+    if isinstance(retrieval, str) and retrieval.endswith("_ERROR"):
+        return True
+    return False
 
 
 def _is_transient_error(exc: BaseException) -> bool:

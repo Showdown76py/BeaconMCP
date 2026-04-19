@@ -296,7 +296,8 @@ def test_refresh_when_bearer_expired_renders_form(client, deps):
     r = client.get("/app/refresh")
     assert r.status_code == 200
     assert "Test Client" in r.text
-    assert "2FA code" in r.text
+    # New UI replaces the "2FA code" label with the 6-digit boxes + copy.
+    assert "6-digit code" in r.text
 
 
 def test_refresh_post_re_issues_bearer(client, deps):

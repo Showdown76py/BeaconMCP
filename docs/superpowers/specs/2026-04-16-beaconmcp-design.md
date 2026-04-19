@@ -1,8 +1,18 @@
 # BeaconMCP -- Proxmox Infrastructure MCP Server
 
+> **Note (post-v1):** the three-tool exec surface described below
+> (`proxmox_exec_command` / `_async` / `_get_result` and its SSH twin)
+> has been **superseded by the unified `proxmox_run` and `ssh_run`
+> tools**. Each unified tool exposes the same three call patterns via
+> parameters: sync (default), async start (`wait=False`), and poll
+> (`exec_id=…`). The design intent -- auto-detect VM vs CT, in-memory
+> session registry, timeout fallback to async -- is preserved; only the
+> public tool names changed. See `README.md` § *Available tools* and
+> `docs/dashboard.md` for the current contract.
+
 ## Context
 
-BeaconMCP is an MCP server that gives Claude direct access to a Proxmox VE infrastructure for diagnostics, VM management, system administration, and hardware management. The motivation: when a server crashes or misbehaves, Claude should be able to diagnose the issue, check hardware health, and propose/execute resolutions -- rather than the user having to manually SSH, check logs, and relay information back and forth.
+BeaconMCP is an MCP server that gives Assistant direct access to a Proxmox VE infrastructure for diagnostics, VM management, system administration, and hardware management. The motivation: when a server crashes or misbehaves, Assistant should be able to diagnose the issue, check hardware health, and propose/execute resolutions -- rather than the user having to manually SSH, check logs, and relay information back and forth.
 
 **Infrastructure:**
 - **pve1.example.com** -- Proxmox VE node (active), exposed on the internet via HTTPS
@@ -72,15 +82,13 @@ src/beaconmcp/
 |------|-------------|----------------|
 | `proxmox_storage_status` | Storage status across the cluster | `node` (optional) |
 | `proxmox_network_config` | Network configuration of a node | `node` |
-| `proxmox_exec_command` | Execute a command inside a VM (QEMU Guest Agent) or CT (lxc exec), wait for result | `node`, `vmid`, `command`, `timeout` (default 60s) |
-| `proxmox_exec_command_async` | Start a long-running command inside a VM/CT, return exec_id | `node`, `vmid`, `command` |
-| `proxmox_exec_get_result` | Get result of an async command by exec_id | `exec_id` |
+| `proxmox_run` | Execute a command inside a QEMU VM (QEMU Guest Agent). Sync by default; pass `wait=False` to start async (returns `exec_id`), or `exec_id=…` to poll an existing session. LXC exec is not exposed by the Proxmox API; use `ssh_run` + `pct exec` on the host node. | `node`, `vmid`, `command`, `timeout` (default 60s), `wait`, `exec_id` |
 
 **Command execution design:**
-- The tool auto-detects whether the target is a VM (uses QEMU Guest Agent) or CT (uses Proxmox's built-in lxc exec). The caller does not need to know the difference.
-- `proxmox_exec_command` blocks until the command completes or timeout is reached. Returns `{"stdout": "...", "stderr": "...", "exit_code": N}`.
-- `proxmox_exec_command_async` returns immediately with `{"exec_id": "...", "status": "running"}`. Internally uses QEMU Guest Agent's native async exec for VMs (start -> PID -> poll) or background execution for CTs.
-- `proxmox_exec_get_result` returns `{"exec_id": "...", "status": "running|completed|timeout", "stdout": "...", "stderr": "...", "exit_code": N}`.
+- The tool auto-detects whether the target is a VM or CT. VMs execute via QEMU Guest Agent; CTs return an actionable error that points to `ssh_run` + `pct exec <vmid> -- <command>` on the node.
+- `proxmox_run` (default, `wait=True`) blocks until the command completes or timeout is reached. Returns `{"status": "ok", "stdout": "...", "stderr": "...", "exit_code": N, "duration_s": ...}`. On timeout it auto-switches to async and returns `{"status": "running", "exec_id": "..."}`.
+- `proxmox_run(..., wait=False)` returns immediately with `{"status": "running", "exec_id": "..."}`. Internally uses QEMU Guest Agent's native async exec for VMs (start -> PID -> poll).
+- `proxmox_run(exec_id="...")` polls an existing session and returns `{"status": "running|ok|failed|timeout", "stdout": "...", "stderr": "...", "exit_code": N}`.
 - Async exec state is held in-memory in the server process. A dict of `{exec_id: {pid, node, vmid, type, status, output}}`.
 
 ### Module iLO
@@ -106,9 +114,7 @@ Since iLO is only accessible from the local network, the module establishes an S
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
-| `ssh_exec_command` | Execute a command on any host via SSH, wait for result | `host`, `command`, `timeout` (default 60s) |
-| `ssh_exec_command_async` | Start a long-running SSH command, return exec_id | `host`, `command` |
-| `ssh_exec_get_result` | Get result of an async SSH command | `exec_id` |
+| `ssh_run` | Execute a command on any host via SSH. Sync by default; `wait=False` starts async and returns `exec_id`; `exec_id=…` polls an existing session. | `host`, `command`, `timeout` (default 60s), `wait`, `exec_id` |
 | `ssh_list_sessions` | List active async command sessions with their status | -- |
 
 SSH uses password authentication. The `host` parameter accepts:
@@ -152,14 +158,14 @@ PVE_VERIFY_SSL=false         # Set to true if using valid SSL certificates
 
 ## Error Handling
 
-- **Node unreachable:** Tools return a clear error message indicating which node is unreachable, rather than raising exceptions. Claude can then suggest remediation (check iLO, try SSH, etc.).
+- **Node unreachable:** Tools return a clear error message indicating which node is unreachable, rather than raising exceptions. Assistant can then suggest remediation (check iLO, try SSH, etc.).
 - **Authentication failures:** Logged and returned as structured errors with guidance (check token, check password, etc.).
 - **Command timeouts:** Async commands that exceed timeout are marked as `timeout` status. Partial output is preserved.
 - **iLO tunnel failure:** If pve1 (jump host) is unreachable, iLO tools return an error explaining that iLO is only accessible through pve1.
 
-## Claude Code Integration
+## Assistant Code Integration
 
-Add to `~/.claude/settings.json` or project `.claude/settings.json`:
+Add to `~/.assistant/settings.json` or project `.assistant/settings.json`:
 
 ```json
 {
@@ -190,13 +196,13 @@ Or use a `.env` file in the project directory and configure only the command.
    - Run an async command and poll for result
 3. **iLO:** Test tunnel creation + health check against the real iLO
 4. **SSH:** Test direct SSH command execution on pve1
-5. **End-to-end:** Start the MCP server, use it from Claude Code to diagnose a real scenario (e.g., "why is pve2 down?")
+5. **End-to-end:** Start the MCP server, use it from Assistant Code to diagnose a real scenario (e.g., "why is pve2 down?")
 
 ## MCP Resources & Prompts
 
 ### Infrastructure Context Resource
 
-An `infrastructure.yaml` file at the project root provides contextual information about the infrastructure. The MCP server exposes it as a resource so Claude can read it automatically.
+An `infrastructure.yaml` file at the project root provides contextual information about the infrastructure. The MCP server exposes it as a resource so Assistant can read it automatically.
 
 ```yaml
 # infrastructure.yaml
@@ -228,7 +234,7 @@ notes:
   - "API tokens must be created on each Proxmox node before use"
 ```
 
-The server exposes this as `beaconmcp://infrastructure` -- a readable resource that provides Claude with the full infrastructure context.
+The server exposes this as `beaconmcp://infrastructure` -- a readable resource that provides Assistant with the full infrastructure context.
 
 ### MCP Prompt: Infrastructure Overview
 
@@ -254,4 +260,4 @@ Reference: `/docs/prompt-engineering-guide.md` -- sections 4.1 through 4.6.
 - Proxmox built-in firewall management (can be added later)
 - Backup management (can be added later via Proxmox Backup Server API)
 - User/permission management on Proxmox
-- Automated alerting/monitoring (this is a tool for Claude, not a monitoring stack)
+- Automated alerting/monitoring (this is a tool for Assistant, not a monitoring stack)

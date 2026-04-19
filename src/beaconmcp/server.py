@@ -9,6 +9,7 @@ from mcp.types import Icon
 from .bmc import build_registry as build_bmc_registry
 from .bmc import register_bmc_tools
 from .config import Config
+from .proxmox.aggregators import register_aggregator_tools
 from .proxmox.client import ProxmoxClient
 from .proxmox.monitoring import register_monitoring_tools
 from .proxmox.system import register_system_tools
@@ -16,6 +17,10 @@ from .proxmox.vms import register_vm_tools
 from .security.tools import register_security_tools
 from .ssh.client import SSHClient
 from .ssh.tools import register_ssh_tools
+
+from functools import wraps
+import time
+from .metrics import tool_calls, tool_latency_ms
 
 config = Config.load()
 proxmox_client = ProxmoxClient(config)
@@ -40,7 +45,7 @@ _allowed_hosts = config.server.allowed_hosts or _csv_env(
 )
 _allowed_origins = config.server.allowed_origins or _csv_env(
     "BEACONMCP_ALLOWED_ORIGINS",
-    ["https://claude.ai", "https://chat.openai.com", "https://gemini.google.com"],
+    ["https://assistant.ai", "https://chat.openai.com", "https://gemini.google.com"],
 )
 
 
@@ -120,6 +125,51 @@ mcp = FastMCP(
 )
 
 
+# Wrap mcp.tool to inject metrics tracking
+_orig_tool = mcp.tool
+def _metric_tool(*args, **kwargs):
+    def decorator(func):
+        tool_name = func.__name__
+        @wraps(func)
+        async def async_wrapper(*f_args, **f_kwargs):
+            start = time.monotonic()
+            status = "ok"
+            try:
+                return await func(*f_args, **f_kwargs)
+            except Exception:
+                status = "error"
+                raise
+            finally:
+                latency = (time.monotonic() - start) * 1000
+                tool_calls.inc(tool=tool_name, status=status)
+                tool_latency_ms.observe(latency, tool=tool_name)
+        
+        @wraps(func)
+        def sync_wrapper(*f_args, **f_kwargs):
+            start = time.monotonic()
+            status = "ok"
+            try:
+                return func(*f_args, **f_kwargs)
+            except Exception:
+                status = "error"
+                raise
+            finally:
+                latency = (time.monotonic() - start) * 1000
+                tool_calls.inc(tool=tool_name, status=status)
+                tool_latency_ms.observe(latency, tool=tool_name)
+                
+        
+        import inspect
+        if inspect.iscoroutinefunction(func):
+            wrapped = async_wrapper
+        else:
+            wrapped = sync_wrapper
+
+        return _orig_tool(*args, **kwargs)(wrapped)
+    return decorator
+mcp.tool = _metric_tool
+
+
 @mcp.resource("beaconmcp://infrastructure")
 def get_infrastructure() -> str:
     """Infrastructure context: node topology, naming conventions, and access constraints."""
@@ -156,31 +206,44 @@ def beaconmcp_context() -> str:
     # tool calls that would 404.
     steps: list[str] = []
     if config.pve_nodes:
-        steps.append("Check cluster state with proxmox_list_nodes.")
-        steps.append("For a specific node, use proxmox_node_status.")
-        steps.append("For VM configuration issues, use proxmox_read_file to safely read configs via QEMU.")
-        steps.append("Always create a snapshot or proxmox_backup_create before making destructive changes to a VM.")
+        steps.append(
+            "Start with cluster_overview for the whole cluster in one call, "
+            "or cluster_health(node=...) for node metrics + BMC + recent errors."
+        )
+        steps.append(
+            "Drill in with proxmox_node_status / proxmox_list_vms as needed. "
+            "Pass fields=[...] on detail tools to trim the response."
+        )
+        steps.append(
+            "For VM configuration issues, use proxmox_read_file to safely read configs via QEMU."
+        )
+        steps.append(
+            "Find a VM by name with vm_find('web-*'); act on many at once with "
+            "vm_bulk_action(vmids=[...], action='stop'). "
+            "Consider taking a snapshot or proxmox_backup_create before a risky operation if relevant."
+        )
     if config.pve_nodes and config.ssh and config.ssh.hosts:
         steps.append(
-            "If a Proxmox node is unreachable via API, try ssh_exec_command "
-            "against the matching ssh.hosts entry."
+            "If a Proxmox node is unreachable via API, try ssh_run against "
+            "the matching ssh.hosts entry."
         )
     if bmc_registry:
         steps.append(
-            "If a host is completely unresponsive, list BMC devices with "
-            "bmc_list_devices and use bmc_health_status / bmc_power_status."
+            "If a host is completely unresponsive, cluster_health already "
+            "includes BMC facts; otherwise use bmc_list_devices + "
+            "bmc_health_status / bmc_power_status."
         )
     if config.pve_nodes and config.ssh and config.ssh.hosts:
         steps.append(
-            "For in-VM issues, prefer proxmox_exec_command (QEMU Guest Agent) "
-            "or ssh_exec_command."
+            "For in-VM issues, prefer proxmox_run (QEMU Guest Agent) or ssh_run. "
+            "Both auto-switch to async on timeout and accept exec_id for polling."
         )
     elif config.pve_nodes:
-        steps.append("For in-VM issues, use proxmox_exec_command (QEMU Guest Agent).")
+        steps.append("For in-VM issues, use proxmox_run (QEMU Guest Agent).")
     elif config.ssh and config.ssh.hosts:
         steps.append(
-            "Use ssh_exec_command on declared hosts; start "
-            "ssh_exec_command_async for anything that may exceed 60s."
+            "Use ssh_run on declared hosts. Pass wait=False for long commands; "
+            "poll with ssh_run(exec_id=...)."
         )
     workflow = "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1)) or "(no workflow: no capabilities configured)"
 
@@ -214,7 +277,10 @@ Diagnostic workflow:
 if config.pve_nodes:
     register_monitoring_tools(mcp, proxmox_client)
     register_vm_tools(mcp, proxmox_client)
-    register_system_tools(mcp, proxmox_client)
+    register_system_tools(mcp, proxmox_client, ssh_client if config.ssh and config.ssh.hosts else None)
+    # Aggregators ride on top of the Proxmox client and opportunistically
+    # pull BMC facts when the registry is non-empty.
+    register_aggregator_tools(mcp, proxmox_client, config, bmc_registry)
 if config.ssh and config.ssh.hosts:
     register_ssh_tools(mcp, ssh_client)
 if bmc_registry:
