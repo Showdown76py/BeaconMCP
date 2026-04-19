@@ -276,6 +276,10 @@ BeaconMCP exposes tools that cause irreversible changes: `ssh_run`, `proxmox_run
 | `proxmox_vm_clone` | Clone an existing one. |
 | `proxmox_vm_migrate` | Migrate across nodes. |
 | `proxmox_vm_config` | Read or update configuration. |
+| `proxmox_snapshot_list` | List all snapshots for a VM or container. |
+| `proxmox_snapshot_create` | Create a new snapshot of a VM or container. |
+| `proxmox_snapshot_rollback` | Roll back a VM or container to a previous snapshot. |
+| `proxmox_snapshot_delete` | Delete a VM or container snapshot. |
 
 ### Proxmox — system (3)
 
