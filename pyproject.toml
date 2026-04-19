@@ -20,6 +20,7 @@ dependencies = [
     "cryptography>=42",
     "jinja2>=3",
     "google-genai>=1.0",
+    "httpx",
 ]
 
 [project.scripts]
