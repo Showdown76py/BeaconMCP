@@ -1053,7 +1053,6 @@ h1 {{ margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015
     )
 
     app = Starlette(
-        middleware=[Middleware(MetricsMiddleware)],
         routes=[
             Route("/health", health),
             Route("/metrics", metrics),
@@ -1068,7 +1067,10 @@ h1 {{ margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015
             *dashboard_routes,
             Mount("/", app=mcp_app),
         ],
-        middleware=[Middleware(BaseHTTPMiddleware, dispatch=auth_middleware)],
+        middleware=[
+            Middleware(MetricsMiddleware),
+            Middleware(BaseHTTPMiddleware, dispatch=auth_middleware),
+        ],
         lifespan=lifespan,
     )
 
