@@ -18,6 +18,10 @@ from .security.tools import register_security_tools
 from .ssh.client import SSHClient
 from .ssh.tools import register_ssh_tools
 
+from functools import wraps
+import time
+from .metrics import tool_calls, tool_latency_ms
+
 config = Config.load()
 proxmox_client = ProxmoxClient(config)
 ssh_client = SSHClient(config)
@@ -41,7 +45,7 @@ _allowed_hosts = config.server.allowed_hosts or _csv_env(
 )
 _allowed_origins = config.server.allowed_origins or _csv_env(
     "BEACONMCP_ALLOWED_ORIGINS",
-    ["https://claude.ai", "https://chat.openai.com", "https://gemini.google.com"],
+    ["https://assistant.ai", "https://chat.openai.com", "https://gemini.google.com"],
 )
 
 
@@ -119,6 +123,51 @@ mcp = FastMCP(
         allowed_origins=_allowed_origins,
     ),
 )
+
+
+# Wrap mcp.tool to inject metrics tracking
+_orig_tool = mcp.tool
+def _metric_tool(*args, **kwargs):
+    def decorator(func):
+        tool_name = func.__name__
+        @wraps(func)
+        async def async_wrapper(*f_args, **f_kwargs):
+            start = time.monotonic()
+            status = "ok"
+            try:
+                return await func(*f_args, **f_kwargs)
+            except Exception:
+                status = "error"
+                raise
+            finally:
+                latency = (time.monotonic() - start) * 1000
+                tool_calls.inc(tool=tool_name, status=status)
+                tool_latency_ms.observe(latency, tool=tool_name)
+        
+        @wraps(func)
+        def sync_wrapper(*f_args, **f_kwargs):
+            start = time.monotonic()
+            status = "ok"
+            try:
+                return func(*f_args, **f_kwargs)
+            except Exception:
+                status = "error"
+                raise
+            finally:
+                latency = (time.monotonic() - start) * 1000
+                tool_calls.inc(tool=tool_name, status=status)
+                tool_latency_ms.observe(latency, tool=tool_name)
+                
+        
+        import inspect
+        if inspect.iscoroutinefunction(func):
+            wrapped = async_wrapper
+        else:
+            wrapped = sync_wrapper
+
+        return _orig_tool(*args, **kwargs)(wrapped)
+    return decorator
+mcp.tool = _metric_tool
 
 
 @mcp.resource("beaconmcp://infrastructure")

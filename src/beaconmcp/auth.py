@@ -3,7 +3,7 @@
 Supports two grants on top of a pre-provisioned client store:
 - ``client_credentials`` for non-interactive clients (scripts, server-to-server)
 - ``authorization_code`` with mandatory PKCE (S256) for browser-based clients
-  such as Claude Web / mobile connectors
+  such as Assistant Web / mobile connectors
 
 Dynamic client registration (RFC 7591) is available through a narrow,
 opt-in path: the dashboard mints a single-use bootstrap URL that lets a
@@ -81,9 +81,9 @@ CLIENTS_FILE = Path("/opt/beaconmcp/clients.json")
 # Add a new client's origin here BEFORE flipping
 # ``allow_dynamic_registration`` on for it, not after.
 TRUSTED_REDIRECT_PREFIXES: tuple[str, ...] = (
-    # Anthropic / Claude
-    "https://claude.ai/",
-    "https://claude.com/",
+    # Anthropic / Assistant
+    "https://assistant.ai/",
+    "https://assistant.com/",
     # OpenAI / ChatGPT + Codex + platform
     "https://chatgpt.com/",
     "https://chat.openai.com/",

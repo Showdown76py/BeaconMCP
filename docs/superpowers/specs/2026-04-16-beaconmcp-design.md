@@ -12,7 +12,7 @@
 
 ## Context
 
-BeaconMCP is an MCP server that gives Claude direct access to a Proxmox VE infrastructure for diagnostics, VM management, system administration, and hardware management. The motivation: when a server crashes or misbehaves, Claude should be able to diagnose the issue, check hardware health, and propose/execute resolutions -- rather than the user having to manually SSH, check logs, and relay information back and forth.
+BeaconMCP is an MCP server that gives Assistant direct access to a Proxmox VE infrastructure for diagnostics, VM management, system administration, and hardware management. The motivation: when a server crashes or misbehaves, Assistant should be able to diagnose the issue, check hardware health, and propose/execute resolutions -- rather than the user having to manually SSH, check logs, and relay information back and forth.
 
 **Infrastructure:**
 - **pve1.example.com** -- Proxmox VE node (active), exposed on the internet via HTTPS
@@ -158,14 +158,14 @@ PVE_VERIFY_SSL=false         # Set to true if using valid SSL certificates
 
 ## Error Handling
 
-- **Node unreachable:** Tools return a clear error message indicating which node is unreachable, rather than raising exceptions. Claude can then suggest remediation (check iLO, try SSH, etc.).
+- **Node unreachable:** Tools return a clear error message indicating which node is unreachable, rather than raising exceptions. Assistant can then suggest remediation (check iLO, try SSH, etc.).
 - **Authentication failures:** Logged and returned as structured errors with guidance (check token, check password, etc.).
 - **Command timeouts:** Async commands that exceed timeout are marked as `timeout` status. Partial output is preserved.
 - **iLO tunnel failure:** If pve1 (jump host) is unreachable, iLO tools return an error explaining that iLO is only accessible through pve1.
 
-## Claude Code Integration
+## Assistant Code Integration
 
-Add to `~/.claude/settings.json` or project `.claude/settings.json`:
+Add to `~/.assistant/settings.json` or project `.assistant/settings.json`:
 
 ```json
 {
@@ -196,13 +196,13 @@ Or use a `.env` file in the project directory and configure only the command.
    - Run an async command and poll for result
 3. **iLO:** Test tunnel creation + health check against the real iLO
 4. **SSH:** Test direct SSH command execution on pve1
-5. **End-to-end:** Start the MCP server, use it from Claude Code to diagnose a real scenario (e.g., "why is pve2 down?")
+5. **End-to-end:** Start the MCP server, use it from Assistant Code to diagnose a real scenario (e.g., "why is pve2 down?")
 
 ## MCP Resources & Prompts
 
 ### Infrastructure Context Resource
 
-An `infrastructure.yaml` file at the project root provides contextual information about the infrastructure. The MCP server exposes it as a resource so Claude can read it automatically.
+An `infrastructure.yaml` file at the project root provides contextual information about the infrastructure. The MCP server exposes it as a resource so Assistant can read it automatically.
 
 ```yaml
 # infrastructure.yaml
@@ -234,7 +234,7 @@ notes:
   - "API tokens must be created on each Proxmox node before use"
 ```
 
-The server exposes this as `beaconmcp://infrastructure` -- a readable resource that provides Claude with the full infrastructure context.
+The server exposes this as `beaconmcp://infrastructure` -- a readable resource that provides Assistant with the full infrastructure context.
 
 ### MCP Prompt: Infrastructure Overview
 
@@ -260,4 +260,4 @@ Reference: `/docs/prompt-engineering-guide.md` -- sections 4.1 through 4.6.
 - Proxmox built-in firewall management (can be added later)
 - Backup management (can be added later via Proxmox Backup Server API)
 - User/permission management on Proxmox
-- Automated alerting/monitoring (this is a tool for Claude, not a monitoring stack)
+- Automated alerting/monitoring (this is a tool for Assistant, not a monitoring stack)

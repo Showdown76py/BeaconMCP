@@ -1800,7 +1800,7 @@ details.cors > summary svg { color: var(--accent); }
 #tab-bearer:checked ~ .tab-panel[data-panel="bearer"] { display: block; }
 
 .view-by-platform input[type="radio"] { position: absolute; opacity: 0; pointer-events: none; }
-#p-claude:checked ~ .inner-tabs label[for="p-claude"],
+#p-assistant:checked ~ .inner-tabs label[for="p-assistant"],
 #p-chatgpt:checked ~ .inner-tabs label[for="p-chatgpt"],
 #p-gemini:checked ~ .inner-tabs label[for="p-gemini"],
 #p-mistral:checked ~ .inner-tabs label[for="p-mistral"],
@@ -1812,7 +1812,7 @@ details.cors > summary svg { color: var(--accent); }
   border-bottom-color: var(--accent);
   font-weight: 600;
 }
-#p-claude:checked ~ .tab-panel[data-panel="claude"],
+#p-assistant:checked ~ .tab-panel[data-panel="assistant"],
 #p-chatgpt:checked ~ .tab-panel[data-panel="chatgpt"],
 #p-gemini:checked ~ .tab-panel[data-panel="gemini"],
 #p-mistral:checked ~ .tab-panel[data-panel="mistral"],
@@ -1868,14 +1868,14 @@ details.cors > summary svg { color: var(--accent); }
 .tab-panel input[type="radio"] { position: absolute; opacity: 0; pointer-events: none; }
 .sub-panel { display: none; animation: fade 200ms var(--ease-out); }
 
-/* Claude variants */
+/* Assistant variants */
 #cv-web:checked ~ .sub-tabs label[for="cv-web"],
 #cv-desktop:checked ~ .sub-tabs label[for="cv-desktop"] {
   background: var(--bg-elev); color: var(--fg);
   box-shadow: 0 1px 1px rgba(0,0,0,0.05);
 }
-#cv-web:checked ~ .sub-panel[data-sub="claude-web"],
-#cv-desktop:checked ~ .sub-panel[data-sub="claude-desktop"] { display: block; }
+#cv-web:checked ~ .sub-panel[data-sub="assistant-web"],
+#cv-desktop:checked ~ .sub-panel[data-sub="assistant-desktop"] { display: block; }
 
 /* ChatGPT variants */
 #gv-web:checked ~ .sub-tabs label[for="gv-web"],

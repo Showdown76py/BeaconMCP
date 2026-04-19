@@ -104,7 +104,7 @@ def main():
     auth_sub = auth_parser.add_subparsers(dest="auth_command")
 
     create_parser = auth_sub.add_parser("create", help="Create a new client")
-    create_parser.add_argument("--name", required=True, help="Client name (e.g. 'Claude Web', 'My iPhone')")
+    create_parser.add_argument("--name", required=True, help="Client name (e.g. 'Assistant Web', 'My iPhone')")
     create_parser.add_argument("--clients-file", type=Path, default=None, help="Path to clients.json")
 
     list_parser = auth_sub.add_parser("list", help="List all clients")
@@ -244,10 +244,36 @@ def _run_http(mcp, host: str, port: int):
 
     from urllib.parse import urlencode, urlparse
 
+    from . import audit
     from . import auth
     from .auth import ClientStore, CodeStore, TokenStore, current_bearer_token
     from .ratelimit import RateLimiter, client_ip
     from .server import config
+
+    from .metrics import REGISTRY, auth_events, http_requests
+
+    class MetricsMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            start = time.monotonic()
+            path = request.url.path
+            
+            # Group dashboard and static paths to avoid cardinality explosion
+            if path.startswith("/app/api/conversations"):
+                path = "/app/api/conversations"
+            elif path.startswith("/app/"):
+                path = "/app"
+            elif path.startswith("/static/"):
+                path = "/static"
+                
+            try:
+                response = await call_next(request)
+                status = str(response.status_code)
+                return response
+            except Exception:
+                status = "500"
+                raise
+            finally:
+                http_requests.inc(path=path, status=status)
 
     # Per-IP rate limit for auth-adjacent endpoints. Numbers sized so a
     # human-driven login (with a few retries) always fits, while automated
@@ -314,7 +340,7 @@ def _run_http(mcp, host: str, port: int):
 
     async def protected_resource_metadata(request: Request) -> Response:
         # RFC 9728 - required by the MCP 2025-06-18 spec so that clients
-        # (Claude Web in particular) can discover which authorization server
+        # (Assistant Web in particular) can discover which authorization server
         # protects the /mcp resource. We act as our own authorization server.
         issuer = _issuer(request)
         return JSONResponse({
@@ -727,6 +753,8 @@ h1 {{ margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015
         client_secret = body.get("client_secret", "")
 
         if not client_store.verify(client_id, client_secret):
+            auth_events.inc(kind="token", outcome="invalid_client")
+            audit.emit("auth.token.fail", client_id=client_id, reason="invalid_client")
             return JSONResponse({"error": "invalid_client"}, status_code=401)
 
         if grant_type == "client_credentials":
@@ -753,6 +781,8 @@ h1 {{ margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015
                 )
             totp_record_success(client_id)
             token, expires_in = token_store.issue(client_id)
+            auth_events.inc(kind="token", outcome="ok")
+            audit.emit("auth.token.issue", client_id=client_id, grant_type=grant_type)
             return JSONResponse({
                 "access_token": token,
                 "token_type": "bearer",
@@ -788,11 +818,22 @@ h1 {{ margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015
     async def health(_request: Request) -> Response:
         return JSONResponse({"status": "ok", "server": "beaconmcp"})
 
+    async def metrics(_request: Request) -> Response:
+        # Prometheus text exposition format. Unauthenticated by design --
+        # scrape access is usually controlled via network ACL / reverse
+        # proxy rather than a bearer. No labels leak secrets; all values
+        # are counters/histograms. If you need auth, front with nginx.
+        return Response(
+            REGISTRY.render(),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
+
     async def auth_middleware(request: Request, call_next):
         path = request.url.path
         if path in (
             "/",
             "/health",
+            "/metrics",
             "/oauth/token",
             "/oauth/authorize",
             "/oauth/register",
@@ -1052,6 +1093,7 @@ h1 {{ margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015
     app = Starlette(
         routes=[
             Route("/health", health),
+            Route("/metrics", metrics),
             Route("/.well-known/oauth-authorization-server", oauth_metadata),
             Route("/.well-known/oauth-protected-resource", protected_resource_metadata),
             Route("/.well-known/oauth-protected-resource/mcp", protected_resource_metadata),
@@ -1063,7 +1105,10 @@ h1 {{ margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015
             *dashboard_routes,
             Mount("/", app=mcp_app),
         ],
-        middleware=[Middleware(BaseHTTPMiddleware, dispatch=auth_middleware)],
+        middleware=[
+            Middleware(MetricsMiddleware),
+            Middleware(BaseHTTPMiddleware, dispatch=auth_middleware),
+        ],
         lifespan=lifespan,
     )
 
