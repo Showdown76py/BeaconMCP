@@ -215,9 +215,12 @@ def beaconmcp_context() -> str:
             "Pass fields=[...] on detail tools to trim the response."
         )
         steps.append(
+            "For VM configuration issues, use proxmox_read_file to safely read configs via QEMU."
+        )
+        steps.append(
             "Find a VM by name with vm_find('web-*'); act on many at once with "
             "vm_bulk_action(vmids=[...], action='stop'). "
-            "Take a snapshot before a risky operation if relevant."
+            "Consider taking a snapshot or proxmox_backup_create before a risky operation if relevant."
         )
     if config.pve_nodes and config.ssh and config.ssh.hosts:
         steps.append(
