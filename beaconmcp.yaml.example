@@ -21,8 +21,9 @@ version: 1
 server:
   host: 0.0.0.0
   port: 8420
+
   # Host header allowlist for DNS-rebinding protection. Include the public
-  # FQDN behind the reverse proxy; 127.0.0.1 and localhost are already safe.
+  # FQDN behind the reverse proxy; localhost entries are useful for local dev.
   allowed_hosts:
     - mcp.example.com
     - "127.0.0.1:*"
@@ -30,15 +31,26 @@ server:
     - "[::1]:*"
   # CORS origin allowlist. Browser-based MCP clients send a CORS preflight
   # before calling /mcp; their origin MUST be listed here. Desktop / CLI
-  # clients (Claude Desktop, Gemini CLI, Cursor, VS Code, Mistral Vibe,
-  # OpenCode, …) are NOT browser-based and don't need an entry.
+  # clients (Assistant Desktop, Gemini CLI, Cursor, VS Code, Mistral Vibe,
+  # OpenCode, ...) are NOT browser-based and don't need an entry.
   allowed_origins:
-    - https://claude.ai
+    - https://assistant.ai
     - https://chatgpt.com
     - https://chat.openai.com
     - https://chat.mistral.ai
     - https://www.perplexity.ai
     - https://gemini.google.com
+
+  # Trust X-Forwarded-For only from direct peers you operate.
+  # IPs and CIDRs are accepted.
+  # - Keep loopback entries when your reverse proxy runs on the same host.
+  # - Add `cloudflare` to auto-expand to Cloudflare's published proxy CIDRs.
+  trusted_proxies:
+    - "127.0.0.1"
+    - "::1"
+    # - cloudflare
+
+  # Persistent storage for OAuth clients and TOTP secrets
   clients_file: /opt/beaconmcp/clients.json
   session_key: ${BEACONMCP_SESSION_KEY}   # optional, generated if omitted
   # Enable the OAuth Dynamic Client Registration bootstrap flow used by
@@ -51,35 +63,70 @@ server:
 # -------- Proxmox capability (optional) ------------------------------------
 # Delete this section if you have no Proxmox cluster. Tools starting with
 # `proxmox_` won't be registered.
+#
+# `host:` convention — use the node's **LAN address** whenever BeaconMCP is
+# on the same local network as the cluster. It's the one string that works
+# cleanly for *both* the Proxmox API (port 8006) and SSH inheritance (port
+# 22) — same IP, two services. A `localhost` is fine when BeaconMCP runs
+# directly on that node. Avoid public FQDNs with reverse-proxy ports (e.g.
+# `pve2.example.com:443`): the port pins the API to HTTPS and breaks the
+# `ssh.inherit_proxmox_nodes` shortcut (SSH is on :22, not :443). For a
+# fully remote node, declare it explicitly under `ssh.hosts[]` with its
+# real SSH address (Tailscale IP, VPN tunnel, bastion…).
 proxmox:
   verify_ssl: false
   # One entry per Proxmox node. N nodes supported; the first one is not special.
   # Each node needs an API token (Datacenter > Permissions > API Tokens).
   nodes:
     - name: pve1
-      host: localhost                          # node BeaconMCP runs on
+      host: 10.0.0.1                           # LAN IP — works for both API and SSH
       token_id: "root@pam!beaconmcp"           # quotes required: '!' and '@' are YAML-reserved
       token_secret: ${PVE1_TOKEN_SECRET}
 
     - name: pve2
-      host: pve2.example.com:443               # reachable remote node (reverse-proxied API)
+      host: 10.0.0.2                           # LAN IP of the second node
       token_id: "root@pam!beaconmcp"
       token_secret: ${PVE2_TOKEN_SECRET}
 
 # -------- SSH capability (optional) ----------------------------------------
 # Delete this section if you have no SSH targets. Each `hosts[]` entry is one
-# addressable target declared with its own credentials (password OR key_file,
-# exactly one). No shared/global SSH creds — every target is explicit.
+# addressable target with its own credentials (password OR key_file, exactly
+# one). An `ssh.hosts[]` entry may share a name with a `proxmox.nodes[]`
+# entry — the two live in separate tool namespaces (`ssh_*` vs `proxmox_*`)
+# so there is no routing ambiguity.
 #
-# Host names must be distinct from `proxmox.nodes[].name` (collision is
-# rejected at load time). To SSH into a Proxmox host, add it here under a
-# different name (e.g. `pve1-ssh`).
+# Typical homelab shortcut: set `inherit_proxmox_nodes: true` + `defaults:`
+# and every Proxmox node becomes SSH-reachable under its own name with the
+# default creds. Explicit `hosts[]` entries still win when they match a node
+# by name or address, so you can override per-node.
 ssh:
   # Optional helper: a numeric identifier passed to ssh_* tools (e.g. a
   # Proxmox VMID) is fed into this template, and the resulting IP is matched
   # against `hosts[].host` to pick the right credentials. Leave unset to
   # disable the shortcut.
   vmid_to_ip: "192.168.1.{id}"
+
+  # Default credentials used when `inherit_proxmox_nodes: true` synthesizes
+  # one ssh.hosts[] entry per Proxmox node. Provide exactly one of
+  # `password` or `key_file`.
+  defaults:
+    user: root
+    key_file: ~/.ssh/beaconmcp
+    # password: ${SSH_ROOT_PW}
+
+  # When true, each Proxmox node from `proxmox.nodes[]` that isn't already
+  # covered by an explicit `hosts[]` entry (matched by name OR address) is
+  # auto-declared as an SSH target using `defaults`. So `ssh_run(host="pve1")`
+  # just works without repeating credentials per node.
+  inherit_proxmox_nodes: true
+
+  # Host-key verification. Unset (default) means "accept any key on first
+  # contact" -- fine on a trusted LAN, unsafe over the public internet.
+  # Set `known_hosts` to an OpenSSH-format file to pin keys, or leave it
+  # unset and flip `strict_host_key_checking: true` to use the system
+  # `~/.ssh/known_hosts` instead.
+  # known_hosts: /etc/beaconmcp/known_hosts
+  # strict_host_key_checking: true
 
   hosts:
     - name: vps1
@@ -93,13 +140,14 @@ ssh:
       user: admin
       password: ${VPS2_PW}
 
-    # If you want to SSH into your Proxmox host (e.g. for `pct exec` on an
-    # LXC container), declare it here with a DIFFERENT name than the Proxmox
-    # node name. BMC tunneling also resolves `jump_host` against these names.
-    - name: pve1-ssh
-      host: localhost
-      user: root
-      key_file: ~/.ssh/beaconmcp
+    # Example: a Proxmox node BeaconMCP can't reach on the LAN (remote datacenter,
+    # API behind a Cloudflare tunnel on :443, etc.) — the inherited SSH entry
+    # would point at the API URL which is wrong for SSH. Declare the node here
+    # explicitly with its real SSH address and the override wins.
+    # - name: pve-remote
+    #   host: 100.64.5.3              # Tailscale IP, VPN tunnel, bastion, …
+    #   user: root
+    #   key_file: ~/.ssh/pve_remote
 
 # -------- BMC capability (optional) ----------------------------------------
 # Delete this section if you have no HP iLO / IPMI / iDRAC / Supermicro
@@ -114,7 +162,7 @@ bmc:
       # Optional: tunnel the iLO connection through an ssh.hosts[] entry
       # (useful when the BMC lives on a private management VLAN only
       # reachable from a bastion). References `ssh.hosts[].name`.
-      jump_host: pve1-ssh
+      jump_host: pve1
 
     - id: rack2-bmc
       type: ipmi

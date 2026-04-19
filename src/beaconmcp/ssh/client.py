@@ -54,19 +54,37 @@ def _prune_ssh_sessions() -> None:
         del _ssh_sessions[eid]
 
 
-async def _connect_to_host(spec: SSHHost) -> asyncssh.SSHClientConnection:
+async def _connect_to_host(
+    spec: SSHHost,
+    *,
+    known_hosts: str | None = None,
+    strict_host_key_checking: bool = False,
+) -> asyncssh.SSHClientConnection:
     """Open an asyncssh connection to a declared host using its auth method.
 
     Exposed at module level so BMC jump-host tunneling in ``bmc/hp_ilo.py``
     can reuse the same auth plumbing (password vs. key_file, port override,
     trusted host keys) instead of duplicating it.
+
+    Host-key verification:
+    * ``known_hosts`` (path): asyncssh loads the file and refuses unknown keys.
+    * ``strict_host_key_checking=True`` with no ``known_hosts``: use the
+      caller's ``~/.ssh/known_hosts`` (asyncssh's default when the kwarg
+      is omitted entirely).
+    * Neither: pass ``known_hosts=None`` -- accept any key. Default to keep
+      existing trusted-LAN deployments working unchanged.
     """
     connect_kwargs: dict[str, Any] = {
         "host": spec.host,
         "port": spec.port,
         "username": spec.user,
-        "known_hosts": None,  # infra is trusted
     }
+    if known_hosts:
+        connect_kwargs["known_hosts"] = os.path.expanduser(known_hosts)
+    elif not strict_host_key_checking:
+        # Trusted-LAN default.
+        connect_kwargs["known_hosts"] = None
+    # else: omit the kwarg -> asyncssh uses ~/.ssh/known_hosts automatically.
     if spec.password:
         connect_kwargs["password"] = spec.password
     elif spec.key_file:
@@ -143,18 +161,41 @@ class SSHClient:
             return by_addr
 
         declared = ", ".join(h.name for h in self._config.ssh.hosts) or "<none>"
+        hint = ""
+        # When the identifier matches a Proxmox node that wasn't declared as
+        # an SSH host, point the caller at the two common fixes instead of
+        # just reporting "not declared". This is the single most common
+        # foot-gun — pre-2.0 code let you SSH into a Proxmox node by name
+        # implicitly.
+        if any(n.name == identifier for n in self._config.pve_nodes):
+            hint = (
+                f" Note: {identifier!r} is a Proxmox node. To reach it via "
+                "SSH, either add it under ssh.hosts[] explicitly, or set "
+                "'ssh.inherit_proxmox_nodes: true' with 'ssh.defaults:' so "
+                "every node is auto-declared. If you meant to run something "
+                "*inside* a VM/LXC on that node, use proxmox_run(node=..., "
+                "vmid=..., command=...) instead — it goes through QEMU Guest "
+                "Agent / pct exec and doesn't need SSH."
+            )
+        elif identifier.isdigit():
+            hint = (
+                f" Note: {identifier!r} looks like a VMID. To run a command "
+                "inside that guest, prefer proxmox_run(node=..., "
+                f"vmid={identifier}, command=...)."
+            )
         raise SSHHostResolutionError(
             f"Host {identifier!r} is not declared in ssh.hosts[]. Add an "
             "entry (name, host, user, password or key_file) to enable SSH "
-            f"to this target. Declared hosts: {declared}."
+            f"to this target. Declared hosts: {declared}.{hint}"
         )
 
     def resolve_host(self, identifier: str) -> str:
         """Return the connect-target address for an identifier.
 
-        Back-compat helper used by ``ssh_exec_command_async`` to surface the
-        resolved IP/hostname in its response. Prefer :meth:`resolve` when the
-        full host spec (port, user, auth) is needed.
+        Helper used by ``ssh_run`` (and its ``wait=False`` / ``exec_id=…``
+        polling paths) to surface the resolved IP/hostname in the tool
+        response. Prefer :meth:`resolve` when the full host spec (port,
+        user, auth) is needed.
         """
         return self.resolve(identifier).host
 
@@ -182,7 +223,13 @@ class SSHClient:
                 pass
             del _connection_cache[cache_key]
 
-        conn = await _connect_to_host(host_spec)
+        kh = self._config.ssh.known_hosts if self._config.ssh else None
+        strict = (
+            self._config.ssh.strict_host_key_checking if self._config.ssh else False
+        )
+        conn = await _connect_to_host(
+            host_spec, known_hosts=kh, strict_host_key_checking=strict,
+        )
         _connection_cache[cache_key] = (conn, time.time())
         return conn
 
@@ -205,7 +252,7 @@ class SSHClient:
                 "stderr": "",
                 "exit_code": None,
                 "status": "timeout",
-                "error": f"Command timed out after {timeout}s. Use ssh_exec_command_async for long-running commands.",
+                "error": f"Command timed out after {timeout}s. Use ssh_run(..., wait=False) to start async and poll with ssh_run(exec_id=...).",
             }
         except SSHNotConfiguredError:
             raise

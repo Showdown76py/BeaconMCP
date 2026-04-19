@@ -13,7 +13,7 @@
 
 **Remote MCP server for Proxmox VE clusters, BMC-managed hardware, and SSH hosts.**
 
-Works with **Claude** (web, mobile, desktop) &bull; **ChatGPT** &bull; **Gemini** (CLI, API)
+Works with **Assistant** (web, mobile, desktop) &bull; **ChatGPT** &bull; **Gemini** (CLI, API)
 
 [Installation](#installation) &bull; [Connecting clients](#connecting-clients) &bull; [Tools](#available-tools) &bull; [Tests](#tests)
 
@@ -28,7 +28,7 @@ BeaconMCP exposes a Proxmox VE cluster, the hardware underneath it (HP iLO, gene
 - **Independent capabilities.** Enable only what you have: a full Proxmox cluster, a couple of VPS reachable by SSH, a rack with IPMI BMCs only, or any combination. The server registers tools per capability, so an SSH-only deployment never exposes `proxmox_*` tools.
 - **Three deployment modes out of the box:**
   - *Proxmox + BMC + SSH* — the reference setup (a Proxmox cluster with iLO/IPMI hardware).
-  - *SSH-only* — point it at a handful of VPS or bare-metal servers; get `ssh_exec_command` / `ssh_exec_command_async` tools backed by per-host credentials.
+  - *SSH-only* — point it at a handful of VPS or bare-metal servers; get the unified `ssh_run` tool backed by per-host credentials.
   - *Proxmox-only* or *BMC-only* — mix and match as your inventory grows.
 - **30+ MCP tools** across four modules: Proxmox (monitoring, VM lifecycle, system), SSH (per-host multi-target), BMC (hardware power/health), and security.
 - **N nodes, N BMC devices, N SSH hosts.** No hard-coded counts. Each SSH host carries its own credentials (password or key file) and is declared under `ssh.hosts[]`.
@@ -42,26 +42,28 @@ BeaconMCP exposes a Proxmox VE cluster, the hardware underneath it (HP iLO, gene
 ## Architecture
 
 ```
-Clients (Claude, ChatGPT, Gemini)
-        │
-        │ HTTPS (reverse proxy / tunnel)
-        ▼
+Clients (Assistant, ChatGPT, Gemini)
+             │
+             │ HTTPS (reverse proxy / tunnel)
+             ▼
 ┌──────────────────────────────────┐
-│   BeaconMCP  (HTTP :8420)         │
+│   BeaconMCP  (HTTP :8420)        │
 │   ├── proxmox/   → Proxmox API   │
 │   ├── ssh/       → SSH :22       │
 │   ├── bmc/       → iLO / IPMI    │
 │   └── dashboard/ → /app/*        │
 └──────────────────────────────────┘
-        │
-        │ managed cluster
-        ▼
-  Proxmox nodes (N)  ·  BMC devices (N)
+             │
+             │ managed cluster
+             ▼
+Proxmox nodes (N)  ·  BMC devices (N)
 ```
 
 BeaconMCP runs on any host that can reach the Proxmox API of every declared node and the BMC management network. It speaks MCP over Streamable HTTP and is typically placed behind a reverse proxy with DNS-rebinding protection configured via `server.allowed_hosts` in the YAML.
 
-**Recommended deployment:** run BeaconMCP **directly on one of your Proxmox nodes** (the primary one, conventionally `pve1`). That node becomes addressable as `host: localhost` in the YAML — both the Proxmox API (`:8006`) and SSH (`:22`) are reachable without a reverse proxy or tunnel, which also lets the `bmc_*` SSH-jump tunnel feature (HP iLO on a private management VLAN) work without extra configuration. Remote nodes in the cluster keep using their public FQDN.
+**Recommended deployment:** put BeaconMCP on the **same local network** as your Proxmox cluster — on one of the nodes, in a dedicated LXC / VM, or in a Docker container with host networking (see *Docker* below). That way every `proxmox.nodes[].host` is a plain **LAN IP** (e.g. `10.0.0.1`, `10.0.0.2`), usable as-is for both the Proxmox API (`:8006`) and for SSH (`:22`) — including the `ssh.inherit_proxmox_nodes` shortcut and the `bmc_*` SSH-jump tunnel for HP iLO on a private management VLAN.
+
+Public FQDNs with reverse-proxy ports (`pve2.example.com:443`) pin the entry to HTTPS and break the SSH inheritance — the SSH service is on port 22 of the node, not behind the HTTPS tunnel. For a truly remote node, declare it explicitly under `ssh.hosts[]` with its real SSH address (Tailscale IP, VPN, bastion…).
 
 ---
 
@@ -77,9 +79,37 @@ BeaconMCP runs on any host that can reach the Proxmox API of every declared node
 
 ## Installation
 
-### 1. Install
+Two supported paths: **Docker** (quickest, isolated) or the **bare-metal install script** (native systemd service). Pick whichever fits your infra — they expose the same CLI and HTTP surface.
 
-SSH to the Proxmox node that will host BeaconMCP (we recommend your primary node — pve1 in typical setups), then:
+### Option A — Docker (recommended for most setups)
+
+Requires Docker Engine 20.10+ with the Compose plugin. Runs on the Proxmox node itself, inside an LXC/VM on the same LAN, or on any box that can reach every declared node's API and SSH port directly.
+
+```bash
+git clone https://github.com/Showdown76py/BeaconMCP.git
+cd BeaconMCP
+cp beaconmcp.yaml.example beaconmcp.yaml    # edit for your topology
+cp .env.example .env                        # fill in the ${VAR} secrets
+docker compose up -d
+```
+
+The bundled [`docker-compose.yml`](docker-compose.yml) uses `network_mode: host` so the container sits directly on the LAN — LAN IPs in `proxmox.nodes[].host` just work for both the Proxmox API (`:8006`) and SSH (`:22`), which is what makes the `ssh.inherit_proxmox_nodes` shortcut practical. State (OAuth clients, dashboard DB, usage history) lives in a named volume `beaconmcp-state` and survives container recreation.
+
+Initial setup (run once, while the container is up):
+
+```bash
+docker compose exec beaconmcp beaconmcp validate-config
+docker compose exec beaconmcp beaconmcp auth create --name "Assistant Web"
+curl http://localhost:8420/health        # should return {"status":"ok",...}
+```
+
+The container listens on port 8420; put HTTPS + your FQDN in front with any reverse proxy (Caddy, nginx, Traefik, Cloudflare tunnel).
+
+**SSH key files.** If any of your `ssh.hosts[]` entries (or `ssh.defaults`) use `key_file:`, either copy the keys into the `beaconmcp-state` volume and reference them via `/state/keys/...`, or uncomment the `~/.ssh` bind mount in the compose file. Host paths like `~/.ssh/id_ed25519` don't exist inside the container — they're resolved against the container's filesystem.
+
+### Option B — Bare-metal install script
+
+SSH to the Proxmox node that will host BeaconMCP (we recommend your primary node — `pve1` in typical setups), then:
 
 ```bash
 git clone https://github.com/Showdown76py/BeaconMCP.git /opt/beaconmcp
@@ -91,13 +121,27 @@ The install script creates a `beaconmcp` system user, installs the package in ed
 
 ### 2. Configure
 
+Two ways to produce `beaconmcp.yaml`:
+
+**Guided (TUI wizard).** A terminal UI walks you through each capability (Proxmox nodes, SSH, BMC, server) with a live YAML preview on the right and adds `${VAR}` placeholders to `.env` for the secrets you'll fill in after. The same command also **edits an existing** `beaconmcp.yaml` — it parses the file into the wizard, so you can tweak and re-save without losing anything:
+
+```bash
+pip install 'beaconmcp[wizard]'   # pulls the optional textual dep
+beaconmcp init                    # creates OR edits beaconmcp.yaml, extends .env
+beaconmcp init --blank            # force a fresh draft even if the YAML exists
+```
+
+Arrow keys to browse sections, `enter` to open forms, `ctrl+s` to save without quitting, `q` to exit.
+
+**Manual.** Copy the example and edit:
+
 ```bash
 cp beaconmcp.yaml.example /opt/beaconmcp/beaconmcp.yaml
 cp .env.example /opt/beaconmcp/.env
 # Edit both: YAML defines the topology, .env holds the secrets.
 ```
 
-The YAML declares Proxmox nodes, BMC devices, SSH credentials, the dashboard configuration, and DNS-rebinding allowlists. Secrets are referenced via `${ENV_VAR}` placeholders resolved at startup against the `.env` file. Validate the result without starting the server:
+Either way, the YAML declares Proxmox nodes, BMC devices, SSH credentials, the dashboard configuration, and DNS-rebinding allowlists. Secrets are referenced via `${ENV_VAR}` placeholders resolved at startup against the `.env` file. Validate the result without starting the server:
 
 ```bash
 beaconmcp validate-config
@@ -107,7 +151,7 @@ beaconmcp validate-config
 ### 3. Provision an OAuth client
 
 ```bash
-beaconmcp auth create --name "Claude Web"
+beaconmcp auth create --name "Assistant Web"
 ```
 
 The CLI prints a client id, a client secret, and a TOTP seed (with an ASCII QR code). **Both secrets are displayed exactly once.** Scan the QR into an authenticator app (Google Authenticator, Authy, 1Password) immediately, or store the raw seed in a secrets manager.
@@ -129,7 +173,7 @@ curl http://localhost:8420/health
 
 ### 5. Expose publicly
 
-Place BeaconMCP behind a reverse proxy that terminates TLS and forwards the public hostname to `http://localhost:8420`. Declare that hostname under `server.allowed_hosts` in `beaconmcp.yaml`; without it the MCP SDK rejects incoming requests with `421 Misdirected Request` (DNS-rebinding protection).
+Place BeaconMCP behind a reverse proxy that terminates TLS and forwards the public hostname to `http://localhost:8420`. Declare that hostname under `server.allowed_hosts` in `beaconmcp.yaml`; without it the MCP SDK rejects incoming requests with `421 Misdirected Request` (DNS-rebinding protection). If you're proxying through Cloudflare, add `cloudflare` to `server.trusted_proxies` so BeaconMCP can safely trust forwarded client IPs for auth rate limiting.
 
 ---
 
@@ -140,9 +184,9 @@ Place BeaconMCP behind a reverse proxy that terminates TLS and forwards the publ
 >
 > Unattended services (scheduled jobs, CI pipelines) occasionally need machine-held TOTP. That case — with its required precautions and warnings — is covered separately in [docs/totp-automation.md](docs/totp-automation.md). Read it end-to-end before considering automation.
 
-### Claude (web, mobile, desktop)
+### Assistant (web, mobile, desktop)
 
-Claude performs the full OAuth 2.1 flow against BeaconMCP, so there is no long-lived bearer to store on its side — you type the TOTP into the authorization page whenever a new token is issued.
+Assistant performs the full OAuth 2.1 flow against BeaconMCP, so there is no long-lived bearer to store on its side — you type the TOTP into the authorization page whenever a new token is issued.
 
 1. **Settings → Integrations → Add custom connector.**
 2. Fill in:
@@ -151,9 +195,9 @@ Claude performs the full OAuth 2.1 flow against BeaconMCP, so there is no long-l
    - **OAuth Client ID** and **OAuth Client Secret** from `beaconmcp auth create`.
 3. **Add.**
 
-On first use (and after each 24-hour token expiry) Claude redirects to the BeaconMCP authorization page. Read the current 6-digit code from your authenticator app and type it in. Claude never holds the TOTP seed, and a leaked session cannot mint a new token without a fresh code from your phone.
+On first use (and after each 24-hour token expiry) Assistant redirects to the BeaconMCP authorization page. Read the current 6-digit code from your authenticator app and type it in. Assistant never holds the TOTP seed, and a leaked session cannot mint a new token without a fresh code from your phone.
 
-**Important — CORS allowlist.** Every browser-based MCP client (Claude Web, ChatGPT, Le Chat, Perplexity, Gemini Web) sends a CORS preflight before it can reach `/mcp`. Add each client's origin to `server.allowed_origins` in `beaconmcp.yaml` (see [`beaconmcp.yaml.example`](beaconmcp.yaml.example)). Desktop and CLI clients don't need this.
+**Important — CORS allowlist.** Every browser-based MCP client (Assistant Web, ChatGPT, Le Chat, Perplexity, Gemini Web) sends a CORS preflight before it can reach `/mcp`. Add each client's origin to `server.allowed_origins` in `beaconmcp.yaml` (see [`beaconmcp.yaml.example`](beaconmcp.yaml.example)). Desktop and CLI clients don't need this.
 
 ### Other clients
 
@@ -182,8 +226,11 @@ Common keys:
 |---------|-------|
 | `server.allowed_hosts` | DNS-rebinding allowlist — **must** include the public FQDN behind your reverse proxy. |
 | `server.allowed_origins` | CORS allowlist for browser-based MCP clients. |
-| `proxmox.nodes[]` | One entry per Proxmox node. Needs an API token per node. For the host BeaconMCP itself runs on, use `host: localhost` — both the API (`:8006`) and SSH (`:22`) are reachable locally without going through any reverse proxy or tunnel. Remote nodes in the cluster use their FQDN (append `:443` if a reverse proxy terminates the API). |
-| `ssh.vmid_to_ip` | Optional template (e.g. `"192.168.1.{id}"`) used by `ssh_exec_command` when the `host` argument is a bare VMID. Omit to disable numeric-ID shortcuts. |
+| `server.trusted_proxies` | Direct peers allowed to supply `X-Forwarded-For` (IPs or CIDRs). Use `cloudflare` to auto-expand Cloudflare edge ranges. |
+| `proxmox.nodes[]` | One entry per Proxmox node. Needs an API token per node. Prefer a **LAN IP** in `host:` (e.g. `10.0.0.1`) — it's the one string that works for both the Proxmox API and for SSH inheritance. `localhost` is OK when BeaconMCP runs directly on that node. Only use an FQDN with a reverse-proxy port (e.g. `:443`) for nodes you can't reach on the LAN, and declare those explicitly under `ssh.hosts[]` with their real SSH address. |
+| `ssh.hosts[]` | One entry per SSH target (VPS, Proxmox node, jump box, …). Each entry carries its own `user` + exactly one of `password` / `key_file`. Names may match `proxmox.nodes[].name`. |
+| `ssh.defaults` + `ssh.inherit_proxmox_nodes` | Homelab shortcut. Set `defaults:` (user + password/key_file) and flip `inherit_proxmox_nodes: true` — every Proxmox node becomes SSH-reachable under its own name with those defaults, no duplication. Explicit `ssh.hosts[]` entries still win when they match a node by name or address. |
+| `ssh.vmid_to_ip` | Optional template (e.g. `"192.168.1.{id}"`) used by `ssh_run` when the `host` argument is a bare VMID. The resolved IP must match an `ssh.hosts[].host` to authenticate. Omit to disable numeric-ID shortcuts. |
 | `bmc.devices[]` | Zero or more BMCs. `type` is one of `hp_ilo`, `ipmi`, `idrac` (redfish), `supermicro` (redfish), or `redfish`. `jump_host` is optional — set it to the name of a `proxmox.nodes[]` entry to route the connection over an SSH tunnel. |
 | `features.dashboard.limits` | Per-5h and per-week USD caps for the Gemini chat. Set to `0` to disable a window. |
 
@@ -193,11 +240,11 @@ Common keys:
 
 > **Never let an LLM execute shell commands on infrastructure you care about without reading the command first.**
 
-BeaconMCP exposes tools that cause irreversible changes: `ssh_exec_command*`, `proxmox_exec_command*`, `bmc_power_off`, `proxmox_vm_stop`, `proxmox_vm_create`, and more. Models do not always grasp the consequences of a command — an errant `rm -rf`, a `systemctl stop` on the wrong unit, a `pct destroy` mistaken for `pct stop`. A few working rules:
+BeaconMCP exposes tools that cause irreversible changes: `ssh_run`, `proxmox_run`, `bmc_power_off`, `proxmox_vm_stop`, `proxmox_vm_create`, `vm_bulk_action`, and more. Models do not always grasp the consequences of a command — an errant `rm -rf`, a `systemctl stop` on the wrong unit, a `pct destroy` mistaken for `pct stop`. A few working rules:
 
-- **Disable auto-approve** on every external MCP client (Claude Desktop, Gemini CLI, ChatGPT MCP). Keep per-call approval enabled; refuse "always allow this tool".
-- **Read the `command` argument** before approving any `ssh_exec_command*` or `proxmox_exec_command*` call. Ask: if this ran against the wrong VM or host, could I recover?
-- **The integrated chat** at `/app/chat` already forces human confirmation for every `ssh_exec_command*` and `proxmox_exec_command*` call. Read the arguments shown on the confirmation card even when you click through fast. No answer within 5 minutes counts as refusal.
+- **Disable auto-approve** on every external MCP client (Assistant Desktop, Gemini CLI, ChatGPT MCP). Keep per-call approval enabled; refuse "always allow this tool".
+- **Read the `command` argument** before approving any `ssh_run` or `proxmox_run` call. Ask: if this ran against the wrong VM or host, could I recover?
+- **The integrated chat** at `/app/chat` already forces human confirmation for every `ssh_run` / `proxmox_run` call that carries a `command` (polling-only calls with just `exec_id` are read-only and skip the modal). Read the arguments shown on the confirmation card even when you click through fast. No answer within 5 minutes counts as refusal.
 - **Prefer read-only tools** (`*_list_*`, `*_status`, `*_get_*`, `get_logs`, `health_status`) for exploration — they cannot break anything and are never gated by confirmation.
 - **Do not share a `/app/tokens` bearer** with a client you do not fully control. A leaked token grants arbitrary shell access on your Proxmox nodes for 24 hours.
 
@@ -229,24 +276,24 @@ BeaconMCP exposes tools that cause irreversible changes: `ssh_exec_command*`, `p
 | `proxmox_vm_clone` | Clone an existing one. |
 | `proxmox_vm_migrate` | Migrate across nodes. |
 | `proxmox_vm_config` | Read or update configuration. |
+| `proxmox_snapshot_list` | List all snapshots for a VM or container. |
+| `proxmox_snapshot_create` | Create a new snapshot of a VM or container. |
+| `proxmox_snapshot_rollback` | Roll back a VM or container to a previous snapshot. |
+| `proxmox_snapshot_delete` | Delete a VM or container snapshot. |
 
-### Proxmox — system (5)
+### Proxmox — system (3)
 
 | Tool | Description |
 |------|-------------|
 | `proxmox_storage_status` | Storage pool status. |
 | `proxmox_network_config` | Network configuration per node. |
-| `proxmox_exec_command` | Command inside a VM or container (sync, via QEMU Guest Agent). |
-| `proxmox_exec_command_async` | Long-running command (async). |
-| `proxmox_exec_get_result` | Fetch the result of an async command. |
+| `proxmox_run` | Command inside a QEMU VM via QEMU Guest Agent. Sync by default; pass `wait=False` to start async, or `exec_id=` to poll an existing session. For LXC containers, use `ssh_run` on the node with `pct exec <vmid> -- <command>`. |
 
-### SSH fallback (4)
+### SSH fallback (2)
 
 | Tool | Description |
 |------|-------------|
-| `ssh_exec_command` | Command on a host (sync). `host` accepts node names, VMIDs, hostnames, or IPs. |
-| `ssh_exec_command_async` | Long-running command (async). |
-| `ssh_exec_get_result` | Fetch the result of an async SSH command. |
+| `ssh_run` | Command on a host via SSH. `host` accepts node names, VMIDs, hostnames, or IPs. Sync by default; pass `wait=False` to start async, or `exec_id=` to poll. |
 | `ssh_list_sessions` | List active and recent SSH sessions. |
 
 ### BMC — hardware management (8)

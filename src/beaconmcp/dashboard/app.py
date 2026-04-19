@@ -91,6 +91,10 @@ class DashboardDeps:
     # /app/connectors page is hidden and the slug-scoped OAuth endpoints
     # are not mounted.
     dyn_reg: DynamicSlugStore | None = None
+    # Per-IP limiter guarding /app/login against brute-force. Optional so
+    # tests/embedding paths can skip the limiter entirely.
+    login_limiter: object | None = None
+    trusted_proxies: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +261,24 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
     async def login_post(request: Request) -> Response:
         if not await csrf.verify(request):
             return JSONResponse({"error": "csrf"}, status_code=403)
+
+        # Per-IP rate limit. Comes before CSRF was fine too, but putting it
+        # after CSRF keeps the error ordering consistent with /oauth/token.
+        limiter = deps.login_limiter
+        if limiter is not None:
+            from ..ratelimit import client_ip as _client_ip  # local import: avoid cycle at module load
+            ip = _client_ip(request, deps.trusted_proxies)
+            if not limiter.check(ip):  # type: ignore[attr-defined]
+                retry = limiter.retry_after(ip)  # type: ignore[attr-defined]
+                return _render(
+                    "login.html",
+                    request,
+                    client_id="",
+                    next="",
+                    banner=f"Too many attempts from this address. Retry in {retry}s.",
+                    locked=True,
+                    status_code=429,
+                )
 
         form = await request.form()
 
@@ -425,6 +447,36 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         _clear_session_cookies(response)
         _apply_security_headers(response)
         return response
+
+    async def overview_get(request: Request) -> Response:
+        session = _load_session(request, deps)
+        if not session:
+            return RedirectResponse("/app/login", status_code=302)
+        if not _bearer_live(deps, session):
+            return RedirectResponse("/app/refresh?next=/app/overview", status_code=302)
+        return _render(
+            request,
+            "overview.html",
+            {
+                "client_name": deps.client_store.get_name(session.client_id)
+                or "Unknown",
+            },
+        )
+
+    async def usage_get(request: Request) -> Response:
+        session = _load_session(request, deps)
+        if not session:
+            return RedirectResponse("/app/login", status_code=302)
+        if not _bearer_live(deps, session):
+            return RedirectResponse("/app/refresh?next=/app/usage", status_code=302)
+        return _render(
+            request,
+            "usage_cost.html",
+            {
+                "client_name": deps.client_store.get_name(session.client_id)
+                or "Unknown",
+            },
+        )
 
     async def tokens_get(request: Request) -> Response:
         session = _load_session(request, deps)
@@ -1027,6 +1079,8 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         Route("/app/refresh", refresh_post, methods=["POST"]),
         Route("/app/logout", logout, methods=["POST"]),
         Route("/app/chat", chat_get, methods=["GET"]),
+        Route("/app/overview", overview_get, methods=["GET"]),
+        Route("/app/usage", usage_get, methods=["GET"]),
         Route("/app/tokens", tokens_get, methods=["GET"]),
         Route("/app/tokens", tokens_create, methods=["POST"]),
         Route("/app/tokens/revoke", tokens_revoke, methods=["POST"]),

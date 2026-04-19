@@ -431,6 +431,80 @@ def test_mcp_tool_to_declaration_defaults_schema_when_missing():
     # empty object schema so the tool still registers.
     assert decl.parameters_json_schema == {"type": "object", "properties": {}}
 
+def test_build_google_search_tool_supports_google_search_class():
+    from beaconmcp.dashboard.chat import _build_google_search_tool
+
+    class _Tool:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _GoogleSearch:
+        pass
+
+    class _Types:
+        Tool = _Tool
+        GoogleSearch = _GoogleSearch
+
+    tool = _build_google_search_tool(_Types)
+    assert tool is not None
+    assert "google_search" in tool.kwargs
+    assert isinstance(tool.kwargs["google_search"], _GoogleSearch)
+
+
+def test_build_google_search_tool_supports_legacy_toolgooglesearch():
+    from beaconmcp.dashboard.chat import _build_google_search_tool
+
+    class _Tool:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _ToolGoogleSearch:
+        pass
+
+    class _Types:
+        Tool = _Tool
+        ToolGoogleSearch = _ToolGoogleSearch
+
+    tool = _build_google_search_tool(_Types)
+    assert tool is not None
+    assert "google_search" in tool.kwargs
+    assert isinstance(tool.kwargs["google_search"], _ToolGoogleSearch)
+
+
+def test_tool_name_from_server_tool_type_mapping():
+    from beaconmcp.dashboard.chat import _tool_name_from_server_tool_type
+
+    assert _tool_name_from_server_tool_type("GOOGLE_SEARCH_WEB") == "google_search_web"
+    assert _tool_name_from_server_tool_type("ToolType.URL_CONTEXT") == "url_context"
+    assert _tool_name_from_server_tool_type(None) == "unspecified"
+
+
+def test_tool_response_is_error_helper():
+    from beaconmcp.dashboard.chat import _tool_response_is_error
+
+    assert _tool_response_is_error({"status": "error"}) is True
+    assert _tool_response_is_error({"error": {"message": "boom"}}) is True
+    assert _tool_response_is_error({"url_retrieval_status": "URL_RETRIEVAL_STATUS_ERROR"}) is True
+    assert _tool_response_is_error({"status": "ok"}) is False
+
+
+def test_compose_system_instruction_includes_interleaving_and_server_context():
+    from beaconmcp.dashboard.chat import _compose_system_instruction
+
+    text = _compose_system_instruction("Tools available: ssh_run, proxmox_run")
+    assert "never batch multiple MCP function calls" in text
+    assert "Before each tool call" in text
+    assert "Tools available: ssh_run, proxmox_run" in text
+
+
+def test_compose_system_instruction_without_server_context():
+    from beaconmcp.dashboard.chat import _compose_system_instruction
+
+    text = _compose_system_instruction(None)
+    assert "never batch multiple MCP function calls" in text
+    assert "function_call" in text
+    assert "Tools available:" not in text
+
 
 def test_mcp_call_result_to_response_flattens_text_content():
     from beaconmcp.dashboard.chat import _mcp_call_result_to_response

@@ -14,6 +14,7 @@ the old ``PVE*_``, ``ILO_``, and ``SSH_`` variables and emits a
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sys
@@ -23,6 +24,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+_logger = logging.getLogger("beaconmcp.config")
 
 
 # --- Dataclasses -----------------------------------------------------------
@@ -65,6 +68,23 @@ class SSHHost:
 
 
 @dataclass
+class SSHDefaults:
+    """Default credentials applied by ``ssh.inherit_proxmox_nodes``.
+
+    When :attr:`SSHConfig.inherit_proxmox_nodes` is true, each declared
+    Proxmox node that isn't already covered by an explicit ``ssh.hosts[]``
+    entry gets one synthesized from the node's address + these defaults.
+    Exactly one of ``password`` or ``key_file`` is required — same rule as
+    an explicit host entry.
+    """
+
+    user: str
+    port: int = 22
+    password: str | None = None
+    key_file: str | None = None
+
+
+@dataclass
 class SSHConfig:
     hosts: list[SSHHost] = field(default_factory=list)
     # Template for resolving bare numeric IDs (VMIDs) to IP addresses,
@@ -72,6 +92,25 @@ class SSHConfig:
     # The resolved IP must match the ``host`` field of one of ``hosts``;
     # otherwise the SSH client returns an actionable error.
     vmid_to_ip: str | None = None
+    # Default SSH credentials, consumed when ``inherit_proxmox_nodes`` is on.
+    defaults: SSHDefaults | None = None
+    # When true, synthesize an ``ssh.hosts[]`` entry for every declared
+    # Proxmox node that isn't already covered by an explicit ``hosts[]``
+    # entry. Synthesized entries inherit address from ``proxmox.nodes[].host``
+    # and credentials from ``ssh.defaults``. Restores the pre-2.0 ergonomic
+    # where a single credential block covered every Proxmox node.
+    inherit_proxmox_nodes: bool = False
+    # Path to an OpenSSH-style known_hosts file. When set, asyncssh verifies
+    # every connection's host key against this file and refuses unknown
+    # keys (no TOFU). Default (None) preserves the previous behaviour of
+    # accepting any key -- appropriate for a trusted LAN but not for
+    # anything reachable over the public internet.
+    known_hosts: str | None = None
+    # When ``known_hosts`` is unset but this is true, still refuse unknown
+    # keys by asking asyncssh to build an in-memory known_hosts from the
+    # user's ``~/.ssh/known_hosts``. Kept separate from ``known_hosts`` so
+    # the YAML can opt into strict mode without naming a file.
+    strict_host_key_checking: bool = False
 
 
 @dataclass
@@ -80,6 +119,7 @@ class ServerConfig:
     port: int = 8420
     allowed_hosts: list[str] = field(default_factory=list)
     allowed_origins: list[str] = field(default_factory=list)
+    trusted_proxies: list[str] = field(default_factory=list)
     clients_file: Path = Path("/opt/beaconmcp/clients.json")
     session_key: str | None = None
     # Enables the OAuth Dynamic Client Registration path used by clients
@@ -144,10 +184,9 @@ class Config:
                 stacklevel=2,
             )
             return cls._from_legacy_env()
-        print(
-            "ERROR: No configuration file found. Create beaconmcp.yaml in the "
-            "working directory or set BEACONMCP_CONFIG. See beaconmcp.yaml.example.",
-            file=sys.stderr,
+        _logger.error(
+            "No configuration file found. Create beaconmcp.yaml in the "
+            "working directory or set BEACONMCP_CONFIG. See beaconmcp.yaml.example."
         )
         sys.exit(1)
 
@@ -164,10 +203,7 @@ class Config:
     def _resolve_config_path(override: Path | None) -> Path | None:
         if override is not None:
             if not override.exists():
-                print(
-                    f"ERROR: Config file {override} does not exist.",
-                    file=sys.stderr,
-                )
+                _logger.error("Config file %s does not exist.", override)
                 sys.exit(1)
             return override
         env_path = os.environ.get("BEACONMCP_CONFIG", "").strip()
@@ -175,9 +211,8 @@ class Config:
             p = Path(env_path)
             if p.exists():
                 return p
-            print(
-                f"ERROR: BEACONMCP_CONFIG={env_path} points at a missing file.",
-                file=sys.stderr,
+            _logger.error(
+                "BEACONMCP_CONFIG=%s points at a missing file.", env_path
             )
             sys.exit(1)
         for candidate in (Path("beaconmcp.yaml"), Path("/etc/beaconmcp/config.yaml")):
@@ -304,22 +339,64 @@ class Config:
             # Reject the legacy single-credential shape explicitly so existing
             # deployments get a clear migration pointer instead of a confusing
             # "missing field" error.
-            if "hosts" not in ssh_raw and ("user" in ssh_raw or "password" in ssh_raw):
+            if (
+                "hosts" not in ssh_raw
+                and "defaults" not in ssh_raw
+                and ("user" in ssh_raw or "password" in ssh_raw)
+            ):
                 raise ConfigError(
                     "ssh: legacy shape with top-level 'user'/'password' is no "
-                    "longer supported. Migrate to 'ssh.hosts:' — see "
-                    "beaconmcp.yaml.example. Each host now carries its own "
-                    "credentials (password or key_file)."
+                    "longer supported. Migrate to 'ssh.hosts:' + optional "
+                    "'ssh.defaults:' + 'ssh.inherit_proxmox_nodes:' — see "
+                    "beaconmcp.yaml.example."
                 )
-            hosts_raw = ssh_raw.get("hosts") or []
-            if not isinstance(hosts_raw, list) or not hosts_raw:
+
+            # Optional default credentials, consumed when inheritance is on.
+            defaults: SSHDefaults | None = None
+            defaults_raw = ssh_raw.get("defaults")
+            if defaults_raw:
+                if not isinstance(defaults_raw, dict):
+                    raise ConfigError("ssh.defaults: must be a mapping.")
+                d_password = defaults_raw.get("password") or None
+                d_key_file = defaults_raw.get("key_file") or None
+                if bool(d_password) == bool(d_key_file):
+                    raise ConfigError(
+                        "ssh.defaults: provide exactly one of 'password' or "
+                        "'key_file' (got "
+                        + ("both" if d_password and d_key_file else "neither")
+                        + ")."
+                    )
+                defaults = SSHDefaults(
+                    user=_required(defaults_raw, "user", "ssh.defaults"),
+                    port=int(defaults_raw.get("port", 22)),
+                    password=d_password,
+                    key_file=d_key_file,
+                )
+
+            inherit_flag = _bool(ssh_raw.get("inherit_proxmox_nodes", False))
+            if inherit_flag and defaults is None:
                 raise ConfigError(
-                    "ssh.hosts: at least one host entry is required when the "
-                    "'ssh:' section is present. Remove the section entirely "
-                    "to disable SSH."
+                    "ssh.inherit_proxmox_nodes: requires 'ssh.defaults:' with "
+                    "user + password/key_file — the synthesized entries need "
+                    "credentials to authenticate."
                 )
+
+            hosts_raw = ssh_raw.get("hosts") or []
+            if not isinstance(hosts_raw, list):
+                raise ConfigError("ssh.hosts: must be a list of mappings.")
+            # An 'ssh:' section with neither 'hosts' nor 'inherit_proxmox_nodes'
+            # would load into an empty SSH config -- equivalent to no SSH at
+            # all. Be explicit so the user notices the mis-config early.
+            if not hosts_raw and not inherit_flag:
+                raise ConfigError(
+                    "ssh: either declare at least one 'ssh.hosts[]' entry or "
+                    "set 'ssh.inherit_proxmox_nodes: true' (with 'ssh.defaults'). "
+                    "Remove the 'ssh:' section entirely to disable SSH."
+                )
+
             ssh_hosts: list[SSHHost] = []
             seen_names: set[str] = set()
+            seen_addresses: set[str] = set()
             for h in hosts_raw:
                 if not isinstance(h, dict):
                     raise ConfigError(
@@ -340,19 +417,50 @@ class Config:
                         + ("both" if password and key_file else "neither")
                         + ")."
                     )
+                host_addr = _required(h, "host", f"ssh.hosts[{host_name}]")
+                seen_addresses.add(host_addr)
                 ssh_hosts.append(
                     SSHHost(
                         name=host_name,
-                        host=_required(h, "host", f"ssh.hosts[{host_name}]"),
+                        host=host_addr,
                         user=_required(h, "user", f"ssh.hosts[{host_name}]"),
                         port=int(h.get("port", 22)),
                         password=password,
                         key_file=key_file,
                     )
                 )
+
+            # Synthesize ssh.hosts[] entries for Proxmox nodes that aren't
+            # already covered by an explicit declaration. Skip a node when it
+            # already matches an explicit entry by name OR by address, so an
+            # operator who wants different creds for a specific node just
+            # declares it explicitly and the inheritance leaves it alone.
+            if inherit_flag and defaults is not None:
+                for node in pve_nodes:
+                    if node.name in seen_names or node.host in seen_addresses:
+                        continue
+                    ssh_hosts.append(
+                        SSHHost(
+                            name=node.name,
+                            host=node.host,
+                            user=defaults.user,
+                            port=defaults.port,
+                            password=defaults.password,
+                            key_file=defaults.key_file,
+                        )
+                    )
+                    seen_names.add(node.name)
+                    seen_addresses.add(node.host)
+
             ssh = SSHConfig(
                 hosts=ssh_hosts,
                 vmid_to_ip=ssh_raw.get("vmid_to_ip"),
+                defaults=defaults,
+                inherit_proxmox_nodes=inherit_flag,
+                known_hosts=ssh_raw.get("known_hosts") or None,
+                strict_host_key_checking=_bool(
+                    ssh_raw.get("strict_host_key_checking", False)
+                ),
             )
 
         srv_raw = raw.get("server") or {}
@@ -361,6 +469,7 @@ class Config:
             port=int(srv_raw.get("port", 8420)),
             allowed_hosts=list(srv_raw.get("allowed_hosts") or []),
             allowed_origins=list(srv_raw.get("allowed_origins") or []),
+            trusted_proxies=_parse_trusted_proxies(srv_raw.get("trusted_proxies")),
             clients_file=Path(
                 srv_raw.get("clients_file", "/opt/beaconmcp/clients.json")
             ),
@@ -397,21 +506,11 @@ class Config:
                 "in beaconmcp.yaml."
             )
 
-        # Refuse to start if an SSH host name collides with a Proxmox node
-        # name. The two share the ``host`` argument of ssh_* tools, so a
-        # shared name would be ambiguous. Forcing distinct names means one
-        # declarative source of truth per SSH target.
-        if ssh and ssh.hosts:
-            pve_names = {n.name for n in pve_nodes}
-            for h in ssh.hosts:
-                if h.name in pve_names:
-                    raise ConfigError(
-                        f"host name {h.name!r} is declared both in "
-                        "ssh.hosts and proxmox.nodes — choose distinct "
-                        "names. To SSH into a Proxmox host, add it to "
-                        "ssh.hosts with a different name (e.g. "
-                        f"'{h.name}-ssh')."
-                    )
+        # SSH host names and Proxmox node names are allowed to match: the
+        # two live in separate tool namespaces (``ssh_*`` vs ``proxmox_*``)
+        # so there is no routing ambiguity. Letting them match removes the
+        # need for synthetic suffixes like ``pve1-ssh`` and lets
+        # ``ssh.inherit_proxmox_nodes`` auto-declare hosts cleanly.
 
         # BMC jump_host now references ssh.hosts[].name (was proxmox.nodes[].name
         # in pre-2.0 shape). Validate the reference exists so the user gets a
@@ -506,6 +605,7 @@ class Config:
                 "port": self.server.port,
                 "allowed_hosts": self.server.allowed_hosts,
                 "allowed_origins": self.server.allowed_origins,
+                "trusted_proxies": self.server.trusted_proxies,
                 "clients_file": str(self.server.clients_file),
                 "session_key": mask(self.server.session_key or ""),
                 "allow_dynamic_registration": self.server.allow_dynamic_registration,
@@ -538,6 +638,8 @@ class Config:
             "ssh": (
                 {
                     "vmid_to_ip": self.ssh.vmid_to_ip,
+                    "known_hosts": self.ssh.known_hosts,
+                    "strict_host_key_checking": self.ssh.strict_host_key_checking,
                     "hosts": [
                         {
                             "name": h.name,
@@ -577,6 +679,32 @@ class ConfigError(Exception):
 
 _ENV_REF = re.compile(r"^\$\{([A-Z_][A-Z0-9_]*)\}$")
 
+_CLOUDFLARE_PROXY_CIDRS: tuple[str, ...] = (
+    # Snapshot from https://www.cloudflare.com/ips/
+    "173.245.48.0/20",
+    "103.21.244.0/22",
+    "103.22.200.0/22",
+    "103.31.4.0/22",
+    "141.101.64.0/18",
+    "108.162.192.0/18",
+    "190.93.240.0/20",
+    "188.114.96.0/20",
+    "197.234.240.0/22",
+    "198.41.128.0/17",
+    "162.158.0.0/15",
+    "104.16.0.0/13",
+    "104.24.0.0/14",
+    "172.64.0.0/13",
+    "131.0.72.0/22",
+    "2400:cb00::/32",
+    "2606:4700::/32",
+    "2803:f800::/32",
+    "2405:b500::/32",
+    "2405:8100::/32",
+    "2a06:98c0::/29",
+    "2c0f:f248::/32",
+)
+
 
 def _resolve_env_refs(
     value: Any, *, path: Path, _crumbs: tuple[str, ...] = ()
@@ -600,13 +728,23 @@ def _resolve_env_refs(
         m = _ENV_REF.match(value)
         if m:
             env_name = m.group(1)
+            location = ".".join(_crumbs) or "<root>"
             if env_name not in os.environ:
-                location = ".".join(_crumbs) or "<root>"
                 raise ConfigError(
                     f"{path}: environment variable ${{{env_name}}} referenced "
                     f"at '{location}' is not set."
                 )
-            return os.environ[env_name]
+            resolved = os.environ[env_name]
+            # Reject empty values here rather than letting _required() later
+            # blame the YAML ("missing required field") — the YAML is fine,
+            # the .env placeholder is just unfilled.
+            if resolved == "":
+                raise ConfigError(
+                    f"{path}: environment variable ${{{env_name}}} referenced "
+                    f"at '{location}' is set but empty. Fill in a value in "
+                    f"your .env (or unset the variable to get a clearer error)."
+                )
+            return resolved
     return value
 
 
@@ -620,6 +758,36 @@ def _bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _parse_trusted_proxies(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ConfigError(
+            "server.trusted_proxies: must be a list of IPs/CIDRs or 'cloudflare'."
+        )
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for i, item in enumerate(value):
+        if not isinstance(item, str):
+            raise ConfigError(
+                f"server.trusted_proxies[{i}]: must be a string (IP, CIDR, or 'cloudflare')."
+            )
+        token = item.strip()
+        if not token:
+            continue
+        if token.lower() == "cloudflare":
+            for cidr in _CLOUDFLARE_PROXY_CIDRS:
+                if cidr not in seen:
+                    out.append(cidr)
+                    seen.add(cidr)
+            continue
+        if token not in seen:
+            out.append(token)
+            seen.add(token)
+    return out
 
 
 def _strip_port(host: str) -> str:

@@ -2,7 +2,7 @@
 
 The allowlist gates every redirect_uri that reaches :class:`/oauth/authorize`
 or the DCR endpoint. If this check ever misfires — false-negative
-breaking Claude; false-positive enabling an attacker's callback — the
+breaking Assistant; false-positive enabling an attacker's callback — the
 whole OAuth surface is at risk. Guard it with explicit cases.
 """
 
@@ -24,9 +24,9 @@ from beaconmcp.auth import is_trusted_redirect_uri
 @pytest.mark.parametrize(
     "uri",
     [
-        # Claude
-        "https://claude.ai/api/organizations/xyz/mcp/callback",
-        "https://claude.com/some/path",
+        # Assistant
+        "https://assistant.ai/api/organizations/xyz/mcp/callback",
+        "https://assistant.com/some/path",
         # ChatGPT family (consumer + enterprise + Codex)
         "https://chatgpt.com/connector_platform_oauth/callback",
         "https://chat.openai.com/oauth/callback",
@@ -69,14 +69,14 @@ def test_trusted_origins_accepted(uri: str) -> None:
         "https://evil.example.com/cb",
         "https://attacker.xyz/callback",
         # Typo-squats of real origins
-        "https://claude-ai.com/cb",          # hyphenated fake
+        "https://assistant-ai.com/cb",          # hyphenated fake
         "https://chat.mistral.ai.evil.com/cb",  # subdomain confusion
         "https://chatgpt.co/cb",                # TLD typo
         # Valid-looking but not-whitelisted Google domains
         "https://mail.google.com/oauth/cb",
         "https://accounts.google.com/oauth/cb",
         # Non-HTTP(S) schemes we don't trust
-        "ftp://claude.ai/cb",
+        "ftp://assistant.ai/cb",
         "file:///etc/passwd",
         "javascript:alert(1)",
         "data:text/html,<script>",
@@ -90,7 +90,7 @@ def test_trusted_origins_accepted(uri: str) -> None:
         "   ",
         # Prefix-match evasion: a crafted URL that *starts* with a
         # trusted origin's scheme + host but really lands elsewhere.
-        "https://claude.ai.evil.com/cb",
+        "https://assistant.ai.evil.com/cb",
         # Loopback-like but on a malicious port: it passes the prefix
         # check on purpose (users pick random ports), the rest is on
         # network-layer controls. This case is TRUSTED — we document

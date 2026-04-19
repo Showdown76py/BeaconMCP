@@ -4,6 +4,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from ..utils import filter_fields
 from .client import ProxmoxClient
 
 
@@ -11,13 +12,15 @@ def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
     """Register all Proxmox monitoring and diagnostic tools."""
 
     @mcp.tool()
-    def proxmox_list_nodes() -> dict[str, Any]:
+    def proxmox_list_nodes(fields: list[str] | None = None) -> dict[str, Any]:
         """List all Proxmox cluster nodes with their status (online/offline).
 
         Use this as the first step when diagnosing cluster health or checking which nodes are available.
+        Pass ``fields=[...]`` to trim each entry to only the keys you need
+        (e.g. ``["name", "status"]``).
         Returns: {"nodes": [{name, status, cpu, mem_used_gb, mem_total_gb, uptime_h}]}.
-        If a node appears offline, use ilo_health_status to check if it's a hardware issue,
-        or ssh_exec_command to try reaching it directly.
+        If a node appears offline, use bmc_health_status to check if it's a hardware issue,
+        or ssh_run to try reaching it directly.
         """
         # Query every configured node. In a joined cluster each member returns the
         # same view (deduped by name); with standalone hosts each returns only
@@ -52,10 +55,10 @@ def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         for entry in unreachable:
             results.setdefault(entry["name"], entry)
 
-        return {"nodes": list(results.values())}
+        return {"nodes": filter_fields(list(results.values()), fields)}
 
     @mcp.tool()
-    def proxmox_node_status(node: str) -> dict[str, Any]:
+    def proxmox_node_status(node: str, fields: list[str] | None = None) -> dict[str, Any]:
         """Get detailed status of a specific Proxmox node: CPU, RAM, disk, uptime, kernel, PVE version.
 
         Use after proxmox_list_nodes to drill into a specific node.
@@ -67,7 +70,7 @@ def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         data = client.get(node, f"nodes/{node}/status")
         if isinstance(data, dict) and "error" in data:
             return data
-        return {
+        result = {
             "node": node,
             "cpu_cores": data.get("cpuinfo", {}).get("cores"),
             "cpu_model": data.get("cpuinfo", {}).get("model"),
@@ -82,9 +85,10 @@ def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
             "kernel_version": data.get("kversion"),
             "pve_version": data.get("pveversion"),
         }
+        return filter_fields(result, fields)
 
     @mcp.tool()
-    def proxmox_list_vms(node: str = "") -> dict[str, Any]:
+    def proxmox_list_vms(node: str = "", fields: list[str] | None = None) -> dict[str, Any]:
         """List all VMs and containers with their status and resource usage.
 
         Use to get an overview of what's running on the cluster.
@@ -120,18 +124,20 @@ def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
                         "uptime_h": round(vm.get("uptime", 0) / 3600, 1),
                     })
             entries.sort(key=lambda v: v.get("vmid", 0))
-            by_node[n] = entries
+            by_node[n] = filter_fields(entries, fields)
             total += sum(1 for e in entries if "vmid" in e)
 
         return {"vms": by_node, "total": total}
 
     @mcp.tool()
-    def proxmox_vm_status(node: str, vmid: int) -> dict[str, Any]:
+    def proxmox_vm_status(node: str, vmid: int, fields: list[str] | None = None) -> dict[str, Any]:
         """Get detailed status of a specific VM or container: CPU, RAM, disk I/O, network I/O, uptime.
 
         Use after proxmox_list_vms to drill into a specific VM.
         Provide both the node name and VMID.
         Auto-detects whether the target is a QEMU VM or LXC container.
+        Pass ``fields=[...]`` to trim the response to only the keys you need
+        (e.g. ``["name", "status", "cpu_pct"]``).
         Returns: {node, vmid, type, name, status, cpu_pct, cpus, mem_used_mb,
         mem_max_mb, disk_read_mb, disk_write_mb, net_in_mb, net_out_mb, uptime_h,
         pid, config_summary: {cores, mem_mb, description}}.
@@ -169,7 +175,7 @@ def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
                         "mem_mb": config_data.get("memory"),
                         "description": config_data.get("description", ""),
                     }
-                return result
+                return filter_fields(result, fields)
 
         return {"error": f"VM/CT {vmid} not found on node '{node}'. Check the VMID and node name."}
 
@@ -218,11 +224,13 @@ def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         return {"node": node, "source": "syslog", "lines": [], "raw": str(data)}
 
     @mcp.tool()
-    def proxmox_get_tasks(node: str = "", limit: int = 20) -> dict[str, Any]:
+    def proxmox_get_tasks(node: str = "", limit: int = 20, fields: list[str] | None = None) -> dict[str, Any]:
         """List recent Proxmox tasks across the cluster: migrations, backups, VM operations.
 
         Use to check what operations have been running or to investigate failed tasks.
         Omit 'node' to list tasks from all configured nodes.
+        Pass ``fields=[...]`` to trim each entry to only the keys you need
+        (e.g. ``["upid", "status"]``).
         Returns: {"tasks": {"<node>": [{upid, type, status, user, starttime,
         endtime}]}, "total": N}. Per-node errors appear as {"error": "..."}
         entries in that node's list.
@@ -246,7 +254,7 @@ def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
                         "starttime": t.get("starttime"),
                         "endtime": t.get("endtime"),
                     })
-            by_node[n] = entries
+            by_node[n] = filter_fields(entries, fields)
             total += sum(1 for e in entries if "upid" in e)
 
         return {"tasks": by_node, "total": total}

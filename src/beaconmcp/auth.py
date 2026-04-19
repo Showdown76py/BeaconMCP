@@ -3,7 +3,7 @@
 Supports two grants on top of a pre-provisioned client store:
 - ``client_credentials`` for non-interactive clients (scripts, server-to-server)
 - ``authorization_code`` with mandatory PKCE (S256) for browser-based clients
-  such as Claude Web / mobile connectors
+  such as Assistant Web / mobile connectors
 
 Dynamic client registration (RFC 7591) is available through a narrow,
 opt-in path: the dashboard mints a single-use bootstrap URL that lets a
@@ -19,10 +19,12 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
-import sys
 import time
+
+_logger = logging.getLogger("beaconmcp.auth")
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
@@ -79,9 +81,9 @@ CLIENTS_FILE = Path("/opt/beaconmcp/clients.json")
 # Add a new client's origin here BEFORE flipping
 # ``allow_dynamic_registration`` on for it, not after.
 TRUSTED_REDIRECT_PREFIXES: tuple[str, ...] = (
-    # Anthropic / Claude
-    "https://claude.ai/",
-    "https://claude.com/",
+    # Anthropic / Assistant
+    "https://assistant.ai/",
+    "https://assistant.com/",
     # OpenAI / ChatGPT + Codex + platform
     "https://chatgpt.com/",
     "https://chat.openai.com/",
@@ -201,10 +203,9 @@ class ClientStore:
         try:
             data = json.loads(self._path.read_text())
         except json.JSONDecodeError as e:
-            print(
-                f"ERROR: {self._path} is not valid JSON ({e}). "
-                "Fix or delete it before restarting.",
-                file=sys.stderr,
+            _logger.error(
+                "%s is not valid JSON (%s). Fix or delete it before restarting.",
+                self._path, e,
             )
             raise
 
@@ -234,11 +235,10 @@ class ClientStore:
                 revoked.append(f"{c.get('client_id', '?')} ({c.get('name', '?')})")
 
         if revoked:
-            print(
-                "WARNING: the following clients were revoked because they "
-                "predate the 2FA migration (no TOTP secret). Recreate them "
-                "with `beaconmcp auth create`: " + ", ".join(revoked),
-                file=sys.stderr,
+            _logger.warning(
+                "Revoked %d pre-2FA client(s) with no TOTP secret. "
+                "Recreate them with `beaconmcp auth create`: %s",
+                len(revoked), ", ".join(revoked),
             )
             self._save()
 
