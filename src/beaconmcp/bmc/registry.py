@@ -5,16 +5,16 @@ from __future__ import annotations
 from ..config import Config
 from .base import BMCClient
 from .hp_ilo import HPILOBackend
-from .idrac import IDRACStubBackend
 from .ipmi import GenericIPMIBackend
-from .supermicro import SupermicroStubBackend
+from .redfish import RedfishBackend
 
 
 _BACKENDS: dict[str, type] = {
     "hp_ilo": HPILOBackend,
     "ipmi": GenericIPMIBackend,
-    "idrac": IDRACStubBackend,
-    "supermicro": SupermicroStubBackend,
+    "idrac": RedfishBackend,
+    "supermicro": RedfishBackend,
+    "redfish": RedfishBackend,
 }
 
 
