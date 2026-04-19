@@ -181,9 +181,102 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         return {"vmid": vmid, "node": node, "action": "config_update", "applied": updates}
 
     @mcp.tool()
+    def proxmox_snapshot_list(node: str, vmid: int) -> dict[str, Any]:
+        """List all snapshots for a VM or container.
+
+        Returns the snapshot hierarchy including names, descriptions, and creation times.
+        """
+        vm_type = _detect_vm_type(client, node, vmid)
+        if not vm_type:
+            return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
+
+        result = client.get(node, f"nodes/{node}/{vm_type}/{vmid}/snapshot")
+        if isinstance(result, dict) and "error" in result:
+            return result
+
+        return {"vmid": vmid, "node": node, "snapshots": result}
+
+    @mcp.tool()
+    def proxmox_snapshot_create(
+        node: str,
+        vmid: int,
+        snapname: str,
+        description: str = "",
+        vmstate: bool = False,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Create a new snapshot of a VM or container.
+
+        Use this before risky operations (OS upgrades, risky commands) to establish a safe checkpoint.
+        Set vmstate=true to capture RAM (slower, only for running QEMU VMs).
+        """
+        if dry_run:
+            return {"status": "dry_run", "message": f"Would create snapshot {snapname!r} for VM/CT {vmid} on {node}."}
+
+        vm_type = _detect_vm_type(client, node, vmid)
+        if not vm_type:
+            return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
+
+        params = {"snapname": snapname}
+        if description:
+            params["description"] = description
+        if vmstate:
+            if vm_type == "lxc":
+                return {"error": "vmstate=True is only supported for QEMU VMs, not LXC containers."}
+
+            status_data = client.get(node, f"nodes/{node}/{vm_type}/{vmid}/status/current")
+            is_running = isinstance(status_data, dict) and status_data.get("status") == "running"
+            if not is_running:
+                return {"error": "vmstate=True requires the VM to be running to capture RAM."}
+
+            params["vmstate"] = 1
+
+        result = client.post(node, f"nodes/{node}/{vm_type}/{vmid}/snapshot", **params)
+        if isinstance(result, dict) and "error" in result:
+            return result
+        return {"vmid": vmid, "node": node, "action": "snapshot_create", "snapname": snapname, "upid": result}
+
+    @mcp.tool()
+    def proxmox_snapshot_rollback(node: str, vmid: int, snapname: str, dry_run: bool = False) -> dict[str, Any]:
+        """Roll back a VM or container to a previous snapshot.
+
+        Restores the guest to the exact state of the named snapshot.
+        Use proxmox_snapshot_list to find the correct snapname.
+        """
+        if dry_run:
+            return {"status": "dry_run", "message": f"Would roll back VM/CT {vmid} on {node} to snapshot {snapname!r}."}
+
+        vm_type = _detect_vm_type(client, node, vmid)
+        if not vm_type:
+            return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
+
+        result = client.post(node, f"nodes/{node}/{vm_type}/{vmid}/snapshot/{snapname}/rollback")
+        if isinstance(result, dict) and "error" in result:
+            return result
+        return {"vmid": vmid, "node": node, "action": "snapshot_rollback", "snapname": snapname, "upid": result}
+
+    @mcp.tool()
+    def proxmox_snapshot_delete(node: str, vmid: int, snapname: str, dry_run: bool = False) -> dict[str, Any]:
+        """Delete a VM or container snapshot.
+
+        Removes the snapshot from the storage backing the VM.
+        """
+        if dry_run:
+            return {"status": "dry_run", "message": f"Would delete snapshot {snapname!r} from VM/CT {vmid} on {node}."}
+
+        vm_type = _detect_vm_type(client, node, vmid)
+        if not vm_type:
+            return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
+
+        result = client.delete(node, f"nodes/{node}/{vm_type}/{vmid}/snapshot/{snapname}")
+        if isinstance(result, dict) and "error" in result:
+            return result
+        return {"vmid": vmid, "node": node, "action": "snapshot_delete", "snapname": snapname, "upid": result}
+
+    @mcp.tool()
     def proxmox_backup_create(node: str, vmid: int, storage: str, mode: str = "snapshot", compress: str = "zstd", notes: str = "") -> dict[str, Any]:
         """Create a new backup of a VM or container.
-        
+
         Args:
             storage: The storage pool where the backup will be saved (e.g. 'local', 'pbs', 'nfs').
             mode: 'stop', 'suspend', or 'snapshot' (default is 'snapshot' for zero downtime).
@@ -193,167 +286,78 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         vm_type = _detect_vm_type(client, node, vmid)
         if not vm_type:
             return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
-            
+
         params = {
             "vmid": vmid,
             "storage": storage,
             "mode": mode,
-            "compress": compress
+            "compress": compress,
         }
         if notes:
             params["notes"] = notes
-            
+
         result = client.post(node, f"nodes/{node}/vzdump", **params)
         if isinstance(result, dict) and "error" in result:
             return {"status": "error", "error": result["error"]}
         return {"status": "success", "vmid": vmid, "node": node, "action": "backup_create", "storage": storage, "upid": result}
 
     @mcp.tool()
-    def proxmox_snapshot_list(node: str, vmid: int) -> dict[str, Any]:
-        """List all snapshots for a VM or container.
-        
-        Returns the snapshot hierarchy including names, descriptions, and creation times.
-        """
-        vm_type = _detect_vm_type(client, node, vmid)
-        if not vm_type:
-            return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
+    def proxmox_backup_list(node: str, storage: str, vmid: int | None = None) -> dict[str, Any]:
+        """List available backups (vzdump archives) on a specific storage pool.
+
+        Args:
+            storage: The storage pool to query (e.g. 'local', 'pbs', 'nfs').
             vmid: Filter backups by a specific VM/CT.
         """
-        # GET /nodes/{node}/storage/{storage}/content?content=backup
         params = {"content": "backup"}
         if vmid is not None:
             params["vmid"] = vmid
-            
+
         data = client.get(node, f"nodes/{node}/storage/{storage}/content", **params)
         if isinstance(data, dict) and "error" in data:
             return data
-            
+
         if not isinstance(data, list):
             return {"backups": []}
-            
-        # Standardize the output for the LLM
+
         backups = []
-        for b in data:
+        for backup in data:
             backups.append({
-                "volid": b.get("volid"),
-                "vmid": b.get("vmid"),
-                "format": b.get("format"),
-                "size_gb": round(b.get("size", 0) / 1073741824, 2),
-                "ctime": b.get("ctime"),
-                "notes": b.get("notes", "")
+                "volid": backup.get("volid"),
+                "vmid": backup.get("vmid"),
+                "format": backup.get("format"),
+                "size_gb": round(backup.get("size", 0) / 1073741824, 2),
+                "ctime": backup.get("ctime"),
+                "notes": backup.get("notes", ""),
             })
-            
+
         return {"node": node, "storage": storage, "backups": backups}
 
     @mcp.tool()
     def proxmox_backup_restore(node: str, vmid: int, archive: str, force: bool = False, storage: str = "local-lvm") -> dict[str, Any]:
         """Restore a VM or container from a backup archive.
-        
+
         Args:
             archive: The full volume ID of the backup archive (e.g. 'local:backup/vzdump-qemu-100-2023_10_25-00_00_00.vma.zst').
                      Use proxmox_backup_list to find the correct 'volid'.
             force: If True, overwrites an existing VM/CT if it already exists.
             storage: Target storage for the restored disks (default 'local-lvm').
         """
-        # Determine if archive is for QEMU or LXC
         if "vzdump-qemu-" in archive:
             endpoint = f"nodes/{node}/qemu"
-            vm_type = "qemu"
         elif "vzdump-lxc-" in archive:
             endpoint = f"nodes/{node}/lxc"
-            vm_type = "lxc"
         else:
             return {"status": "error", "error": "Could not determine if backup is for 'qemu' or 'lxc'. Archive must contain 'vzdump-qemu-' or 'vzdump-lxc-'."}
-            
+
         params = {
             "vmid": vmid,
             "archive": archive,
             "force": 1 if force else 0,
             "storage": storage,
         }
-        
+
         result = client.post(node, endpoint, **params)
         if isinstance(result, dict) and "error" in result:
             return {"status": "error", "error": result["error"]}
         return {"status": "success", "vmid": vmid, "node": node, "action": "backup_restore", "archive": archive, "upid": result}
-=======
-        result = client.get(node, f"nodes/{node}/{vm_type}/{vmid}/snapshot")
-        if isinstance(result, dict) and "error" in result:
-            return result
-            
-        return {"vmid": vmid, "node": node, "snapshots": result}
-
-    @mcp.tool()
-    def proxmox_snapshot_create(
-        node: str, 
-        vmid: int, 
-        snapname: str, 
-        description: str = "", 
-        vmstate: bool = False,
-        dry_run: bool = False
-    ) -> dict[str, Any]:
-        """Create a new snapshot of a VM or container.
-        
-        Use this before risky operations (OS upgrades, risky commands) to establish a safe checkpoint.
-        Set vmstate=true to capture RAM (slower, only for running QEMU VMs).
-        """
-        if dry_run: return {"status": "dry_run", "message": f"Would create snapshot {snapname!r} for VM/CT {vmid} on {node}."}
-        
-        vm_type = _detect_vm_type(client, node, vmid)
-        if not vm_type:
-            return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
-            
-        params = {"snapname": snapname}
-        if description:
-            params["description"] = description
-        if vmstate:
-            if vm_type == "lxc":
-                return {"error": "vmstate=True is only supported for QEMU VMs, not LXC containers."}
-            
-            # Check if VM is actually running
-            status_data = client.get(node, f"nodes/{node}/{vm_type}/{vmid}/status/current")
-            is_running = isinstance(status_data, dict) and status_data.get("status") == "running"
-            if not is_running:
-                return {"error": "vmstate=True requires the VM to be running to capture RAM."}
-            
-            params["vmstate"] = 1
-            
-        result = client.post(node, f"nodes/{node}/{vm_type}/{vmid}/snapshot", **params)
-        if isinstance(result, dict) and "error" in result:
-            return result
-        return {"vmid": vmid, "node": node, "action": "snapshot_create", "snapname": snapname, "upid": result}
-
-    @mcp.tool()
-    def proxmox_snapshot_rollback(node: str, vmid: int, snapname: str, dry_run: bool = False) -> dict[str, Any]:
-        """Roll back a VM or container to a previous snapshot.
-        
-        Restores the guest to the exact state of the named snapshot.
-        Use proxmox_snapshot_list to find the correct snapname.
-        """
-        if dry_run: return {"status": "dry_run", "message": f"Would roll back VM/CT {vmid} on {node} to snapshot {snapname!r}."}
-        
-        vm_type = _detect_vm_type(client, node, vmid)
-        if not vm_type:
-            return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
-            
-        result = client.post(node, f"nodes/{node}/{vm_type}/{vmid}/snapshot/{snapname}/rollback")
-        if isinstance(result, dict) and "error" in result:
-            return result
-        return {"vmid": vmid, "node": node, "action": "snapshot_rollback", "snapname": snapname, "upid": result}
-
-    @mcp.tool()
-    def proxmox_snapshot_delete(node: str, vmid: int, snapname: str, dry_run: bool = False) -> dict[str, Any]:
-        """Delete a VM or container snapshot.
-        
-        Removes the snapshot from the storage backing the VM.
-        """
-        if dry_run: return {"status": "dry_run", "message": f"Would delete snapshot {snapname!r} from VM/CT {vmid} on {node}."}
-        
-        vm_type = _detect_vm_type(client, node, vmid)
-        if not vm_type:
-            return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
-            
-        result = client.delete(node, f"nodes/{node}/{vm_type}/{vmid}/snapshot/{snapname}")
-        if isinstance(result, dict) and "error" in result:
-            return result
-        return {"vmid": vmid, "node": node, "action": "snapshot_delete", "snapname": snapname, "upid": result}

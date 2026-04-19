@@ -62,6 +62,10 @@ def main():
 
     # --- serve (default) ---
     doctor_parser = sub.add_parser("doctor", help="Preflight connectivity and config check")
+    doctor_parser.add_argument(
+        "--config", type=Path, default=None,
+        help="Path to beaconmcp.yaml (overrides BEACONMCP_CONFIG and the default search)",
+    )
 
     serve_parser = sub.add_parser("serve", help="Start the MCP HTTP server")
     serve_parser.add_argument(
@@ -140,16 +144,15 @@ def _cmd_init(args):
 
 
 def _cmd_doctor(args):
-    import sys
     import asyncio
-    from .config import Config, ConfigError
+    from .config import Config
     from .proxmox.client import ProxmoxClient
     from .ssh.client import SSHClient
     from .bmc import build_registry
     
     print("BeaconMCP Doctor - Preflight Check\n")
     try:
-        cfg = Config.load(config_path=args.config)
+        cfg = Config.load(config_path=getattr(args, "config", None))
         print("✓ Config loaded successfully.")
     except Exception as exc:
         print(f"✗ Config failed to load: {exc}")
@@ -161,28 +164,32 @@ def _cmd_doctor(args):
         for node in cfg.pve_nodes:
             try:
                 status = proxmox_client.get(node.name, "version")
-                if "version" in status:
+                if isinstance(status, dict) and "version" in status:
                     print(f"  ✓ {node.name}: Reachable (PVE {status['version']})")
                 else:
                     print(f"  ✗ {node.name}: Unexpected response {status}")
-            except Exception as e:
-                print(f"  ✗ {node.name}: Unreachable ({e})")
+            except Exception as exc:
+                print(f"  ✗ {node.name}: Unreachable ({exc})")
     else:
         print("  - No Proxmox nodes configured.")
             
     print(f"\nSSH Hosts ({len(cfg.ssh.hosts) if cfg.ssh else 0}):")
     if cfg.ssh and cfg.ssh.hosts:
         ssh_client = SSHClient(cfg)
-        async def check_ssh():
+
+        async def check_ssh() -> None:
             for host in cfg.ssh.hosts:
                 try:
-                    res = await ssh_client.exec_command(host.name, "echo OK", timeout=5)
-                    if res.get("status") == "ok":
+                    result = await ssh_client.exec_command(host.name, "echo OK", timeout=5)
+                    if result.get("error"):
+                        print(f"  ✗ {host.name}: Failed ({result['error']})")
+                    elif result.get("exit_code") == 0:
                         print(f"  ✓ {host.name}: Reachable")
                     else:
-                        print(f"  ✗ {host.name}: Failed ({res.get('stderr') or res.get('error')})")
-                except Exception as e:
-                    print(f"  ✗ {host.name}: Unreachable ({e})")
+                        print(f"  ✗ {host.name}: Failed ({result.get('stderr', '').strip() or result})")
+                except Exception as exc:
+                    print(f"  ✗ {host.name}: Unreachable ({exc})")
+
         asyncio.run(check_ssh())
     else:
         print("  - No explicit SSH hosts configured.")
@@ -190,16 +197,21 @@ def _cmd_doctor(args):
     print(f"\nBMC Devices ({len(cfg.bmc_devices)}):")
     if cfg.bmc_devices:
         registry = build_registry(cfg)
-        for dev in cfg.bmc_devices:
-            client = registry.get(dev.id)
-            if not client:
-                print(f"  ✗ {dev.id}: Backend not initialized")
-                continue
-            try:
-                res = client.get_health()
-                print(f"  ✓ {dev.id}: Reachable ({res.get('overall', 'unknown')})")
-            except Exception as e:
-                print(f"  ✗ {dev.id}: Unreachable ({e})")
+
+        async def check_bmc() -> None:
+            for device in cfg.bmc_devices:
+                client = registry.get(device.id)
+                if not client:
+                    print(f"  ✗ {device.id}: Backend not initialized")
+                    continue
+                try:
+                    health = await client.health()
+                    summary = health.get("overall_health") or health.get("health") or "reachable"
+                    print(f"  ✓ {device.id}: Reachable ({summary})")
+                except Exception as exc:
+                    print(f"  ✗ {device.id}: Unreachable ({exc})")
+
+        asyncio.run(check_bmc())
     else:
         print("  - No BMC devices configured.")
         
