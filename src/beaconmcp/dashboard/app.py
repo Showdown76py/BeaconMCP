@@ -426,6 +426,36 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         _apply_security_headers(response)
         return response
 
+    async def overview_get(request: Request) -> Response:
+        session = _load_session(request, deps)
+        if not session:
+            return RedirectResponse("/app/login", status_code=302)
+        if not _bearer_live(deps, session):
+            return RedirectResponse("/app/refresh?next=/app/overview", status_code=302)
+        return _render(
+            request,
+            "overview.html",
+            {
+                "client_name": deps.client_store.get_name(session.client_id)
+                or "Unknown",
+            },
+        )
+
+    async def usage_get(request: Request) -> Response:
+        session = _load_session(request, deps)
+        if not session:
+            return RedirectResponse("/app/login", status_code=302)
+        if not _bearer_live(deps, session):
+            return RedirectResponse("/app/refresh?next=/app/usage", status_code=302)
+        return _render(
+            request,
+            "usage_cost.html",
+            {
+                "client_name": deps.client_store.get_name(session.client_id)
+                or "Unknown",
+            },
+        )
+
     async def tokens_get(request: Request) -> Response:
         session = _load_session(request, deps)
         if not session:
@@ -1027,6 +1057,8 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         Route("/app/refresh", refresh_post, methods=["POST"]),
         Route("/app/logout", logout, methods=["POST"]),
         Route("/app/chat", chat_get, methods=["GET"]),
+        Route("/app/overview", overview_get, methods=["GET"]),
+        Route("/app/usage", usage_get, methods=["GET"]),
         Route("/app/tokens", tokens_get, methods=["GET"]),
         Route("/app/tokens", tokens_create, methods=["POST"]),
         Route("/app/tokens/revoke", tokens_revoke, methods=["POST"]),
