@@ -1,4 +1,5 @@
 import argparse
+import logging
 import os
 import sys
 from pathlib import Path
@@ -8,6 +9,27 @@ from dotenv import load_dotenv
 # load_dotenv MUST run before importing server, because server.py
 # triggers Config.from_env() at import time
 load_dotenv()
+
+
+def _configure_logging() -> None:
+    """Wire root logging so ``logging.getLogger('beaconmcp.*')`` emits to stderr.
+
+    Honours ``BEACONMCP_LOG_LEVEL`` (default ``INFO``). Runs once at CLI
+    entry before any module-level ``_logger`` call can fire. Keeps the
+    format compact so journalctl stays readable.
+    """
+    if logging.getLogger().handlers:
+        return  # already configured (e.g. pytest, embedded use)
+    level_name = os.environ.get("BEACONMCP_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
+
+
+_configure_logging()
 
 
 def _apply_legacy_env_shim() -> None:
@@ -24,11 +46,10 @@ def _apply_legacy_env_shim() -> None:
         new_key = "BEACONMCP_" + key[len("TARKAMCP_"):]
         if new_key not in os.environ:
             os.environ[new_key] = os.environ[key]
-    print(
-        f"DeprecationWarning: TARKAMCP_* environment variables are deprecated "
-        f"(found: {', '.join(sorted(legacy))}). Rename to BEACONMCP_*; the "
-        f"legacy names will be removed in 2.1.",
-        file=sys.stderr,
+    logging.getLogger("beaconmcp").warning(
+        "TARKAMCP_* environment variables are deprecated (found: %s). "
+        "Rename to BEACONMCP_*; the legacy names will be removed in 2.1.",
+        ", ".join(sorted(legacy)),
     )
 
 

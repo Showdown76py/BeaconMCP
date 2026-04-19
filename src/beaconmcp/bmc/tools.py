@@ -12,6 +12,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from ..utils import filter_fields
 from .base import BMCClient, BMCNotConfiguredError, BMCTunnelError
 
 
@@ -59,34 +60,44 @@ def register_bmc_tools(
         }
 
     @mcp.tool()
-    async def bmc_server_info(device_id: str | None = None) -> dict[str, Any]:
+    async def bmc_server_info(
+        device_id: str | None = None,
+        fields: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Get physical server information (model, serial, firmware) from a BMC.
 
         Use to identify the hardware behind a BMC and confirm firmware
-        levels before issuing power actions.
+        levels before issuing power actions. Pass ``fields=[...]`` to trim
+        the response -- iLO in particular returns many keys.
 
         Args:
             device_id: id of the target BMC. Optional when only one device
               is configured. Use bmc_list_devices to discover valid ids.
+            fields: optional allow-list of top-level keys to keep.
         """
         try:
-            return await _resolve(device_id).server_info()
+            return filter_fields(await _resolve(device_id).server_info(), fields)
         except (BMCNotConfiguredError, BMCTunnelError) as exc:
             return {"error": str(exc)}
 
     @mcp.tool()
-    async def bmc_health_status(device_id: str | None = None) -> dict[str, Any]:
+    async def bmc_health_status(
+        device_id: str | None = None,
+        fields: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Get hardware health from a BMC: temperatures, fans, power supplies, disks, memory.
 
         Most important diagnostic tool when a host becomes unresponsive —
-        reveals sensor-level failures not visible over the OS.
+        reveals sensor-level failures not visible over the OS. Pass
+        ``fields=[...]`` to trim the response.
 
         Args:
             device_id: id of the target BMC. Optional when only one device
               is configured. Use bmc_list_devices to discover valid ids.
+            fields: optional allow-list of top-level keys to keep.
         """
         try:
-            return await _resolve(device_id).health()
+            return filter_fields(await _resolve(device_id).health(), fields)
         except (BMCNotConfiguredError, BMCTunnelError) as exc:
             return {"error": str(exc)}
 
@@ -164,20 +175,24 @@ def register_bmc_tools(
 
     @mcp.tool()
     async def bmc_get_event_log(
-        device_id: str | None = None, limit: int = 50
+        device_id: str | None = None,
+        limit: int = 50,
+        fields: list[str] | None = None,
     ) -> dict[str, Any]:
         """Fetch a BMC event log: hardware errors, reboots, power events, PSU/fan faults.
 
         Essential for post-mortem analysis of host crashes. Returns the most
-        recent events (default 50, capped at 200).
+        recent events (default 50, capped at 200). Pass ``fields=[...]`` to
+        trim top-level keys of the response.
 
         Args:
             device_id: id of the target BMC. Optional when only one device
               is configured. Use bmc_list_devices to discover valid ids.
             limit: maximum number of events to return (1–200).
+            fields: optional allow-list of top-level keys to keep.
         """
         limit = max(1, min(int(limit), 200))
         try:
-            return await _resolve(device_id).event_log(limit)
+            return filter_fields(await _resolve(device_id).event_log(limit), fields)
         except (BMCNotConfiguredError, BMCTunnelError) as exc:
             return {"error": str(exc)}
