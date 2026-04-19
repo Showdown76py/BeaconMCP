@@ -342,6 +342,7 @@ def register_aggregator_tools(
         vmids: list[int],
         action: str,
         force: bool = False,
+        dry_run: bool = False,
     ) -> dict[str, Any]:
         """Run ``start``/``stop``/``restart`` on many VMs/CTs in parallel.
 

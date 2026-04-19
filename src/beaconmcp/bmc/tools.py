@@ -119,7 +119,7 @@ def register_bmc_tools(
             return {"error": str(exc)}
 
     @mcp.tool()
-    async def bmc_power_on(device_id: str | None = None) -> dict[str, Any]:
+    async def bmc_power_on(device_id: str | None = None, dry_run: bool = False) -> dict[str, Any]:
         """Power on a physical server via its BMC.
 
         Use when the server is powered off and needs to boot. Confirm the
@@ -137,7 +137,7 @@ def register_bmc_tools(
 
     @mcp.tool()
     async def bmc_power_off(
-        device_id: str | None = None, force: bool = False
+        device_id: str | None = None, force: bool = False, dry_run: bool = False
     ) -> dict[str, Any]:
         """Power off a physical server via its BMC.
 
@@ -157,7 +157,7 @@ def register_bmc_tools(
             return {"error": str(exc)}
 
     @mcp.tool()
-    async def bmc_power_reset(device_id: str | None = None) -> dict[str, Any]:
+    async def bmc_power_reset(device_id: str | None = None, dry_run: bool = False) -> dict[str, Any]:
         """Hard-reset a physical server via its BMC.
 
         Last-resort recovery when the host is completely frozen. Equivalent

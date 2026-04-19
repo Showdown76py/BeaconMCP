@@ -61,6 +61,8 @@ def main():
     sub = parser.add_subparsers(dest="command")
 
     # --- serve (default) ---
+        doctor_parser = sub.add_parser("doctor", help="Preflight connectivity and config check")
+
     serve_parser = sub.add_parser("serve", help="Start the MCP HTTP server")
     serve_parser.add_argument(
         "--port", type=int, default=int(os.environ.get("BEACONMCP_PORT", "8420")),
@@ -120,6 +122,8 @@ def main():
         _cmd_serve(args)
     elif args.command == "auth":
         _cmd_auth(args)
+    elif args.command == "doctor":
+        _cmd_doctor(args)
     elif args.command == "validate-config":
         _cmd_validate_config(args)
     elif args.command == "init":
@@ -132,6 +136,74 @@ def _cmd_init(args):
     yaml_path = args.config if args.config else Path(os.environ.get("BEACONMCP_CONFIG", "beaconmcp.yaml"))
     env_path = args.env
     sys.exit(run_wizard(yaml_path=yaml_path, env_path=env_path, start_blank=args.blank))
+
+
+
+def _cmd_doctor(args):
+    import sys
+    import asyncio
+    from .config import Config, ConfigError
+    from .proxmox.client import ProxmoxClient
+    from .ssh.client import SSHClient
+    from .bmc import build_registry
+    
+    print("BeaconMCP Doctor - Preflight Check\n")
+    try:
+        cfg = Config.load(config_path=args.config)
+        print("✓ Config loaded successfully.")
+    except Exception as exc:
+        print(f"✗ Config failed to load: {exc}")
+        sys.exit(1)
+        
+    print(f"\nProxmox Nodes ({len(cfg.pve_nodes)}):")
+    if cfg.pve_nodes:
+        proxmox_client = ProxmoxClient(cfg)
+        for node in cfg.pve_nodes:
+            try:
+                status = proxmox_client.get(node.name, "version")
+                if "version" in status:
+                    print(f"  ✓ {node.name}: Reachable (PVE {status['version']})")
+                else:
+                    print(f"  ✗ {node.name}: Unexpected response {status}")
+            except Exception as e:
+                print(f"  ✗ {node.name}: Unreachable ({e})")
+    else:
+        print("  - No Proxmox nodes configured.")
+            
+    print(f"\nSSH Hosts ({len(cfg.ssh.hosts) if cfg.ssh else 0}):")
+    if cfg.ssh and cfg.ssh.hosts:
+        ssh_client = SSHClient(cfg)
+        async def check_ssh():
+            for host in cfg.ssh.hosts:
+                try:
+                    res = await ssh_client.exec_command(host.name, "echo OK", timeout=5)
+                    if res.get("status") == "ok":
+                        print(f"  ✓ {host.name}: Reachable")
+                    else:
+                        print(f"  ✗ {host.name}: Failed ({res.get('stderr') or res.get('error')})")
+                except Exception as e:
+                    print(f"  ✗ {host.name}: Unreachable ({e})")
+        asyncio.run(check_ssh())
+    else:
+        print("  - No explicit SSH hosts configured.")
+        
+    print(f"\nBMC Devices ({len(cfg.bmc_devices)}):")
+    if cfg.bmc_devices:
+        registry = build_registry(cfg)
+        for dev in cfg.bmc_devices:
+            client = registry.get(dev.id)
+            if not client:
+                print(f"  ✗ {dev.id}: Backend not initialized")
+                continue
+            try:
+                res = client.get_health()
+                print(f"  ✓ {dev.id}: Reachable ({res.get('overall', 'unknown')})")
+            except Exception as e:
+                print(f"  ✗ {dev.id}: Unreachable ({e})")
+    else:
+        print("  - No BMC devices configured.")
+        
+    print("\nPreflight check complete.")
 
 
 def _cmd_validate_config(args):
