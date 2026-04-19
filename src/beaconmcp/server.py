@@ -273,7 +273,7 @@ Diagnostic workflow:
 if config.pve_nodes:
     register_monitoring_tools(mcp, proxmox_client)
     register_vm_tools(mcp, proxmox_client)
-    register_system_tools(mcp, proxmox_client)
+    register_system_tools(mcp, proxmox_client, ssh_client if config.ssh and config.ssh.hosts else None)
     # Aggregators ride on top of the Proxmox client and opportunistically
     # pull BMC facts when the registry is non-empty.
     register_aggregator_tools(mcp, proxmox_client, config, bmc_registry)

@@ -354,20 +354,19 @@ def register_aggregator_tools(
         if action not in valid_actions:
             return {"error": f"Unsupported action {action!r}. Use one of {sorted(valid_actions)}."}
 
-        # Dedupe while preserving order -- repeated VMIDs are almost always a
-        # caller bug and doing the same stop/start twice is never what they want.
-        seen: set[int] = set()
-        unique_vmids = [v for v in vmids if not (v in seen or seen.add(v))]
-
         # Hard cap. A typo like `vm_bulk_action(range(1, 10000), "stop")` should
         # fail loud, not take down a cluster. 50 covers legit bulk ops on any
         # homelab-scale setup.
         _MAX_BULK = 50
-        if len(unique_vmids) > _MAX_BULK:
+        if len(vmids) > _MAX_BULK:
             return {
-                "error": f"Too many VMIDs ({len(unique_vmids)} unique); cap is {_MAX_BULK} per call. "
+                "error": f"Too many VMIDs ({len(vmids)}); cap is {_MAX_BULK} per call. "
                 "Split into multiple calls.",
             }
+        # Dedupe while preserving order -- repeated VMIDs are almost always a
+        # caller bug and doing the same stop/start twice is never what they want.
+        seen: set[int] = set()
+        unique_vmids = [v for v in vmids if not (v in seen or seen.add(v))]
 
         def _one(vmid: int) -> dict[str, Any]:
             location = _find_vm_location(proxmox_client, vmid)

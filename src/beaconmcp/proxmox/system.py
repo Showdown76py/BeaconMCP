@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import time
 import uuid
+import shlex
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -28,8 +30,6 @@ class ExecSession:
 
 
 _exec_sessions: dict[str, ExecSession] = {}
-# Drop finished sessions older than this (seconds) on each new insertion so the
-# store can't grow unboundedly in a long-running server.
 _EXEC_SESSION_TTL = 3600
 
 
@@ -54,37 +54,15 @@ def _detect_vm_type(client: ProxmoxClient, node: str, vmid: int) -> str | None:
     return None
 
 
-def _exec_lxc_unsupported(vmid: int) -> dict[str, Any]:
-    """LXC exec is not exposed by the Proxmox API.
-
-    Commands inside containers must be run via ``pct exec`` on the host, which
-    requires SSH access to the node.
-    """
-    return {
-        "error": (
-            f"Proxmox API does not expose an exec endpoint for LXC containers. "
-            f"Use ssh_run on the host node with "
-            f"'pct exec {vmid} -- <command>' instead."
-        )
-    }
-
-
-def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
+def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any = None) -> None:
     """Register Proxmox system administration and command execution tools."""
 
     @mcp.tool()
-    def proxmox_storage_status(
-        node: str = "",
-        fields: list[str] | None = None,
-    ) -> dict[str, Any]:
+    def proxmox_storage_status(node: str = "") -> dict[str, Any]:
         """Get storage status across the cluster: usage, type, content types.
 
         Use to check disk space, storage health, or find available storage.
         Omit 'node' to list storage from all configured nodes.
-        Pass ``fields=[...]`` to trim each entry to a subset of keys
-        (e.g. ``["name", "usage_pct"]``).
-        Returns: {"storage": {"<node>": [{name, type, content, enabled, used_gb,
-        total_gb, usage_pct}]}}. Per-node errors appear as {"error": "..."} entries.
         """
         target_nodes = [node] if node else client.configured_nodes
         by_node: dict[str, list[dict[str, Any]]] = {}
@@ -104,11 +82,8 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
                 if not storage_name:
                     continue
                 status = client.get(n, f"nodes/{n}/storage/{storage_name}/status")
-                used = 0
-                total = 0
-                if isinstance(status, dict) and "error" not in status:
-                    used = status.get("used", 0)
-                    total = status.get("total", 0)
+                used = status.get("used", 0) if isinstance(status, dict) and "error" not in status else 0
+                total = status.get("total", 0) if isinstance(status, dict) and "error" not in status else 0
 
                 entries.append({
                     "name": storage_name,
@@ -119,17 +94,13 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
                     "total_gb": round(total / 1073741824, 1),
                     "usage_pct": round(used / total * 100, 1) if total > 0 else 0,
                 })
-            by_node[n] = filter_fields(entries, fields)
+            by_node[n] = entries
 
         return {"storage": by_node}
 
     @mcp.tool()
     def proxmox_network_config(node: str) -> dict[str, Any]:
-        """Get network interface configuration of a Proxmox node.
-
-        Use to inspect network setup: bridges, bonds, VLANs, IP addresses.
-        Returns all network interfaces with their type, address, and configuration.
-        """
+        """Get network interface configuration of a Proxmox node."""
         data = client.get(node, f"nodes/{node}/network")
         if isinstance(data, dict) and "error" in data:
             return data
@@ -149,17 +120,9 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
                 "method": iface.get("method"),
                 "cidr": iface.get("cidr"),
             })
-
         return {"node": node, "interfaces": interfaces}
 
-    # -----------------------------------------------------------------------
-    # proxmox_run: unified sync + async QEMU exec
-    # -----------------------------------------------------------------------
-
     def _start_async_qemu(node: str, vmid: int, command: str) -> dict[str, Any]:
-        """Kick off a QEMU guest-agent command and track it in the session store."""
-        import shlex
-
         _prune_exec_sessions()
         exec_id = str(uuid.uuid4())[:8]
         session = ExecSession(
@@ -181,12 +144,22 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         return {"exec_id": exec_id, "status": "running"}
 
     def _poll_session(exec_id: str) -> dict[str, Any]:
-        """Advance a tracked session if possible, return a status-shape dict."""
         session = _exec_sessions.get(exec_id)
         if not session:
-            return {"status": "error", "error": f"No command found with exec_id {exec_id!r}."}
+            return {"status": "error", "error": f"No command found with exec_id '{exec_id}'."}
 
-        if session.status == "running" and session.vm_type == "qemu" and session.pid is not None:
+        if session.status != "running":
+            return {
+                "exec_id": exec_id,
+                "status": "ok" if session.status == "completed" and session.exit_code == 0 else session.status,
+                "stdout": session.stdout,
+                "stderr": session.stderr,
+                "exit_code": session.exit_code,
+                "command": session.command,
+                "elapsed_s": round(time.time() - session.started_at, 1),
+            }
+
+        if session.vm_type == "qemu" and session.pid is not None:
             status_data = client.get(
                 session.node,
                 f"nodes/{session.node}/qemu/{session.vmid}/agent/exec-status",
@@ -204,17 +177,13 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
                 session.stderr = stderr
                 session.exit_code = status_data.get("exitcode", -1)
 
-            if session.status == "running" and time.time() - session.started_at > 600:
-                session.status = "timeout"
+        if time.time() - session.started_at > 600:
+            session.status = "timeout"
 
         elapsed = round(time.time() - session.started_at, 1)
         if session.status == "running":
-            return {
-                "status": "running",
-                "exec_id": exec_id,
-                "command": session.command,
-                "elapsed_s": elapsed,
-            }
+            return {"status": "running", "exec_id": exec_id, "command": session.command, "elapsed_s": elapsed}
+        
         return {
             "status": "ok" if session.status == "completed" and session.exit_code == 0 else session.status,
             "exec_id": exec_id,
@@ -226,7 +195,7 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         }
 
     @mcp.tool()
-    def proxmox_run(
+    async def proxmox_run(
         node: str = "",
         vmid: int = 0,
         command: str = "",
@@ -234,56 +203,98 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         wait: bool = True,
         exec_id: str = "",
     ) -> dict[str, Any]:
-        """Run a command inside a QEMU VM via the Guest Agent. Handles sync + async in one tool.
+        """Run a command inside a VM (QEMU Guest Agent) or container (LXC pct exec).
 
         Three call patterns:
-
-        - **Sync** (default): pass ``node``, ``vmid``, ``command``. Blocks up to
-          ``timeout`` seconds (max 600). Completes -> returns
-          ``stdout``/``stderr``/``exit_code``. Times out -> auto-switches to
-          async and returns ``{status: "running", exec_id}``.
-        - **Async start**: pass ``node``, ``vmid``, ``command``, ``wait=False``.
-          Returns ``{status: "running", exec_id}`` immediately.
-        - **Poll existing**: pass ``exec_id`` only. Returns the current
-          status/output for that session.
-
-        LXC containers have no Guest Agent -- use ``ssh_run`` with
-        ``pct exec <vmid> -- <cmd>`` instead. For commands on the Proxmox host
-        itself (not inside a VM), use ``ssh_run`` directly.
+        - **Sync** (default): pass ``node``, ``vmid``, ``command``. Blocks up to ``timeout`` seconds (max 600).
+        - **Async start**: pass ``node``, ``vmid``, ``command``, ``wait=False``. Returns immediately.
+        - **Poll existing**: pass ``exec_id`` only. Returns the current status/output for that session.
         """
+        loop = asyncio.get_running_loop()
+
+        def _format_ssh_result(xid: str, s) -> dict[str, Any]:
+            elapsed = round(time.time() - s.started_at, 1)
+            if s.status == "running":
+                return {"status": "running", "exec_id": xid, "command": s.command, "elapsed_s": elapsed}
+            return {
+                "status": "ok" if s.status == "completed" and s.exit_code == 0 else s.status,
+                "exec_id": xid,
+                "command": s.command,
+                "stdout": s.stdout,
+                "stderr": s.stderr,
+                "exit_code": s.exit_code,
+                "duration_s": elapsed,
+            }
+
         if exec_id:
-            return _poll_session(exec_id)
+            if exec_id in _exec_sessions:
+                return await loop.run_in_executor(None, _poll_session, exec_id)
+            if ssh_client:
+                ssh_sess = ssh_client.get_session(exec_id)
+                if ssh_sess:
+                    return _format_ssh_result(exec_id, ssh_sess)
+            return {"status": "error", "error": f"No command found with exec_id {exec_id!r}."}
 
         if not command:
             return {"status": "error", "error": "`command` is required when `exec_id` is not provided."}
         if not node or not vmid:
             return {"status": "error", "error": "`node` and `vmid` are required to start a command."}
 
-        vm_type = _detect_vm_type(client, node, vmid)
+        vm_type = await loop.run_in_executor(None, _detect_vm_type, client, node, vmid)
         if not vm_type:
             return {"status": "error", "error": f"VM/CT {vmid} not found on node '{node}'."}
-        if vm_type == "lxc":
-            return _exec_lxc_unsupported(vmid) | {"status": "error"}
-
-        started = _start_async_qemu(node, vmid, command)
-        if started.get("status") == "failed":
-            return started
-        new_id = started["exec_id"]
-
-        if not wait:
-            return {"status": "running", "exec_id": new_id, "elapsed_s": 0}
-
+        
         max_timeout = min(max(timeout, 1), 600)
-        deadline = time.time() + max_timeout
-        while time.time() < deadline:
-            result = _poll_session(new_id)
-            if result["status"] != "running":
-                return result
-            time.sleep(1)
-        # Timed out; hand back the session handle so caller can keep polling.
-        return {
-            "status": "running",
-            "exec_id": new_id,
-            "elapsed_s": int(time.time() - _exec_sessions[new_id].started_at),
-            "hint": "Command still running. Call proxmox_run(exec_id=...) to poll.",
-        }
+        
+        if vm_type == "lxc":
+            if not ssh_client:
+                return {"status": "error", "error": "LXC execution requires SSH access to the Proxmox node, but SSH is not configured."}
+            try:
+                # Safe escaping to prevent shell injection (fixing the owner's feedback)
+                escaped_cmd = shlex.quote(command)
+                lxc_cmd = f"pct exec {vmid} -- sh -c {escaped_cmd}"
+                new_id = await ssh_client.exec_command_async(node, lxc_cmd)
+            except Exception as e:
+                return {"status": "error", "error": str(e)}
+
+            if not wait:
+                return {"status": "running", "exec_id": new_id, "elapsed_s": 0}
+
+            deadline = time.time() + max_timeout
+            while time.time() < deadline:
+                session = ssh_client.get_session(new_id)
+                if session and session.status != "running":
+                    return _format_ssh_result(new_id, session)
+                await asyncio.sleep(1)
+                
+            session = ssh_client.get_session(new_id)
+            if session and session.status != "running":
+                return _format_ssh_result(new_id, session)
+            return {
+                "status": "running",
+                "exec_id": new_id,
+                "elapsed_s": int(time.time() - (session.started_at if session else time.time())),
+                "hint": "Command still running. Call proxmox_run(exec_id=...) to poll.",
+            }
+        else:
+            started = await loop.run_in_executor(None, _start_async_qemu, node, vmid, command)
+            if started.get("status") == "failed":
+                return started
+            new_id = started["exec_id"]
+
+            if not wait:
+                return {"status": "running", "exec_id": new_id, "elapsed_s": 0}
+
+            deadline = time.time() + max_timeout
+            while time.time() < deadline:
+                result = await loop.run_in_executor(None, _poll_session, new_id)
+                if result["status"] != "running":
+                    return result
+                await asyncio.sleep(1)
+            
+            return {
+                "status": "running",
+                "exec_id": new_id,
+                "elapsed_s": int(time.time() - _exec_sessions[new_id].started_at),
+                "hint": "Command still running. Call proxmox_run(exec_id=...) to poll.",
+            }

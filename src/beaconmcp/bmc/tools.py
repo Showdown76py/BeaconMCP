@@ -144,7 +144,7 @@ def register_bmc_tools(
         Default (force=false) sends an ACPI shutdown (clean, like pressing
         the power button). force=true immediately cuts power — reserve for
         fully unresponsive hosts. Prefer ``proxmox_vm_stop`` and
-        ``ssh_run(host=..., command='shutdown -h now')`` before forcing.
+        ``ssh_exec_command 'shutdown -h now'`` before forcing.
 
         Args:
             device_id: id of the target BMC. Optional when only one device
@@ -162,7 +162,7 @@ def register_bmc_tools(
 
         Last-resort recovery when the host is completely frozen. Equivalent
         to pressing the physical reset button. Try ``proxmox_vm_restart``
-        and ``ssh_run(host=..., command='reboot')`` first.
+        and ``ssh_exec_command 'reboot'`` first.
 
         Args:
             device_id: id of the target BMC. Optional when only one device
