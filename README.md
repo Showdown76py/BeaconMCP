@@ -175,6 +175,23 @@ curl http://localhost:8420/health
 
 Place BeaconMCP behind a reverse proxy that terminates TLS and forwards the public hostname to `http://localhost:8420`. Declare that hostname under `server.allowed_hosts` in `beaconmcp.yaml`; without it the MCP SDK rejects incoming requests with `421 Misdirected Request` (DNS-rebinding protection). If you're proxying through Cloudflare, add `cloudflare` to `server.trusted_proxies` so BeaconMCP can safely trust forwarded client IPs for auth rate limiting.
 
+### 6. Updating BeaconMCP
+
+Updating BeaconMCP requires pulling the latest code from GitHub and restarting the service.
+
+**For Docker setups:**
+```bash
+cd BeaconMCP
+git pull
+docker compose up -d --build
+```
+
+**For Bare-metal (systemd) setups:**
+The installer script doubles as an updater. It will automatically stash your current state, pull the latest code, install any new dependencies into the virtual environment, and restart the service:
+```bash
+sudo bash /opt/beaconmcp/deploy/install.sh
+```
+
 ---
 
 ## Connecting clients
