@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Status Overview · BeaconMCP{% endblock %}
+{% block body_class %}tokens-page{% endblock %}
+{% block body %}
+<svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <symbol id="i-chev-l" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></symbol>
+</svg>
+
+<div class="tk-wrap">
+  <div class="tk-top">
+    <div class="name">BeaconMCP</div>
+    <div class="sp"></div>
+    <a href="/app/chat" class="back">
+      <svg width="13" height="13"><use href="#i-chev-l"/></svg>
+      Back to chat
+    </a>
+  </div>
+
+  <h1>Status Overview Hub</h1>
+  <p class="tk-lede">
+    System health, Proxmox cluster status, and hardware metrics overview.
+  </p>
+
+  <div class="endpoint-hero">
+    <div class="eyebrow">Overall Health</div>
+    <div class="endpoint-row">
+      <div class="val" style="color: var(--text-muted); font-weight: 600;">Status gathering coming soon</div>
+    </div>
+  </div>
+
+  <div style="margin-top: 2rem; display: flex; gap: 1rem;">
+    <div style="flex: 1; padding: 1.5rem; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px;">
+      <h3 style="margin-top: 0;">Proxmox Nodes</h3>
+      <ul style="margin: 0; padding-left: 1.5rem; color: var(--text-muted);">
+        <li>(Coming soon)</li>
+      </ul>
+    </div>
+    <div style="flex: 1; padding: 1.5rem; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px;">
+      <h3 style="margin-top: 0;">Hardware BMCs</h3>
+      <ul style="margin: 0; padding-left: 1.5rem; color: var(--text-muted);">
+        <li>(Coming soon)</li>
+      </ul>
+    </div>
+  </div>
+</div>
+{% endblock %}
