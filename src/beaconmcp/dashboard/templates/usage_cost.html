@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Usage & Cost · BeaconMCP{% endblock %}
+{% block body_class %}tokens-page{% endblock %}
+{% block body %}
+<svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <symbol id="i-chev-l" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></symbol>
+</svg>
+
+<div class="tk-wrap">
+  <div class="tk-top">
+    <div class="name">BeaconMCP</div>
+    <div class="sp"></div>
+    <a href="/app/chat" class="back">
+      <svg width="13" height="13"><use href="#i-chev-l"/></svg>
+      Back to chat
+    </a>
+  </div>
+
+  <h1>Usage & Cost Tracking UI</h1>
+  <p class="tk-lede">
+    Monitor token usage and estimated LLM costs.
+  </p>
+
+  <div class="endpoint-hero">
+    <div class="eyebrow">Current Billing Cycle (Estimated)</div>
+    <div class="endpoint-row">
+      <div class="val" style="font-size: 2rem; font-weight: 700;">$14.52</div>
+    </div>
+  </div>
+
+  <div style="margin-top: 2rem;">
+    <h3>Token Consumption</h3>
+    <table style="width: 100%; text-align: left; border-collapse: collapse;">
+      <thead>
+        <tr style="border-bottom: 1px solid var(--border-color);">
+          <th style="padding: 0.5rem 0;">Date</th>
+          <th style="padding: 0.5rem 0;">Model</th>
+          <th style="padding: 0.5rem 0;">Input Tokens</th>
+          <th style="padding: 0.5rem 0;">Output Tokens</th>
+        </tr>
+      </thead>
+      <tbody style="color: var(--text-muted);">
+        <tr>
+          <td style="padding: 0.5rem 0;">Today</td>
+          <td style="padding: 0.5rem 0;">gemini-3.1-pro</td>
+          <td style="padding: 0.5rem 0;">12,045</td>
+          <td style="padding: 0.5rem 0;">3,102</td>
+        </tr>
+        <tr>
+          <td style="padding: 0.5rem 0;">Yesterday</td>
+          <td style="padding: 0.5rem 0;">gemini-3.1-pro</td>
+          <td style="padding: 0.5rem 0;">8,430</td>
+          <td style="padding: 0.5rem 0;">1,950</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
