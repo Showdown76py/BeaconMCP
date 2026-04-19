@@ -189,10 +189,10 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         if notes:
             params["notes"] = notes
             
-        result = client.post(node, "nodes/{node}/vzdump", **params)
+        result = client.post(node, f"nodes/{node}/vzdump", **params)
         if isinstance(result, dict) and "error" in result:
-            return result
-        return {"vmid": vmid, "node": node, "action": "backup_create", "storage": storage, "upid": result}
+            return {"status": "error", "error": result["error"]}
+        return {"status": "success", "vmid": vmid, "node": node, "action": "backup_create", "storage": storage, "upid": result}
 
     @mcp.tool()
     def proxmox_backup_list(node: str, storage: str, vmid: int | None = None) -> dict[str, Any]:
@@ -239,23 +239,23 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
             storage: Target storage for the restored disks (default 'local-lvm').
         """
         # Determine if archive is for QEMU or LXC
-        if "qemu" in archive:
+        if "vzdump-qemu-" in archive:
             endpoint = f"nodes/{node}/qemu"
             vm_type = "qemu"
-        elif "lxc" in archive:
+        elif "vzdump-lxc-" in archive:
             endpoint = f"nodes/{node}/lxc"
             vm_type = "lxc"
         else:
-            return {"error": "Could not determine if backup is for 'qemu' or 'lxc' from archive name. Archive must contain 'qemu' or 'lxc'."}
+            return {"status": "error", "error": "Could not determine if backup is for 'qemu' or 'lxc'. Archive must contain 'vzdump-qemu-' or 'vzdump-lxc-'."}
             
         params = {
             "vmid": vmid,
             "archive": archive,
             "force": 1 if force else 0,
-            "storage": storage
+            "storage": storage,
         }
-            
+        
         result = client.post(node, endpoint, **params)
         if isinstance(result, dict) and "error" in result:
-            return result
-        return {"vmid": vmid, "node": node, "action": "backup_restore", "archive": archive, "upid": result}
+            return {"status": "error", "error": result["error"]}
+        return {"status": "success", "vmid": vmid, "node": node, "action": "backup_restore", "archive": archive, "upid": result}

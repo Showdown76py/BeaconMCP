@@ -121,31 +121,41 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
 
 
     @mcp.tool()
-    async def proxmox_read_file(node: str, vmid: int, path: str) -> dict[str, Any]:
+    async def proxmox_read_file(node: str, vmid: int, path: str, binary: bool = False) -> dict[str, Any]:
         """Read a file from a VM or container.
         
-        For VMs, this uses the QEMU Guest Agent safely.
+        For VMs, this uses the QEMU Guest Agent safely (file must be < 1MB).
         For containers, this requires SSH to be configured.
         """
         vm_type = _detect_vm_type(client, node, vmid)
         if not vm_type:
-            return {"error": f"VM/CT {vmid} not found on node '{node}'."}
+            return {"status": "error", "error": f"VM/CT {vmid} not found on node '{node}'."}
             
         if vm_type == "qemu":
             result = client.get(node, f"nodes/{node}/qemu/{vmid}/agent/file-read", file=path)
             if isinstance(result, dict) and "error" in result:
-                return result
+                return {"status": "error", "error": result["error"]}
             # QEMU Guest Agent returns file content base64-encoded
             try:
                 if isinstance(result, dict) and "content" in result:
                     import base64
-                    content = base64.b64decode(result["content"]).decode("utf-8")
-                    return {"vmid": vmid, "node": node, "path": path, "content": content}
-                return {"vmid": vmid, "node": node, "path": path, "content": str(result)}
+                    raw_b64 = result["content"]
+                    if len(raw_b64) > 1398101: # ~1MB limit in base64
+                        return {"status": "error", "error": "File exceeds 1MB limit. Use SSH to download large files."}
+                    
+                    if binary:
+                        return {"status": "success", "vmid": vmid, "node": node, "path": path, "content_base64": raw_b64}
+                        
+                    try:
+                        content = base64.b64decode(raw_b64).decode("utf-8")
+                        return {"status": "success", "vmid": vmid, "node": node, "path": path, "content": content}
+                    except UnicodeDecodeError:
+                        return {"status": "error", "error": "Binary data detected. Pass binary=True to retrieve as base64."}
+                return {"status": "success", "vmid": vmid, "node": node, "path": path, "content": str(result)}
             except Exception as e:
-                return {"error": f"Failed to decode file content: {e}"}
+                return {"status": "error", "error": f"Failed to decode file content: {e}"}
         
-        return {"error": "LXC file reading is currently unsupported via API. Please use ssh_run to cat the file."}
+        return {"status": "error", "error": "LXC file reading is currently unsupported via API. Please use ssh_run to cat the file."}
 
     @mcp.tool()
     async def proxmox_write_file(node: str, vmid: int, path: str, content: str) -> dict[str, Any]:
