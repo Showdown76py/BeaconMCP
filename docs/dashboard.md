@@ -4,7 +4,7 @@ Optional web panel served by BeaconMCP on the same origin as the MCP endpoint (`
 
 - **`/app/login`** — exchanges a client id + client secret + TOTP code for an MCP bearer, and stores it in a 90-day HttpOnly session cookie. Removes the need to issue `curl` requests from a phone.
 - **`/app/chat`** — multi-conversation chat with Gemini 2.5 Flash/Pro (stable) or Gemini 3 Flash / 3.1 Pro (preview, Google allowlist required). **Requires `GEMINI_API_KEY`.**
-- **`/app/tokens`** — generates named bearers so external MCP clients (Gemini web, ChatGPT, Claude Desktop) can be wired up without the OAuth dance. **Works without `GEMINI_API_KEY`.**
+- **`/app/tokens`** — generates named bearers so external MCP clients (Gemini web, ChatGPT, Assistant Desktop) can be wired up without the OAuth dance. **Works without `GEMINI_API_KEY`.**
 
 ## Enabling
 
@@ -77,7 +77,7 @@ Constraints:
 3. The Gemini turn blocks server-side until the decision is made (5-minute timeout).
 4. On rejection, Gemini receives a `FunctionResponse {"error": "user_rejected"}` and can revise its reply.
 
-The allow-list is hard-coded in `src/beaconmcp/dashboard/chat.py` (`_NEEDS_CONFIRMATION`). Only the integrated chat enforces this gate; external MCP clients (Claude Desktop, Gemini CLI, ChatGPT MCP) must enable their own per-call approval mode (see the **Security** section of the root README).
+The allow-list is hard-coded in `src/beaconmcp/dashboard/chat.py` (`_NEEDS_CONFIRMATION`). Only the integrated chat enforces this gate; external MCP clients (Assistant Desktop, Gemini CLI, ChatGPT MCP) must enable their own per-call approval mode (see the **Security** section of the root README).
 
 ## Stored data
 
@@ -127,7 +127,7 @@ The dashboard keeps its own MCP session (`streamablehttp_client` + `ClientSessio
 
 `TokenStore` lives in memory. After `systemctl restart beaconmcp`, bearers are invalidated while dashboard sessions (SQLite) persist. The dashboard detects this by calling `TokenStore.validate()` on every sensitive route; when a bearer is gone but the session timestamp is still valid, the user is routed to `/app/refresh` to enter a fresh TOTP code and mint a new bearer.
 
-Consequence for externally-issued tokens (`/app/tokens`): a service restart forces every Gemini-web / ChatGPT / Claude-Desktop integration to regenerate its token. If this is operationally annoying, move `TokenStore` to SQLite (not done today).
+Consequence for externally-issued tokens (`/app/tokens`): a service restart forces every Gemini-web / ChatGPT / Assistant-Desktop integration to regenerate its token. If this is operationally annoying, move `TokenStore` to SQLite (not done today).
 
 ## Disabling entirely
 

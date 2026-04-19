@@ -49,7 +49,7 @@
     <div class="cors-body">
       <p>
         A browser calling a different host has to pass a CORS preflight. Web UIs
-        (<strong>Claude</strong>, <strong>ChatGPT</strong>, <strong>Le Chat</strong>,
+        (<strong>Assistant</strong>, <strong>ChatGPT</strong>, <strong>Le Chat</strong>,
         <strong>Perplexity</strong>, <strong>Gemini Web</strong>) all do this before they can reach
         <code>/mcp</code>. If the origin isn't listed, every request fails silently in the
         browser console.
@@ -57,13 +57,13 @@
       <p>Add the origins you plan to use to <code>beaconmcp.yaml</code>:</p>
 <pre><code>server:
   allowed_origins:
-    - https://claude.ai
+    - https://assistant.ai
     - https://chatgpt.com
     - https://chat.mistral.ai
     - https://www.perplexity.ai
     - https://gemini.google.com</code></pre>
       <p class="small muted">
-        Desktop apps and CLI clients (Claude Desktop, Gemini CLI, Cursor, VS Code, Mistral Vibe,
+        Desktop apps and CLI clients (Assistant Desktop, Gemini CLI, Cursor, VS Code, Mistral Vibe,
         OpenCode) don't run in a browser and don't need an entry here.
       </p>
     </div>
@@ -115,7 +115,7 @@
             </p>
           </div>
           <div class="card-logos">
-            <span class="logo-pill">Claude</span>
+            <span class="logo-pill">Assistant</span>
             <span class="logo-pill">Codex</span>
             <span class="logo-pill">Le Chat</span>
             <span class="logo-pill">Gemini CLI</span>
@@ -127,7 +127,7 @@
 
           <div class="subhead">1 · Provision credentials on the server</div>
           <p>One client per install so you can revoke granularly:</p>
-<pre><code>beaconmcp auth create --name "Claude iPhone"</code></pre>
+<pre><code>beaconmcp auth create --name "Assistant iPhone"</code></pre>
           <p>The CLI prints a <code>client_id</code>, a <code>client_secret</code>, and a TOTP QR code (scan it immediately — the secret is shown once).</p>
 
           <div class="subhead">2 · Paste credentials into the client</div>
@@ -270,7 +270,7 @@
     {# VIEW: BY PLATFORM                                             #}
     {# ============================================================ #}
     <div class="view view-by-platform" role="tabpanel">
-      <input type="radio" name="platform-tab" id="p-claude" checked>
+      <input type="radio" name="platform-tab" id="p-assistant" checked>
       {% if dcr_enabled %}<input type="radio" name="platform-tab" id="p-chatgpt">{% endif %}
       <input type="radio" name="platform-tab" id="p-gemini">
       <input type="radio" name="platform-tab" id="p-mistral">
@@ -279,7 +279,7 @@
       <input type="radio" name="platform-tab" id="p-cursor">
       <input type="radio" name="platform-tab" id="p-other">
       <nav class="inner-tabs" role="tablist">
-        <label for="p-claude" class="inner-tab">Claude</label>
+        <label for="p-assistant" class="inner-tab">Assistant</label>
         {% if dcr_enabled %}<label for="p-chatgpt" class="inner-tab">ChatGPT</label>{% endif %}
         <label for="p-gemini" class="inner-tab">Gemini</label>
         <label for="p-mistral" class="inner-tab">Mistral</label>
@@ -289,39 +289,39 @@
         <label for="p-other" class="inner-tab">Other</label>
       </nav>
 
-      {# ---- Claude ---- #}
-      <div class="tab-panel" data-panel="claude">
+      {# ---- Assistant ---- #}
+      <div class="tab-panel" data-panel="assistant">
         <article class="card">
           <div class="card-head">
             <div class="card-title">
-              <h2>Claude</h2>
+              <h2>Assistant</h2>
               <span class="chip oauth">OAuth 2.1</span>
             </div>
             <p class="muted">
-              Claude uses OAuth with a user-provided client. Same CLI command creates credentials
+              Assistant uses OAuth with a user-provided client. Same CLI command creates credentials
               for every surface — what changes is where you paste them.
             </p>
           </div>
 
-          <input type="radio" name="claude-variant" id="cv-web" checked>
-          <input type="radio" name="claude-variant" id="cv-desktop">
+          <input type="radio" name="assistant-variant" id="cv-web" checked>
+          <input type="radio" name="assistant-variant" id="cv-desktop">
           <nav class="sub-tabs">
             <label for="cv-web" class="sub-tab">Web &amp; Mobile</label>
             <label for="cv-desktop" class="sub-tab">Desktop</label>
           </nav>
 
-          <div class="sub-panel" data-sub="claude-web">
+          <div class="sub-panel" data-sub="assistant-web">
             <ol class="steps">
-              <li>On the server:<pre><code>beaconmcp auth create --name "Claude Web"</code></pre></li>
-              <li>claude.ai or iOS/Android app → <em>Settings → Integrations → Add custom connector</em>.</li>
+              <li>On the server:<pre><code>beaconmcp auth create --name "Assistant Web"</code></pre></li>
+              <li>assistant.ai or iOS/Android app → <em>Settings → Integrations → Add custom connector</em>.</li>
               <li>URL: <code>{{ mcp_url }}</code>. Paste <code>client_id</code> / <code>client_secret</code>.</li>
-              <li>Type your TOTP on the authorization page when Claude redirects you.</li>
+              <li>Type your TOTP on the authorization page when Assistant redirects you.</li>
             </ol>
           </div>
-          <div class="sub-panel" data-sub="claude-desktop">
-            <p>Claude Desktop loads MCP servers from a local JSON config.</p>
-<pre><code>// ~/Library/Application Support/Claude/claude_desktop_config.json (macOS)
-// %APPDATA%\Claude\claude_desktop_config.json (Windows)
+          <div class="sub-panel" data-sub="assistant-desktop">
+            <p>Assistant Desktop loads MCP servers from a local JSON config.</p>
+<pre><code>// ~/Library/Application Support/Assistant/assistant_desktop_config.json (macOS)
+// %APPDATA%\Assistant\assistant_desktop_config.json (Windows)
 {
   "mcpServers": {
     "beaconmcp": {

@@ -3,7 +3,7 @@
 BeaconMCP exposes a single MCP endpoint (`https://<your-host>/mcp`) and three
 auth paths the dashboard helps you drive:
 
-- **OAuth 2.1 (pre-registered client)** — Claude, Codex, Le Chat, Gemini
+- **OAuth 2.1 (pre-registered client)** — Assistant, Codex, Le Chat, Gemini
   CLI, Antigravity, OpenCode, Cursor, VS Code. Provision a
   `client_id` / `client_secret` pair via `beaconmcp auth create` and
   paste them into the client's config. Standard OAuth 2.1 authorization
@@ -28,7 +28,7 @@ auth paths the dashboard helps you drive:
 > is checked against a fixed list in
 > [`src/beaconmcp/auth.py`](../src/beaconmcp/auth.py) (constant
 > `TRUSTED_REDIRECT_PREFIXES`). It covers every client documented here
-> — consumer and enterprise web URLs (claude.ai, chatgpt.com,
+> — consumer and enterprise web URLs (assistant.ai, chatgpt.com,
 > chat.mistral.ai, …), the OS URI schemes used by desktop clients
 > (`vscode://`, `cursor://`), and HTTP loopback for CLI tools
 > (`http://localhost:*`, `http://127.0.0.1:*`). If a new client shows
@@ -39,7 +39,7 @@ auth paths the dashboard helps you drive:
 > callback.
 
 > **CORS allowlist — required for every web client.**
-> Browser-based MCP clients (Claude Web, ChatGPT Web, Le Chat, Perplexity,
+> Browser-based MCP clients (Assistant Web, ChatGPT Web, Le Chat, Perplexity,
 > Gemini Web) fire a CORS preflight before they can reach `/mcp`. If the
 > request origin is missing from `server.allowed_origins` in
 > `beaconmcp.yaml`, every call fails silently with a browser console
@@ -48,14 +48,14 @@ auth paths the dashboard helps you drive:
 > ```yaml
 > server:
 >   allowed_origins:
->     - https://claude.ai
+>     - https://assistant.ai
 >     - https://chatgpt.com
 >     - https://chat.mistral.ai
 >     - https://www.perplexity.ai
 >     - https://gemini.google.com
 > ```
 >
-> Desktop / CLI clients (Claude Desktop, Gemini CLI, Cursor, VS Code,
+> Desktop / CLI clients (Assistant Desktop, Gemini CLI, Cursor, VS Code,
 > Mistral Vibe, OpenCode) are not browser-based and don't need an entry.
 
 The dashboard's [`/app/tokens`](../src/beaconmcp/dashboard/templates/tokens.html)
@@ -325,7 +325,7 @@ If the native HTTP transport misbehaves, fall back to `mcp-remote`:
 
 ### Le Chat (OAuth 2.1)
 
-Le Chat speaks OAuth 2.1 natively. Same flow as Claude — point it at
+Le Chat speaks OAuth 2.1 natively. Same flow as Assistant — point it at
 the bare `/mcp` URL and it handles the rest.
 
 1. In Le Chat: *Intelligence → Connecteurs → Ajouter un connecteur → Connecteur MCP personnalisé*.
@@ -464,6 +464,6 @@ Any client that can send a bearer on `https://<your-host>/mcp` works the
 same way: create a token from `/app/tokens` after typing your TOTP,
 configure the client to send `Authorization: Bearer <token>`, revoke from
 the same page when you are done. If the client natively speaks OAuth 2.1
-(like Claude) or OAuth + DCR (like ChatGPT / OpenCode), prefer those flows
+(like Assistant) or OAuth + DCR (like ChatGPT / OpenCode), prefer those flows
 — they keep the TOTP prompt at the authorization page instead of relying
 on a stored bearer.

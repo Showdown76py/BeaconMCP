@@ -4,7 +4,7 @@ The dashboard is mounted under ``/app/*`` on the same Starlette app as the
 MCP endpoint. It is always-on unless explicitly disabled via
 ``BEACONMCP_DASHBOARD_ENABLED=false`` — the Tokens API page stays useful
 for users who only want to wire external MCP clients (Gemini web,
-ChatGPT, Claude Desktop). The integrated chat panel is gated by
+ChatGPT, Assistant Desktop). The integrated chat panel is gated by
 ``GEMINI_API_KEY`` on top of that (see :func:`has_chat`).
 """
 

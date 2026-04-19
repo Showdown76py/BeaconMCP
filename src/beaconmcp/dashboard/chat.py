@@ -880,7 +880,7 @@ class GeminiChatEngine:
 _MAX_TOOL_ROUNDS = 50
 
 # Keep MCP tool orchestration conversational: one tool at a time lets
-# the model add a short sentence between calls (Copilot/Claude style).
+# the model add a short sentence between calls (Copilot/Assistant style).
 _MAX_FUNCTION_CALLS_PER_ROUND = 1
 
 

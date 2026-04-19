@@ -43,7 +43,7 @@ docs
 deploy/install.sh
 deploy/beaconmcp.service
 .playwright-mcp
-.claude
+.assistant
 
 # OS cruft
 .DS_Store

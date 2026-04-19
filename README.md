@@ -13,7 +13,7 @@
 
 **Remote MCP server for Proxmox VE clusters, BMC-managed hardware, and SSH hosts.**
 
-Works with **Claude** (web, mobile, desktop) &bull; **ChatGPT** &bull; **Gemini** (CLI, API)
+Works with **Assistant** (web, mobile, desktop) &bull; **ChatGPT** &bull; **Gemini** (CLI, API)
 
 [Installation](#installation) &bull; [Connecting clients](#connecting-clients) &bull; [Tools](#available-tools) &bull; [Tests](#tests)
 
@@ -42,7 +42,7 @@ BeaconMCP exposes a Proxmox VE cluster, the hardware underneath it (HP iLO, gene
 ## Architecture
 
 ```
-Clients (Claude, ChatGPT, Gemini)
+Clients (Assistant, ChatGPT, Gemini)
              │
              │ HTTPS (reverse proxy / tunnel)
              ▼
@@ -99,7 +99,7 @@ Initial setup (run once, while the container is up):
 
 ```bash
 docker compose exec beaconmcp beaconmcp validate-config
-docker compose exec beaconmcp beaconmcp auth create --name "Claude Web"
+docker compose exec beaconmcp beaconmcp auth create --name "Assistant Web"
 curl http://localhost:8420/health        # should return {"status":"ok",...}
 ```
 
@@ -151,7 +151,7 @@ beaconmcp validate-config
 ### 3. Provision an OAuth client
 
 ```bash
-beaconmcp auth create --name "Claude Web"
+beaconmcp auth create --name "Assistant Web"
 ```
 
 The CLI prints a client id, a client secret, and a TOTP seed (with an ASCII QR code). **Both secrets are displayed exactly once.** Scan the QR into an authenticator app (Google Authenticator, Authy, 1Password) immediately, or store the raw seed in a secrets manager.
@@ -184,9 +184,9 @@ Place BeaconMCP behind a reverse proxy that terminates TLS and forwards the publ
 >
 > Unattended services (scheduled jobs, CI pipelines) occasionally need machine-held TOTP. That case — with its required precautions and warnings — is covered separately in [docs/totp-automation.md](docs/totp-automation.md). Read it end-to-end before considering automation.
 
-### Claude (web, mobile, desktop)
+### Assistant (web, mobile, desktop)
 
-Claude performs the full OAuth 2.1 flow against BeaconMCP, so there is no long-lived bearer to store on its side — you type the TOTP into the authorization page whenever a new token is issued.
+Assistant performs the full OAuth 2.1 flow against BeaconMCP, so there is no long-lived bearer to store on its side — you type the TOTP into the authorization page whenever a new token is issued.
 
 1. **Settings → Integrations → Add custom connector.**
 2. Fill in:
@@ -195,9 +195,9 @@ Claude performs the full OAuth 2.1 flow against BeaconMCP, so there is no long-l
    - **OAuth Client ID** and **OAuth Client Secret** from `beaconmcp auth create`.
 3. **Add.**
 
-On first use (and after each 24-hour token expiry) Claude redirects to the BeaconMCP authorization page. Read the current 6-digit code from your authenticator app and type it in. Claude never holds the TOTP seed, and a leaked session cannot mint a new token without a fresh code from your phone.
+On first use (and after each 24-hour token expiry) Assistant redirects to the BeaconMCP authorization page. Read the current 6-digit code from your authenticator app and type it in. Assistant never holds the TOTP seed, and a leaked session cannot mint a new token without a fresh code from your phone.
 
-**Important — CORS allowlist.** Every browser-based MCP client (Claude Web, ChatGPT, Le Chat, Perplexity, Gemini Web) sends a CORS preflight before it can reach `/mcp`. Add each client's origin to `server.allowed_origins` in `beaconmcp.yaml` (see [`beaconmcp.yaml.example`](beaconmcp.yaml.example)). Desktop and CLI clients don't need this.
+**Important — CORS allowlist.** Every browser-based MCP client (Assistant Web, ChatGPT, Le Chat, Perplexity, Gemini Web) sends a CORS preflight before it can reach `/mcp`. Add each client's origin to `server.allowed_origins` in `beaconmcp.yaml` (see [`beaconmcp.yaml.example`](beaconmcp.yaml.example)). Desktop and CLI clients don't need this.
 
 ### Other clients
 
@@ -241,7 +241,7 @@ Common keys:
 
 BeaconMCP exposes tools that cause irreversible changes: `ssh_exec_command*`, `proxmox_exec_command*`, `bmc_power_off`, `proxmox_vm_stop`, `proxmox_vm_create`, and more. Models do not always grasp the consequences of a command — an errant `rm -rf`, a `systemctl stop` on the wrong unit, a `pct destroy` mistaken for `pct stop`. A few working rules:
 
-- **Disable auto-approve** on every external MCP client (Claude Desktop, Gemini CLI, ChatGPT MCP). Keep per-call approval enabled; refuse "always allow this tool".
+- **Disable auto-approve** on every external MCP client (Assistant Desktop, Gemini CLI, ChatGPT MCP). Keep per-call approval enabled; refuse "always allow this tool".
 - **Read the `command` argument** before approving any `ssh_exec_command*` or `proxmox_exec_command*` call. Ask: if this ran against the wrong VM or host, could I recover?
 - **The integrated chat** at `/app/chat` already forces human confirmation for every `ssh_exec_command*` and `proxmox_exec_command*` call. Read the arguments shown on the confirmation card even when you click through fast. No answer within 5 minutes counts as refusal.
 - **Prefer read-only tools** (`*_list_*`, `*_status`, `*_get_*`, `get_logs`, `health_status`) for exploration — they cannot break anything and are never gated by confirmation.

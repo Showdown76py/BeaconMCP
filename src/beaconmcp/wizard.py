@@ -128,7 +128,7 @@ class ServerDraft:
     allowed_hosts: list[str] = field(default_factory=lambda: ["127.0.0.1:*", "localhost:*", "[::1]:*"])
     allowed_origins: list[str] = field(
         default_factory=lambda: [
-            "https://claude.ai",
+            "https://assistant.ai",
             "https://chatgpt.com",
             "https://chat.mistral.ai",
             "https://gemini.google.com",

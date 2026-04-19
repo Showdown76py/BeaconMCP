@@ -83,7 +83,7 @@ def main():
     auth_sub = auth_parser.add_subparsers(dest="auth_command")
 
     create_parser = auth_sub.add_parser("create", help="Create a new client")
-    create_parser.add_argument("--name", required=True, help="Client name (e.g. 'Claude Web', 'My iPhone')")
+    create_parser.add_argument("--name", required=True, help="Client name (e.g. 'Assistant Web', 'My iPhone')")
     create_parser.add_argument("--clients-file", type=Path, default=None, help="Path to clients.json")
 
     list_parser = auth_sub.add_parser("list", help="List all clients")
@@ -312,7 +312,7 @@ def _run_http(mcp, host: str, port: int):
 
     async def protected_resource_metadata(request: Request) -> Response:
         # RFC 9728 - required by the MCP 2025-06-18 spec so that clients
-        # (Claude Web in particular) can discover which authorization server
+        # (Assistant Web in particular) can discover which authorization server
         # protects the /mcp resource. We act as our own authorization server.
         issuer = _issuer(request)
         return JSONResponse({
