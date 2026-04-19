@@ -166,17 +166,20 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         """
         vm_type = _detect_vm_type(client, node, vmid)
         if not vm_type:
-            return {"error": f"VM/CT {vmid} not found on node '{node}'."}
+            return {"status": "error", "error": f"VM/CT {vmid} not found on node '{node}'."}
+            
+        if len(content.encode("utf-8")) > 1024 * 1024:
+            return {"status": "error", "error": "Content exceeds 1MB limit. Use SSH for large files."}
             
         if vm_type == "qemu":
             import base64
             encoded = base64.b64encode(content.encode("utf-8")).decode("utf-8")
             result = client.post(node, f"nodes/{node}/qemu/{vmid}/agent/file-write", file=path, content=encoded, encode=1)
             if isinstance(result, dict) and "error" in result:
-                return result
-            return {"vmid": vmid, "node": node, "path": path, "action": "file_write", "status": "success"}
+                return {"status": "error", "error": result["error"]}
+            return {"status": "success", "vmid": vmid, "node": node, "path": path, "action": "file_write"}
             
-        return {"error": "LXC file writing is currently unsupported via API. Please use ssh_run to write the file."}
+        return {"status": "error", "error": "LXC file writing is currently unsupported via API. Please use ssh_exec_command to write the file."}
 
     @mcp.tool()
     def proxmox_storage_status(node: str = "") -> dict[str, Any]:
