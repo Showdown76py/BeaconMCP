@@ -179,3 +179,85 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         if isinstance(result, dict) and "error" in result:
             return result
         return {"vmid": vmid, "node": node, "action": "config_update", "applied": updates}
+
+    @mcp.tool()
+    def proxmox_snapshot_list(node: str, vmid: int) -> dict[str, Any]:
+        """List all snapshots for a VM or container.
+        
+        Returns the snapshot hierarchy including names, descriptions, and creation times.
+        """
+        vm_type = _detect_vm_type(client, node, vmid)
+        if not vm_type:
+            return {"status": "error", "error": f"VM/CT {vmid} not found on node '{node}'."}
+            
+        result = client.get(node, f"nodes/{node}/{vm_type}/{vmid}/snapshot")
+        if isinstance(result, dict) and "error" in result:
+            return result
+            
+        return {"vmid": vmid, "node": node, "snapshots": result}
+
+    @mcp.tool()
+    def proxmox_snapshot_create(
+        node: str, 
+        vmid: int, 
+        snapname: str, 
+        description: str = "", 
+        vmstate: bool = False,
+        dry_run: bool = False
+    ) -> dict[str, Any]:
+        """Create a new snapshot of a VM or container.
+        
+        Use this before risky operations (OS upgrades, risky commands) to establish a safe checkpoint.
+        Set vmstate=true to capture RAM (slower, only for running QEMU VMs).
+        """
+        if dry_run: return {"status": "dry_run", "message": f"Would create snapshot {snapname!r} for VM/CT {vmid} on {node}."}
+        
+        vm_type = _detect_vm_type(client, node, vmid)
+        if not vm_type:
+            return {"status": "error", "error": f"VM/CT {vmid} not found on node '{node}'."}
+            
+        params = {"snapname": snapname}
+        if description:
+            params["description"] = description
+        if vmstate and vm_type == "qemu":
+            params["vmstate"] = 1
+            
+        result = client.post(node, f"nodes/{node}/{vm_type}/{vmid}/snapshot", **params)
+        if isinstance(result, dict) and "error" in result:
+            return result
+        return {"vmid": vmid, "node": node, "action": "snapshot_create", "snapname": snapname, "upid": result}
+
+    @mcp.tool()
+    def proxmox_snapshot_rollback(node: str, vmid: int, snapname: str, dry_run: bool = False) -> dict[str, Any]:
+        """Roll back a VM or container to a previous snapshot.
+        
+        Restores the guest to the exact state of the named snapshot.
+        Use proxmox_snapshot_list to find the correct snapname.
+        """
+        if dry_run: return {"status": "dry_run", "message": f"Would roll back VM/CT {vmid} on {node} to snapshot {snapname!r}."}
+        
+        vm_type = _detect_vm_type(client, node, vmid)
+        if not vm_type:
+            return {"status": "error", "error": f"VM/CT {vmid} not found on node '{node}'."}
+            
+        result = client.post(node, f"nodes/{node}/{vm_type}/{vmid}/snapshot/{snapname}/rollback")
+        if isinstance(result, dict) and "error" in result:
+            return result
+        return {"vmid": vmid, "node": node, "action": "snapshot_rollback", "snapname": snapname, "upid": result}
+
+    @mcp.tool()
+    def proxmox_snapshot_delete(node: str, vmid: int, snapname: str, dry_run: bool = False) -> dict[str, Any]:
+        """Delete a VM or container snapshot.
+        
+        Removes the snapshot from the storage backing the VM.
+        """
+        if dry_run: return {"status": "dry_run", "message": f"Would delete snapshot {snapname!r} from VM/CT {vmid} on {node}."}
+        
+        vm_type = _detect_vm_type(client, node, vmid)
+        if not vm_type:
+            return {"status": "error", "error": f"VM/CT {vmid} not found on node '{node}'."}
+            
+        result = client.delete(node, f"nodes/{node}/{vm_type}/{vmid}/snapshot/{snapname}")
+        if isinstance(result, dict) and "error" in result:
+            return result
+        return {"vmid": vmid, "node": node, "action": "snapshot_delete", "snapname": snapname, "upid": result}
