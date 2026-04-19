@@ -560,6 +560,58 @@ def test_redacted_masks_secrets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert "***" in redacted["ssh"]["hosts"][0]["password"]
 
 
+def test_server_trusted_proxies_cloudflare_macro_expands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VPS_PW", "pw")
+    path = _write(
+        tmp_path / "beaconmcp.yaml",
+        """
+        version: 1
+        server:
+          trusted_proxies:
+            - cloudflare
+            - 127.0.0.1
+            - 127.0.0.1
+        ssh:
+          hosts:
+            - name: vps1
+              host: 198.51.100.10
+              user: root
+              password: ${VPS_PW}
+        """,
+    )
+
+    cfg = Config.load(config_path=path)
+    assert "173.245.48.0/20" in cfg.server.trusted_proxies
+    assert "2a06:98c0::/29" in cfg.server.trusted_proxies
+    assert cfg.server.trusted_proxies.count("127.0.0.1") == 1
+    assert "trusted_proxies" in cfg.redacted()["server"]
+
+
+def test_server_trusted_proxies_must_be_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VPS_PW", "pw")
+    path = _write(
+        tmp_path / "beaconmcp.yaml",
+        """
+        version: 1
+        server:
+          trusted_proxies: cloudflare
+        ssh:
+          hosts:
+            - name: vps1
+              host: 198.51.100.10
+              user: root
+              password: ${VPS_PW}
+        """,
+    )
+
+    with pytest.raises(ConfigError, match="server.trusted_proxies"):
+        Config.load(config_path=path)
+
+
 def test_get_ssh_host_accessors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

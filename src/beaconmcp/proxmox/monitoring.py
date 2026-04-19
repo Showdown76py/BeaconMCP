@@ -130,12 +130,14 @@ def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         return {"vms": by_node, "total": total}
 
     @mcp.tool()
-    def proxmox_vm_status(node: str, vmid: int) -> dict[str, Any]:
+    def proxmox_vm_status(node: str, vmid: int, fields: list[str] | None = None) -> dict[str, Any]:
         """Get detailed status of a specific VM or container: CPU, RAM, disk I/O, network I/O, uptime.
 
         Use after proxmox_list_vms to drill into a specific VM.
         Provide both the node name and VMID.
         Auto-detects whether the target is a QEMU VM or LXC container.
+        Pass ``fields=[...]`` to trim the response to only the keys you need
+        (e.g. ``["name", "status", "cpu_pct"]``).
         Returns: {node, vmid, type, name, status, cpu_pct, cpus, mem_used_mb,
         mem_max_mb, disk_read_mb, disk_write_mb, net_in_mb, net_out_mb, uptime_h,
         pid, config_summary: {cores, mem_mb, description}}.
@@ -173,7 +175,7 @@ def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
                         "mem_mb": config_data.get("memory"),
                         "description": config_data.get("description", ""),
                     }
-                return result
+                return filter_fields(result, fields)
 
         return {"error": f"VM/CT {vmid} not found on node '{node}'. Check the VMID and node name."}
 
@@ -222,11 +224,13 @@ def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         return {"node": node, "source": "syslog", "lines": [], "raw": str(data)}
 
     @mcp.tool()
-    def proxmox_get_tasks(node: str = "", limit: int = 20) -> dict[str, Any]:
+    def proxmox_get_tasks(node: str = "", limit: int = 20, fields: list[str] | None = None) -> dict[str, Any]:
         """List recent Proxmox tasks across the cluster: migrations, backups, VM operations.
 
         Use to check what operations have been running or to investigate failed tasks.
         Omit 'node' to list tasks from all configured nodes.
+        Pass ``fields=[...]`` to trim each entry to only the keys you need
+        (e.g. ``["upid", "status"]``).
         Returns: {"tasks": {"<node>": [{upid, type, status, user, starttime,
         endtime}]}, "total": N}. Per-node errors appear as {"error": "..."}
         entries in that node's list.
@@ -250,7 +254,7 @@ def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
                         "starttime": t.get("starttime"),
                         "endtime": t.get("endtime"),
                     })
-            by_node[n] = entries
+            by_node[n] = filter_fields(entries, fields)
             total += sum(1 for e in entries if "upid" in e)
 
         return {"tasks": by_node, "total": total}
