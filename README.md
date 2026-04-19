@@ -277,9 +277,12 @@ BeaconMCP exposes tools that cause irreversible changes: `ssh_run`, `proxmox_run
 | `proxmox_vm_migrate` | Migrate across nodes. |
 | `proxmox_vm_config` | Read or update configuration. |
 | `proxmox_snapshot_list` | List all snapshots for a VM or container. |
-| `proxmox_snapshot_create` | Create a new snapshot of a VM or container. |
-| `proxmox_snapshot_rollback` | Roll back a VM or container to a previous snapshot. |
-| `proxmox_snapshot_delete` | Delete a VM or container snapshot. |
+| `proxmox_snapshot_create` | Create a new snapshot. |
+| `proxmox_snapshot_rollback` | Rollback a VM/CT to a previous snapshot. |
+| `proxmox_snapshot_delete` | Delete an existing snapshot. |
+| `proxmox_backup_create` | Trigger a new backup of a VM or container. |
+| `proxmox_backup_list` | List available vzdump backup archives on a storage pool. |
+| `proxmox_backup_restore` | Restore a VM or container from a backup archive. |
 
 ### Proxmox — system (3)
 
@@ -288,6 +291,8 @@ BeaconMCP exposes tools that cause irreversible changes: `ssh_run`, `proxmox_run
 | `proxmox_storage_status` | Storage pool status. |
 | `proxmox_network_config` | Network configuration per node. |
 | `proxmox_run` | Command inside a QEMU VM via QEMU Guest Agent. Sync by default; pass `wait=False` to start async, or `exec_id=` to poll an existing session. For LXC containers, use `ssh_run` on the node with `pct exec <vmid> -- <command>`. |
+| `proxmox_read_file` | Safely read a file from a VM (via QEMU Guest Agent). |
+| `proxmox_write_file` | Safely write a file to a VM (via QEMU Guest Agent). |
 
 ### SSH fallback (2)
 
