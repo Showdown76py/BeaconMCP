@@ -470,7 +470,7 @@ class Config:
             port=int(srv_raw.get("port", 8420)),
             allowed_hosts=list(srv_raw.get("allowed_hosts") or []),
             allowed_origins=list(srv_raw.get("allowed_origins") or []),
-            trusted_proxies=list(srv_raw.get("trusted_proxies") or []),
+            trusted_proxies=_parse_trusted_proxies(srv_raw.get("trusted_proxies")),
             clients_file=Path(
                 srv_raw.get("clients_file", "/opt/beaconmcp/clients.json")
             ),
@@ -606,6 +606,7 @@ class Config:
                 "port": self.server.port,
                 "allowed_hosts": self.server.allowed_hosts,
                 "allowed_origins": self.server.allowed_origins,
+                "trusted_proxies": self.server.trusted_proxies,
                 "clients_file": str(self.server.clients_file),
                 "session_key": mask(self.server.session_key or ""),
                 "allow_dynamic_registration": self.server.allow_dynamic_registration,
@@ -679,6 +680,32 @@ class ConfigError(Exception):
 
 _ENV_REF = re.compile(r"^\$\{([A-Z_][A-Z0-9_]*)\}$")
 
+_CLOUDFLARE_PROXY_CIDRS: tuple[str, ...] = (
+    # Snapshot from https://www.cloudflare.com/ips/
+    "173.245.48.0/20",
+    "103.21.244.0/22",
+    "103.22.200.0/22",
+    "103.31.4.0/22",
+    "141.101.64.0/18",
+    "108.162.192.0/18",
+    "190.93.240.0/20",
+    "188.114.96.0/20",
+    "197.234.240.0/22",
+    "198.41.128.0/17",
+    "162.158.0.0/15",
+    "104.16.0.0/13",
+    "104.24.0.0/14",
+    "172.64.0.0/13",
+    "131.0.72.0/22",
+    "2400:cb00::/32",
+    "2606:4700::/32",
+    "2803:f800::/32",
+    "2405:b500::/32",
+    "2405:8100::/32",
+    "2a06:98c0::/29",
+    "2c0f:f248::/32",
+)
+
 
 def _resolve_env_refs(
     value: Any, *, path: Path, _crumbs: tuple[str, ...] = ()
@@ -732,6 +759,36 @@ def _bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _parse_trusted_proxies(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ConfigError(
+            "server.trusted_proxies: must be a list of IPs/CIDRs or 'cloudflare'."
+        )
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for i, item in enumerate(value):
+        if not isinstance(item, str):
+            raise ConfigError(
+                f"server.trusted_proxies[{i}]: must be a string (IP, CIDR, or 'cloudflare')."
+            )
+        token = item.strip()
+        if not token:
+            continue
+        if token.lower() == "cloudflare":
+            for cidr in _CLOUDFLARE_PROXY_CIDRS:
+                if cidr not in seen:
+                    out.append(cidr)
+                    seen.add(cidr)
+            continue
+        if token not in seen:
+            out.append(token)
+            seen.add(token)
+    return out
 
 
 def _strip_port(host: str) -> str:

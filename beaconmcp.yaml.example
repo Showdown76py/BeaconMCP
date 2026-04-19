@@ -21,13 +21,32 @@ version: 1
 server:
   host: 0.0.0.0
   port: 8420
-  
-  # CORS and Host header validation
-  allowed_hosts: ["*"]
-  allowed_origins: ["*"]
 
-  # Trust X-Forwarded-For from these direct peers to avoid IP spoofing bypassing rate limits
-  trusted_proxies: ["127.0.0.1", "::1"]
+  # Host header allowlist for DNS-rebinding protection. Include the public
+  # FQDN behind the reverse proxy; localhost entries are useful for local dev.
+  allowed_hosts:
+    - mcp.example.com
+    - "127.0.0.1:*"
+    - "localhost:*"
+    - "[::1]:*"
+
+  # CORS origin allowlist for browser-based MCP clients.
+  allowed_origins:
+    - https://claude.ai
+    - https://chatgpt.com
+    - https://chat.openai.com
+    - https://chat.mistral.ai
+    - https://www.perplexity.ai
+    - https://gemini.google.com
+
+  # Trust X-Forwarded-For only from direct peers you operate.
+  # IPs and CIDRs are accepted.
+  # - Keep loopback entries when your reverse proxy runs on the same host.
+  # - Add `cloudflare` to auto-expand to Cloudflare's published proxy CIDRs.
+  trusted_proxies:
+    - "127.0.0.1"
+    - "::1"
+    # - cloudflare
 
   # Persistent storage for OAuth clients and TOTP secrets
   clients_file: /opt/beaconmcp/clients.json
