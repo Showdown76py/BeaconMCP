@@ -32,7 +32,7 @@ BeaconMCP exposes a Proxmox VE cluster, the hardware underneath it (HP iLO, gene
   - *Proxmox-only* or *BMC-only* — mix and match as your inventory grows.
 - **30+ MCP tools** across four modules: Proxmox (monitoring, VM lifecycle, system), SSH (per-host multi-target), BMC (hardware power/health), and security.
 - **N nodes, N BMC devices, N SSH hosts.** No hard-coded counts. Each SSH host carries its own credentials (password or key file) and is declared under `ssh.hosts[]`.
-- **Backend-agnostic hardware layer.** HP iLO and generic IPMI ship out of the box; Dell iDRAC and Supermicro are pluggable stubs.
+- **Backend-agnostic hardware layer.** HP iLO, generic IPMI, and a universal **Redfish REST API** backend ship out of the box. Dell iDRAC (14G+) and Supermicro (X11+) automatically use the Redfish backend.
 - **YAML-first configuration** with `${ENV}` references for secrets. Validation runs at startup.
 - **OAuth 2.1 + TOTP.** Client credentials with mandatory second factor on every token issuance.
 - **Optional web dashboard** — login, API-token management, and an (optional) integrated Gemini chat panel.
@@ -231,7 +231,7 @@ Common keys:
 | `ssh.hosts[]` | One entry per SSH target (VPS, Proxmox node, jump box, …). Each entry carries its own `user` + exactly one of `password` / `key_file`. Names may match `proxmox.nodes[].name`. |
 | `ssh.defaults` + `ssh.inherit_proxmox_nodes` | Homelab shortcut. Set `defaults:` (user + password/key_file) and flip `inherit_proxmox_nodes: true` — every Proxmox node becomes SSH-reachable under its own name with those defaults, no duplication. Explicit `ssh.hosts[]` entries still win when they match a node by name or address. |
 | `ssh.vmid_to_ip` | Optional template (e.g. `"192.168.1.{id}"`) used by `ssh_run` when the `host` argument is a bare VMID. The resolved IP must match an `ssh.hosts[].host` to authenticate. Omit to disable numeric-ID shortcuts. |
-| `bmc.devices[]` | Zero or more BMCs. `type` is one of `hp_ilo`, `ipmi`, `idrac` (stub), `supermicro` (stub). `jump_host` is optional — set it to the name of a `proxmox.nodes[]` entry to route the connection over an SSH tunnel. |
+| `bmc.devices[]` | Zero or more BMCs. `type` is one of `hp_ilo`, `ipmi`, `idrac` (redfish), `supermicro` (redfish), or `redfish`. `jump_host` is optional — set it to the name of a `proxmox.nodes[]` entry to route the connection over an SSH tunnel. |
 | `features.dashboard.limits` | Per-5h and per-week USD caps for the Gemini chat. Set to `0` to disable a window. |
 
 ---
