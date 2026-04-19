@@ -216,8 +216,8 @@ def beaconmcp_context() -> str:
         )
         steps.append(
             "Find a VM by name with vm_find('web-*'); act on many at once with "
-            "vm_bulk_action(vmids=[...], action='stop')."
-            "Take a proxmox_snapshot_create before doing any destructive operations!"
+            "vm_bulk_action(vmids=[...], action='stop'). "
+            "Take a snapshot before a risky operation if relevant."
         )
     if config.pve_nodes and config.ssh and config.ssh.hosts:
         steps.append(

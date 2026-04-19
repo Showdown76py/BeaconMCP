@@ -188,7 +188,7 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         """
         vm_type = _detect_vm_type(client, node, vmid)
         if not vm_type:
-            return {"status": "error", "error": f"VM/CT {vmid} not found on node '{node}'."}
+            return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
             
         result = client.get(node, f"nodes/{node}/{vm_type}/{vmid}/snapshot")
         if isinstance(result, dict) and "error" in result:
@@ -214,12 +214,21 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         
         vm_type = _detect_vm_type(client, node, vmid)
         if not vm_type:
-            return {"status": "error", "error": f"VM/CT {vmid} not found on node '{node}'."}
+            return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
             
         params = {"snapname": snapname}
         if description:
             params["description"] = description
-        if vmstate and vm_type == "qemu":
+        if vmstate:
+            if vm_type == "lxc":
+                return {"error": "vmstate=True is only supported for QEMU VMs, not LXC containers."}
+            
+            # Check if VM is actually running
+            status_data = client.get(node, f"nodes/{node}/{vm_type}/{vmid}/status/current")
+            is_running = isinstance(status_data, dict) and status_data.get("status") == "running"
+            if not is_running:
+                return {"error": "vmstate=True requires the VM to be running to capture RAM."}
+            
             params["vmstate"] = 1
             
         result = client.post(node, f"nodes/{node}/{vm_type}/{vmid}/snapshot", **params)
@@ -238,7 +247,7 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         
         vm_type = _detect_vm_type(client, node, vmid)
         if not vm_type:
-            return {"status": "error", "error": f"VM/CT {vmid} not found on node '{node}'."}
+            return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
             
         result = client.post(node, f"nodes/{node}/{vm_type}/{vmid}/snapshot/{snapname}/rollback")
         if isinstance(result, dict) and "error" in result:
@@ -255,7 +264,7 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         
         vm_type = _detect_vm_type(client, node, vmid)
         if not vm_type:
-            return {"status": "error", "error": f"VM/CT {vmid} not found on node '{node}'."}
+            return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
             
         result = client.delete(node, f"nodes/{node}/{vm_type}/{vmid}/snapshot/{snapname}")
         if isinstance(result, dict) and "error" in result:
