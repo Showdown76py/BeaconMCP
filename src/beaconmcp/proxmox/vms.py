@@ -23,17 +23,13 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
     """Register all Proxmox VM/CT lifecycle management tools."""
 
     @mcp.tool()
-    def proxmox_vm_start(node: str, vmid: int, dry_run: bool = False) -> dict[str, Any]:
+    def proxmox_vm_start(node: str, vmid: int) -> dict[str, Any]:
         """Start a stopped VM or container.
 
         Use when a VM/CT needs to be powered on.
         Provide the node name and VMID. Auto-detects VM vs container.
         Returns the task UPID on success for tracking the operation.
         """
-        if dry_run: return {"status": "dry_run", "message": f"Would start VM/CT {vmid} on node {node}."}
-        if dry_run: return {"status": "dry_run", "message": f"Would restart VM/CT {vmid} on node {node}."}
-        if dry_run: return {"status": "dry_run", "message": f"Would clone VM/CT {vmid} to {newid} on node {node}."}
-        if dry_run: return {"status": "dry_run", "message": f"Would migrate VM/CT {vmid} from {node} to {target_node}."}
         vm_type = _detect_vm_type(client, node, vmid)
         if not vm_type:
             return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
@@ -44,17 +40,13 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         return {"vmid": vmid, "node": node, "action": "start", "upid": result}
 
     @mcp.tool()
-    def proxmox_vm_stop(node: str, vmid: int, force: bool = False, dry_run: bool = False) -> dict[str, Any]:
+    def proxmox_vm_stop(node: str, vmid: int, force: bool = False) -> dict[str, Any]:
         """Stop a running VM or container.
 
         Use to shut down a VM/CT. Set force=true for an immediate hard stop
         (equivalent to pulling the power cord -- use only when a clean shutdown fails).
         Default is a clean ACPI shutdown for VMs or clean stop for containers.
         """
-        if dry_run: return {"status": "dry_run", "message": f"Would start VM/CT {vmid} on node {node}."}
-        if dry_run: return {"status": "dry_run", "message": f"Would restart VM/CT {vmid} on node {node}."}
-        if dry_run: return {"status": "dry_run", "message": f"Would clone VM/CT {vmid} to {newid} on node {node}."}
-        if dry_run: return {"status": "dry_run", "message": f"Would migrate VM/CT {vmid} from {node} to {target_node}."}
         vm_type = _detect_vm_type(client, node, vmid)
         if not vm_type:
             return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
@@ -66,17 +58,13 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         return {"vmid": vmid, "node": node, "action": endpoint, "force": force, "upid": result}
 
     @mcp.tool()
-    def proxmox_vm_restart(node: str, vmid: int, dry_run: bool = False) -> dict[str, Any]:
+    def proxmox_vm_restart(node: str, vmid: int) -> dict[str, Any]:
         """Restart a running VM or container (clean reboot).
 
         Use when a VM/CT needs to be rebooted. Sends an ACPI reboot signal for VMs
         or a clean restart for containers. If the VM is unresponsive, stop it with force=true first,
         then start it again.
         """
-        if dry_run: return {"status": "dry_run", "message": f"Would start VM/CT {vmid} on node {node}."}
-        if dry_run: return {"status": "dry_run", "message": f"Would restart VM/CT {vmid} on node {node}."}
-        if dry_run: return {"status": "dry_run", "message": f"Would clone VM/CT {vmid} to {newid} on node {node}."}
-        if dry_run: return {"status": "dry_run", "message": f"Would migrate VM/CT {vmid} from {node} to {target_node}."}
         vm_type = _detect_vm_type(client, node, vmid)
         if not vm_type:
             return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
@@ -88,7 +76,7 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         return {"vmid": vmid, "node": node, "action": "restart", "upid": result}
 
     @mcp.tool()
-    def proxmox_vm_create(node: str, vmid: int, vm_type: str = "qemu", config: dict[str, Any] | None = None, dry_run: bool = False) -> dict[str, Any]:
+    def proxmox_vm_create(node: str, vmid: int, vm_type: str = "qemu", config: dict[str, Any] | None = None) -> dict[str, Any]:
         """Create a new VM or container on a Proxmox node.
 
         Use to provision new virtual machines or containers.
@@ -96,7 +84,6 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         Pass configuration as a dict (e.g., {"cores": 2, "memory": 4096, "net0": "virtio,bridge=vmbr0"}).
         Refer to Proxmox API docs for available config options per VM type.
         """
-        if dry_run: return {"status": "dry_run", "message": f"Would create {vm_type} VM/CT {vmid} on node {node} with config {config}."}
         if vm_type not in ("qemu", "lxc"):
             return {"error": f"Invalid vm_type '{vm_type}'. Use 'qemu' for VMs or 'lxc' for containers."}
 
@@ -107,16 +94,12 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         return {"vmid": vmid, "node": node, "type": vm_type, "action": "create", "upid": result}
 
     @mcp.tool()
-    def proxmox_vm_clone(node: str, vmid: int, newid: int, name: str = "", dry_run: bool = False) -> dict[str, Any]:
+    def proxmox_vm_clone(node: str, vmid: int, newid: int, name: str = "") -> dict[str, Any]:
         """Clone an existing VM or container to create a copy.
 
         Use to duplicate a VM/CT. Provide the source VMID, the new VMID for the clone,
         and optionally a name. The clone inherits the source configuration.
         """
-        if dry_run: return {"status": "dry_run", "message": f"Would start VM/CT {vmid} on node {node}."}
-        if dry_run: return {"status": "dry_run", "message": f"Would restart VM/CT {vmid} on node {node}."}
-        if dry_run: return {"status": "dry_run", "message": f"Would clone VM/CT {vmid} to {newid} on node {node}."}
-        if dry_run: return {"status": "dry_run", "message": f"Would migrate VM/CT {vmid} from {node} to {target_node}."}
         vm_type = _detect_vm_type(client, node, vmid)
         if not vm_type:
             return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
@@ -139,17 +122,13 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         }
 
     @mcp.tool()
-    def proxmox_vm_migrate(node: str, vmid: int, target_node: str, dry_run: bool = False) -> dict[str, Any]:
+    def proxmox_vm_migrate(node: str, vmid: int, target_node: str) -> dict[str, Any]:
         """Migrate a VM or container to another Proxmox node.
 
         Use to move a VM/CT from one node to another (e.g., for maintenance or load balancing).
         The VM can be running (live migration) or stopped.
         Provide the current node, VMID, and the target node name.
         """
-        if dry_run: return {"status": "dry_run", "message": f"Would start VM/CT {vmid} on node {node}."}
-        if dry_run: return {"status": "dry_run", "message": f"Would restart VM/CT {vmid} on node {node}."}
-        if dry_run: return {"status": "dry_run", "message": f"Would clone VM/CT {vmid} to {newid} on node {node}."}
-        if dry_run: return {"status": "dry_run", "message": f"Would migrate VM/CT {vmid} from {node} to {target_node}."}
         vm_type = _detect_vm_type(client, node, vmid)
         if not vm_type:
             return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}
@@ -181,10 +160,6 @@ def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
         blob -- helpful because full VM configs can be large (dozens of
         disk/net/hostpci keys). Ignored when ``updates`` is given.
         """
-        if dry_run: return {"status": "dry_run", "message": f"Would start VM/CT {vmid} on node {node}."}
-        if dry_run: return {"status": "dry_run", "message": f"Would restart VM/CT {vmid} on node {node}."}
-        if dry_run: return {"status": "dry_run", "message": f"Would clone VM/CT {vmid} to {newid} on node {node}."}
-        if dry_run: return {"status": "dry_run", "message": f"Would migrate VM/CT {vmid} from {node} to {target_node}."}
         vm_type = _detect_vm_type(client, node, vmid)
         if not vm_type:
             return {"error": f"VM/CT {vmid} not found on node '{node}'. Check VMID and node name."}

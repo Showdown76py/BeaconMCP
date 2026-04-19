@@ -119,7 +119,7 @@ def register_bmc_tools(
             return {"error": str(exc)}
 
     @mcp.tool()
-    async def bmc_power_on(device_id: str | None = None, dry_run: bool = False) -> dict[str, Any]:
+    async def bmc_power_on(device_id: str | None = None) -> dict[str, Any]:
         """Power on a physical server via its BMC.
 
         Use when the server is powered off and needs to boot. Confirm the
@@ -137,14 +137,14 @@ def register_bmc_tools(
 
     @mcp.tool()
     async def bmc_power_off(
-        device_id: str | None = None, force: bool = False, dry_run: bool = False
+        device_id: str | None = None, force: bool = False
     ) -> dict[str, Any]:
         """Power off a physical server via its BMC.
 
         Default (force=false) sends an ACPI shutdown (clean, like pressing
         the power button). force=true immediately cuts power — reserve for
         fully unresponsive hosts. Prefer ``proxmox_vm_stop`` and
-        ``ssh_run(host=..., command='shutdown -h now')`` before forcing.
+        ``ssh_exec_command 'shutdown -h now'`` before forcing.
 
         Args:
             device_id: id of the target BMC. Optional when only one device
@@ -157,12 +157,12 @@ def register_bmc_tools(
             return {"error": str(exc)}
 
     @mcp.tool()
-    async def bmc_power_reset(device_id: str | None = None, dry_run: bool = False) -> dict[str, Any]:
+    async def bmc_power_reset(device_id: str | None = None) -> dict[str, Any]:
         """Hard-reset a physical server via its BMC.
 
         Last-resort recovery when the host is completely frozen. Equivalent
         to pressing the physical reset button. Try ``proxmox_vm_restart``
-        and ``ssh_run(host=..., command='reboot')`` first.
+        and ``ssh_exec_command 'reboot'`` first.
 
         Args:
             device_id: id of the target BMC. Optional when only one device

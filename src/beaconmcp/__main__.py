@@ -61,7 +61,7 @@ def main():
     sub = parser.add_subparsers(dest="command")
 
     # --- serve (default) ---
-        doctor_parser = sub.add_parser("doctor", help="Preflight connectivity and config check")
+    doctor_parser = sub.add_parser("doctor", help="Preflight connectivity and config check")
 
     serve_parser = sub.add_parser("serve", help="Start the MCP HTTP server")
     serve_parser.add_argument(
