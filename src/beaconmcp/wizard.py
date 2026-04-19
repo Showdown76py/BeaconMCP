@@ -8,7 +8,7 @@ with empty values for the user to fill in.
 
 The wizard is intentionally a **bootstrap** tool, not a full config
 editor. It covers the capabilities (Proxmox, SSH, BMC), the critical
-server fields (allowed_hosts / allowed_origins), and nothing else —
+server fields (allowed_hosts / allowed_origins / trusted_proxies), and nothing else —
 tweaks to dashboard settings or obscure fields happen by editing the
 resulting YAML directly. Keeping the scope small means the preview pane
 stays honest: what you see is the whole file.
@@ -134,6 +134,7 @@ class ServerDraft:
             "https://gemini.google.com",
         ]
     )
+    trusted_proxies: list[str] = field(default_factory=lambda: ["127.0.0.1", "::1"])
     session_key_env: str = ""  # env var name
     allow_dynamic_registration: bool = False
 
@@ -226,6 +227,10 @@ def render_yaml(draft: ConfigDraft) -> str:
         lines.append("  allowed_origins:")
         for o in draft.server.allowed_origins:
             lines.append(f"    - {o}")
+    if draft.server.trusted_proxies:
+        lines.append("  trusted_proxies:")
+        for p in draft.server.trusted_proxies:
+            lines.append(f"    - {_q(p)}")
     if draft.server.session_key_env:
         lines.append(f"  session_key: ${{{draft.server.session_key_env}}}")
     if draft.server.allow_dynamic_registration:
@@ -404,6 +409,9 @@ def load_yaml_into_draft(path: Path) -> ConfigDraft:
         origins = server.get("allowed_origins")
         if isinstance(origins, list):
             draft.server.allowed_origins = [str(o) for o in origins if o]
+        proxies = server.get("trusted_proxies")
+        if isinstance(proxies, list):
+            draft.server.trusted_proxies = [str(p) for p in proxies if p]
         sk_env, _ = _split_secret(server.get("session_key"))
         draft.server.session_key_env = sk_env
         draft.server.allow_dynamic_registration = bool(
@@ -1063,7 +1071,8 @@ class _ServerPanel(Static):
         yield Static("Server", classes="section-heading")
         yield Static(
             "Bind address/port, DNS-rebinding allowlist + CORS origins. "
-            "One entry per line for the list fields.",
+            "One entry per line for the list fields. trusted_proxies accepts "
+            "IPs/CIDRs and the token 'cloudflare'.",
             classes="hint",
         )
         srv = self.draft.server
@@ -1084,6 +1093,13 @@ class _ServerPanel(Static):
         yield TextArea(
             "\n".join(srv.allowed_origins),
             id="srv-origins",
+            show_line_numbers=False,
+            classes="list-area",
+        )
+        yield Static("trusted_proxies (one per line)", classes="field-label")
+        yield TextArea(
+            "\n".join(srv.trusted_proxies),
+            id="srv-trusted-proxies",
             show_line_numbers=False,
             classes="list-area",
         )
@@ -1131,6 +1147,8 @@ class _ServerPanel(Static):
             self.draft.server.allowed_hosts = lines
         elif event.text_area.id == "srv-origins":
             self.draft.server.allowed_origins = lines
+        elif event.text_area.id == "srv-trusted-proxies":
+            self.draft.server.trusted_proxies = lines
         self.on_change()
 
 
