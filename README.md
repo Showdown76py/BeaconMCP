@@ -173,7 +173,7 @@ curl http://localhost:8420/health
 
 ### 5. Expose publicly
 
-Place BeaconMCP behind a reverse proxy that terminates TLS and forwards the public hostname to `http://localhost:8420`. Declare that hostname under `server.allowed_hosts` in `beaconmcp.yaml`; without it the MCP SDK rejects incoming requests with `421 Misdirected Request` (DNS-rebinding protection).
+Place BeaconMCP behind a reverse proxy that terminates TLS and forwards the public hostname to `http://localhost:8420`. Declare that hostname under `server.allowed_hosts` in `beaconmcp.yaml`; without it the MCP SDK rejects incoming requests with `421 Misdirected Request` (DNS-rebinding protection). If you're proxying through Cloudflare, add `cloudflare` to `server.trusted_proxies` so BeaconMCP can safely trust forwarded client IPs for auth rate limiting.
 
 ---
 
@@ -226,6 +226,7 @@ Common keys:
 |---------|-------|
 | `server.allowed_hosts` | DNS-rebinding allowlist — **must** include the public FQDN behind your reverse proxy. |
 | `server.allowed_origins` | CORS allowlist for browser-based MCP clients. |
+| `server.trusted_proxies` | Direct peers allowed to supply `X-Forwarded-For` (IPs or CIDRs). Use `cloudflare` to auto-expand Cloudflare edge ranges. |
 | `proxmox.nodes[]` | One entry per Proxmox node. Needs an API token per node. Prefer a **LAN IP** in `host:` (e.g. `10.0.0.1`) — it's the one string that works for both the Proxmox API and for SSH inheritance. `localhost` is OK when BeaconMCP runs directly on that node. Only use an FQDN with a reverse-proxy port (e.g. `:443`) for nodes you can't reach on the LAN, and declare those explicitly under `ssh.hosts[]` with their real SSH address. |
 | `ssh.hosts[]` | One entry per SSH target (VPS, Proxmox node, jump box, …). Each entry carries its own `user` + exactly one of `password` / `key_file`. Names may match `proxmox.nodes[].name`. |
 | `ssh.defaults` + `ssh.inherit_proxmox_nodes` | Homelab shortcut. Set `defaults:` (user + password/key_file) and flip `inherit_proxmox_nodes: true` — every Proxmox node becomes SSH-reachable under its own name with those defaults, no duplication. Explicit `ssh.hosts[]` entries still win when they match a node by name or address. |
