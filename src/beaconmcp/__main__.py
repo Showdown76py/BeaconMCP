@@ -149,7 +149,7 @@ def _cmd_doctor(args):
     from .proxmox.client import ProxmoxClient
     from .ssh.client import SSHClient
     from .bmc import build_registry
-    
+
     print("BeaconMCP Doctor - Preflight Check\n")
     try:
         cfg = Config.load(config_path=getattr(args, "config", None))
@@ -157,7 +157,7 @@ def _cmd_doctor(args):
     except Exception as exc:
         print(f"✗ Config failed to load: {exc}")
         sys.exit(1)
-        
+
     print(f"\nProxmox Nodes ({len(cfg.pve_nodes)}):")
     if cfg.pve_nodes:
         proxmox_client = ProxmoxClient(cfg)
@@ -172,7 +172,7 @@ def _cmd_doctor(args):
                 print(f"  ✗ {node.name}: Unreachable ({exc})")
     else:
         print("  - No Proxmox nodes configured.")
-            
+
     print(f"\nSSH Hosts ({len(cfg.ssh.hosts) if cfg.ssh else 0}):")
     if cfg.ssh and cfg.ssh.hosts:
         ssh_client = SSHClient(cfg)
@@ -193,7 +193,7 @@ def _cmd_doctor(args):
         asyncio.run(check_ssh())
     else:
         print("  - No explicit SSH hosts configured.")
-        
+
     print(f"\nBMC Devices ({len(cfg.bmc_devices)}):")
     if cfg.bmc_devices:
         registry = build_registry(cfg)
@@ -214,7 +214,7 @@ def _cmd_doctor(args):
         asyncio.run(check_bmc())
     else:
         print("  - No BMC devices configured.")
-        
+
     print("\nPreflight check complete.")
 
 
@@ -340,7 +340,7 @@ def _run_http(mcp, host: str, port: int):
         async def dispatch(self, request: Request, call_next):
             start = time.monotonic()
             path = request.url.path
-            
+
             # Group dashboard and static paths to avoid cardinality explosion
             if path.startswith("/app/api/conversations"):
                 path = "/app/api/conversations"
@@ -348,7 +348,7 @@ def _run_http(mcp, host: str, port: int):
                 path = "/app"
             elif path.startswith("/static/"):
                 path = "/static"
-                
+
             try:
                 response = await call_next(request)
                 status = str(response.status_code)
@@ -469,12 +469,12 @@ def _run_http(mcp, host: str, port: int):
         # allowlist. Prevents authorization-code exfiltration via a
         # typo-squat or attacker-controlled client that somehow got a
         # valid client_id.
-        if not auth.is_trusted_redirect_uri(redirect_uri):
+        if not auth.is_trusted_redirect_uri(redirect_uri, config.server.allowed_origins):
             return {}, JSONResponse(
                 {"error": "invalid_request",
                  "error_description": (
-                     "redirect_uri origin not on the BeaconMCP trusted-"
-                     "origin allowlist; see auth.TRUSTED_REDIRECT_PREFIXES"
+                     "redirect_uri origin not on the trusted-origin allowlist; "
+                     "add it to server.allowed_origins in beaconmcp.yaml"
                  )},
                 status_code=400,
             )
@@ -1057,7 +1057,7 @@ h1 {{ margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015
         # accepted them blindly, a rogue script could register itself with
         # redirect_uri=https://evil.example/cb and later phish an
         # authorization code out of us. Reject anything not on the trusted
-        # allowlist (auth.TRUSTED_REDIRECT_PREFIXES).
+        # allowlist (server.allowed_origins + non-origin OAuth exceptions).
         redirect_uris_raw = None
         if isinstance(body, dict):
             redirect_uris_raw = body.get("redirect_uris")
@@ -1068,13 +1068,13 @@ h1 {{ margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015
                 status_code=400,
             )
         bad = [u for u in redirect_uris_raw
-               if not auth.is_trusted_redirect_uri(u)]
+               if not auth.is_trusted_redirect_uri(u, config.server.allowed_origins)]
         if bad:
             return JSONResponse(
                 {"error": "invalid_redirect_uri",
                  "error_description": (
-                     "one or more redirect_uris are not on the BeaconMCP "
-                     "trusted-origin allowlist"
+                     "one or more redirect_uris are not on the trusted-origin "
+                     "allowlist; add them to server.allowed_origins in beaconmcp.yaml"
                  ),
                  "rejected_redirect_uris": bad},
                 status_code=400,

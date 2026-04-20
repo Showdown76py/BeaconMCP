@@ -214,7 +214,7 @@ Assistant performs the full OAuth 2.1 flow against BeaconMCP, so there is no lon
 
 On first use (and after each 24-hour token expiry) Assistant redirects to the BeaconMCP authorization page. Read the current 6-digit code from your authenticator app and type it in. Assistant never holds the TOTP seed, and a leaked session cannot mint a new token without a fresh code from your phone.
 
-**Important — CORS allowlist.** Every browser-based MCP client (Assistant Web, ChatGPT, Le Chat, Perplexity, Gemini Web) sends a CORS preflight before it can reach `/mcp`. Add each client's origin to `server.allowed_origins` in `beaconmcp.yaml` (see [`beaconmcp.yaml.example`](beaconmcp.yaml.example)). Desktop and CLI clients don't need this.
+**Important — web-origin allowlist.** Every browser-based MCP client (Assistant Web, ChatGPT, Le Chat, Perplexity, Gemini Web) sends a CORS preflight before it can reach `/mcp`, and OAuth HTTPS `redirect_uri` checks use the same list. Add each client's origin to `server.allowed_origins` in `beaconmcp.yaml` (see [`beaconmcp.yaml.example`](beaconmcp.yaml.example)). Desktop and CLI callback forms (`vscode://`, `cursor://`, loopback) are handled separately.
 
 ### Other clients
 
@@ -242,7 +242,7 @@ Common keys:
 | Section | Notes |
 |---------|-------|
 | `server.allowed_hosts` | DNS-rebinding allowlist — **must** include the public FQDN behind your reverse proxy. |
-| `server.allowed_origins` | CORS allowlist for browser-based MCP clients. |
+| `server.allowed_origins` | Web-origin allowlist for browser CORS and OAuth HTTPS redirect URIs. |
 | `server.trusted_proxies` | Direct peers allowed to supply `X-Forwarded-For` (IPs or CIDRs). Use `cloudflare` to auto-expand Cloudflare edge ranges. |
 | `proxmox.nodes[]` | One entry per Proxmox node. Needs an API token per node. Prefer a **LAN IP** in `host:` (e.g. `10.0.0.1`) — it's the one string that works for both the Proxmox API and for SSH inheritance. `localhost` is OK when BeaconMCP runs directly on that node. Only use an FQDN with a reverse-proxy port (e.g. `:443`) for nodes you can't reach on the LAN, and declare those explicitly under `ssh.hosts[]` with their real SSH address. |
 | `ssh.hosts[]` | One entry per SSH target (VPS, Proxmox node, jump box, …). Each entry carries its own `user` + exactly one of `password` / `key_file`. Names may match `proxmox.nodes[].name`. |
