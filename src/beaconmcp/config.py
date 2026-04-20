@@ -128,6 +128,15 @@ class ServerConfig:
     # from the dashboard — a human with a TOTP mints every slug, and each
     # slug can only register one client. Off by default.
     allow_dynamic_registration: bool = False
+    # Staging directory used by ``proxmox_upload_file`` /
+    # ``proxmox_download_file`` to exchange files larger than the QEMU
+    # Guest Agent 1MB cap. Files placed here (e.g. via SCP, dashboard, or
+    # a ``proxmox_download_file`` call) are referenced by basename when
+    # uploading; downloads land here under the requested basename.
+    transfers_dir: Path = Path("~/.cache/beaconmcp/transfers").expanduser()
+    # Hard cap (MB) for large-file transfer tools. Sized for typical config
+    # / blob payloads; raise if you regularly move ISO-grade artefacts.
+    transfers_max_mb: int = 500
 
 
 @dataclass
@@ -477,6 +486,13 @@ class Config:
             allow_dynamic_registration=_bool(
                 srv_raw.get("allow_dynamic_registration", False)
             ),
+            transfers_dir=Path(
+                os.path.expanduser(
+                    srv_raw.get("transfers_dir")
+                    or "~/.cache/beaconmcp/transfers"
+                )
+            ),
+            transfers_max_mb=int(srv_raw.get("transfers_max_mb", 500)),
         )
 
         feat_raw = raw.get("features") or {}
@@ -609,6 +625,8 @@ class Config:
                 "clients_file": str(self.server.clients_file),
                 "session_key": mask(self.server.session_key or ""),
                 "allow_dynamic_registration": self.server.allow_dynamic_registration,
+                "transfers_dir": str(self.server.transfers_dir),
+                "transfers_max_mb": self.server.transfers_max_mb,
             },
             "proxmox": {
                 "verify_ssl": self.verify_ssl,

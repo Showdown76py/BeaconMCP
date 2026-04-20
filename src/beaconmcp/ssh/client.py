@@ -286,6 +286,31 @@ class SSHClient:
         task.add_done_callback(_ssh_tasks.discard)
         return exec_id
 
+    async def sftp_put(self, host: str, local_path: str, remote_path: str) -> None:
+        """Stream a local file to ``remote_path`` on ``host`` via SFTP.
+
+        Used by ``proxmox_upload_file`` for large transfers (asyncssh streams
+        in chunks, so RAM usage stays bounded regardless of file size).
+        """
+        conn = await self._get_connection(host)
+        async with conn.start_sftp_client() as sftp:
+            await sftp.put(local_path, remote_path)
+
+    async def sftp_get(self, host: str, remote_path: str, local_path: str) -> None:
+        """Stream ``remote_path`` from ``host`` into ``local_path`` via SFTP."""
+        conn = await self._get_connection(host)
+        async with conn.start_sftp_client() as sftp:
+            await sftp.get(remote_path, local_path)
+
+    async def sftp_remove(self, host: str, remote_path: str) -> None:
+        """Best-effort SFTP unlink, used to clean up staging files on a node."""
+        try:
+            conn = await self._get_connection(host)
+            async with conn.start_sftp_client() as sftp:
+                await sftp.remove(remote_path)
+        except Exception:
+            pass
+
     @staticmethod
     def get_session(exec_id: str) -> SSHExecSession | None:
         return _ssh_sessions.get(exec_id)
