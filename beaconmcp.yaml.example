@@ -60,6 +60,14 @@ server:
   # default — turn on only if you need ChatGPT integration.
   allow_dynamic_registration: false
 
+  # Staging directory used by `proxmox_upload_file` / `proxmox_download_file`
+  # to exchange files larger than the QEMU Guest Agent 1MB cap. Files
+  # placed here (e.g. via SCP, rsync, or the dashboard) become available
+  # to the upload tool by basename; downloads land here under the
+  # requested basename. Capped by `transfers_max_mb` (default 500 MB).
+  transfers_dir: ~/.cache/beaconmcp/transfers
+  transfers_max_mb: 500
+
 # -------- Proxmox capability (optional) ------------------------------------
 # Delete this section if you have no Proxmox cluster. Tools starting with
 # `proxmox_` won't be registered.
