@@ -182,7 +182,10 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any =
           ``proxmox_write_file`` (1 MB cap).
 
         When ``verify_checksum=True``, computes a SHA-256 locally and
-        re-checks it inside the guest after transfer.
+        re-checks it inside the guest after transfer. If the guest lacks
+        ``sha256sum`` (e.g. minimal Alpine CTs), the success response
+        carries ``checksum_verified=False`` and a ``warning`` field
+        rather than silently treating the transfer as verified.
         """
         if not ssh_client:
             return {
@@ -254,13 +257,18 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any =
                         "error": f"Checksum mismatch after upload: local={local_sha} remote={remote_sha}",
                         "bytes": size_bytes,
                     }
-            return {
+            result: dict[str, Any] = {
                 "status": "success", "vmid": vmid, "node": node, "dest": dest,
                 "bytes": size_bytes, "sha256": local_sha,
                 "duration_s": round(time.monotonic() - started, 2),
                 "transport": "sftp+pct_push",
                 "checksum_verified": remote_sha is not None,
             }
+            if verify_checksum and remote_sha is None:
+                result["warning"] = (
+                    "sha256sum unavailable in guest; transfer was not checksum-verified."
+                )
+            return result
 
         # QEMU: try direct SSH into the VM.
         try:
@@ -291,13 +299,18 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any =
                     "error": f"Checksum mismatch after upload: local={local_sha} remote={remote_sha}",
                     "bytes": size_bytes,
                 }
-        return {
+        result: dict[str, Any] = {
             "status": "success", "vmid": vmid, "node": node, "dest": dest,
             "bytes": size_bytes, "sha256": local_sha,
             "duration_s": round(time.monotonic() - started, 2),
             "transport": "sftp",
             "checksum_verified": remote_sha is not None,
         }
+        if verify_checksum and remote_sha is None:
+            result["warning"] = (
+                "sha256sum unavailable in guest; transfer was not checksum-verified."
+            )
+        return result
 
     @mcp.tool()
     async def proxmox_download_file(
@@ -318,6 +331,14 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any =
 
         Set ``overwrite=True`` to replace an existing file in the staging
         directory. Without it, the tool refuses to clobber existing files.
+        Data is streamed to a sibling ``<dest>.part`` file and atomically
+        renamed on success, so an interrupted transfer never leaves a
+        half-written file at ``dest``.
+
+        When ``verify_checksum=True`` but the guest lacks ``sha256sum``,
+        the success response carries ``checksum_verified=False`` and a
+        ``warning`` field rather than silently treating the transfer as
+        verified.
 
         - **LXC**: ``pct pull`` to ``/tmp/`` on the Proxmox node, then
           SFTP-streams it back to the staging dir, and cleans up.
@@ -385,6 +406,9 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any =
                 if sum_res.get("exit_code") == 0 and sum_res.get("stdout"):
                     remote_sha = sum_res["stdout"].split()[0]
             node_tmp = f"/tmp/beaconmcp-download-{uuid.uuid4().hex[:12]}"
+            # Stream into a sibling .part file and rename on success so an
+            # interrupted transfer never leaves a half-written file at dest.
+            tmp_path = local_path.with_name(local_path.name + ".part")
             pull_res = await ssh_client.exec_command(
                 node,
                 f"pct pull {vmid} {shlex.quote(source)} {shlex.quote(node_tmp)}",
@@ -397,25 +421,35 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any =
                     "error": f"pct pull failed: {pull_res.get('stderr') or pull_res.get('error') or 'unknown'}",
                 }
             try:
-                await ssh_client.sftp_get(node, node_tmp, str(local_path))
+                await ssh_client.sftp_get(node, node_tmp, str(tmp_path))
             except Exception as e:
                 await ssh_client.sftp_remove(node, node_tmp)
+                tmp_path.unlink(missing_ok=True)
                 return {"status": "error", "error": f"SFTP from node {node!r} failed: {e}"}
             await ssh_client.sftp_remove(node, node_tmp)
-            local_sha = await loop.run_in_executor(None, _sha256_file, local_path) if verify_checksum else None
+            local_sha = await loop.run_in_executor(None, _sha256_file, tmp_path) if verify_checksum else None
             if verify_checksum and remote_sha and local_sha != remote_sha:
+                size = tmp_path.stat().st_size
+                tmp_path.unlink(missing_ok=True)
                 return {
                     "status": "error",
                     "error": f"Checksum mismatch after download: remote={remote_sha} local={local_sha}",
-                    "bytes": local_path.stat().st_size,
+                    "bytes": size,
                 }
-            return {
+            tmp_path.replace(local_path)
+            result: dict[str, Any] = {
                 "status": "success", "vmid": vmid, "node": node,
                 "source": source, "staged_path": str(local_path),
                 "bytes": local_path.stat().st_size, "sha256": local_sha or remote_sha,
                 "duration_s": round(time.monotonic() - started, 2),
                 "transport": "pct_pull+sftp",
+                "checksum_verified": remote_sha is not None,
             }
+            if verify_checksum and remote_sha is None:
+                result["warning"] = (
+                    "sha256sum unavailable in guest; transfer was not checksum-verified."
+                )
+            return result
 
         # QEMU: direct SSH.
         try:
@@ -456,24 +490,37 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any =
             )
             if sum_res.get("exit_code") == 0 and sum_res.get("stdout"):
                 remote_sha = sum_res["stdout"].split()[0]
+        # Stream into a sibling .part file and rename on success so an
+        # interrupted transfer never leaves a half-written file at dest.
+        tmp_path = local_path.with_name(local_path.name + ".part")
         try:
-            await ssh_client.sftp_get(str(vmid), source, str(local_path))
+            await ssh_client.sftp_get(str(vmid), source, str(tmp_path))
         except Exception as e:
+            tmp_path.unlink(missing_ok=True)
             return {"status": "error", "error": f"SFTP from VM {vmid} failed: {e}"}
-        local_sha = await loop.run_in_executor(None, _sha256_file, local_path) if verify_checksum else None
+        local_sha = await loop.run_in_executor(None, _sha256_file, tmp_path) if verify_checksum else None
         if verify_checksum and remote_sha and local_sha != remote_sha:
+            size = tmp_path.stat().st_size
+            tmp_path.unlink(missing_ok=True)
             return {
                 "status": "error",
                 "error": f"Checksum mismatch after download: remote={remote_sha} local={local_sha}",
-                "bytes": local_path.stat().st_size,
+                "bytes": size,
             }
-        return {
+        tmp_path.replace(local_path)
+        result: dict[str, Any] = {
             "status": "success", "vmid": vmid, "node": node,
             "source": source, "staged_path": str(local_path),
             "bytes": local_path.stat().st_size, "sha256": local_sha or remote_sha,
             "duration_s": round(time.monotonic() - started, 2),
             "transport": "sftp",
+            "checksum_verified": remote_sha is not None,
         }
+        if verify_checksum and remote_sha is None:
+            result["warning"] = (
+                "sha256sum unavailable in guest; transfer was not checksum-verified."
+            )
+        return result
 
     @mcp.tool()
     def proxmox_list_transfers() -> dict[str, Any]:
