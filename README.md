@@ -310,6 +310,10 @@ BeaconMCP exposes tools that cause irreversible changes: `ssh_run`, `proxmox_run
 | `proxmox_run` | Command inside a QEMU VM via QEMU Guest Agent. Sync by default; pass `wait=False` to start async, or `exec_id=` to poll an existing session. For LXC containers, use `ssh_run` on the node with `pct exec <vmid> -- <command>`. |
 | `proxmox_read_file` | Safely read a file from a VM (via QEMU Guest Agent). |
 | `proxmox_write_file` | Safely write a file to a VM (via QEMU Guest Agent). |
+| `proxmox_upload_file` | Stream a file ≤ `server.transfers_max_mb` (default 500 MB) from the staging dir into a VM (SFTP) or CT (SFTP + `pct push`). Verifies SHA-256 by default. |
+| `proxmox_download_file` | Stream a file ≤ `server.transfers_max_mb` from a VM (SFTP) or CT (`pct pull` + SFTP) into the staging dir. Verifies SHA-256 by default. |
+| `proxmox_list_transfers` | List files currently in the staging directory. |
+| `proxmox_delete_transfer` | Delete a file from the staging directory by basename. |
 
 ### SSH fallback (2)
 

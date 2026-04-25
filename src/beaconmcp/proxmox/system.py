@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import base64
 import asyncio
+import hashlib
 import time
 import uuid
 import shlex
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -52,6 +54,44 @@ def _detect_vm_type(client: ProxmoxClient, node: str, vmid: int) -> str | None:
         if isinstance(data, dict) and data.get("status"):
             return vm_type
     return None
+
+
+def _staging_dir(client: ProxmoxClient) -> Path:
+    """Return the resolved staging directory, creating it on first use."""
+    base = Path(client._config.server.transfers_dir).expanduser().resolve()
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _staging_path(client: ProxmoxClient, name: str) -> Path:
+    """Resolve ``name`` against the staging dir, refusing path traversal.
+
+    Only plain basenames are accepted: no slashes, no ``..``, no absolute
+    paths. The resolved target must remain inside the staging directory.
+    """
+    if not isinstance(name, str) or not name or name in (".", ".."):
+        raise ValueError("staging filename must be a non-empty basename")
+    if "/" in name or "\\" in name or name.startswith(".."):
+        raise ValueError(
+            "staging filename must be a plain basename (no slashes, no '..')"
+        )
+    base = _staging_dir(client)
+    target = (base / name).resolve()
+    try:
+        target.relative_to(base)
+    except ValueError as exc:
+        raise ValueError(
+            f"staging filename {name!r} resolves outside the transfers directory"
+        ) from exc
+    return target
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any = None) -> None:
@@ -118,6 +158,413 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any =
             return {"status": "success", "vmid": vmid, "node": node, "path": path, "action": "file_write"}
             
         return {"status": "error", "error": "LXC file writing is currently unsupported via API. Please use ssh_exec_command to write the file."}
+
+    @mcp.tool()
+    async def proxmox_upload_file(
+        node: str,
+        vmid: int,
+        source: str,
+        dest: str,
+        verify_checksum: bool = True,
+    ) -> dict[str, Any]:
+        """Upload a large file from the BeaconMCP staging dir into a VM/CT.
+
+        ``source`` must be a plain basename of a file present in
+        ``server.transfers_dir`` (default ``~/.cache/beaconmcp/transfers``).
+        ``dest`` is an absolute path inside the guest. Capped by
+        ``server.transfers_max_mb`` (default 500 MB).
+
+        - **LXC**: SFTP-streams to ``/tmp/`` on the Proxmox node, then
+          ``pct push <vmid>`` into the container, and cleans up.
+        - **VM**: SFTP-streams directly into the VM. The VM must be
+          SSH-reachable — declared under ``ssh.hosts[]`` or matched by
+          ``ssh.vmid_to_ip``. For VMs without SSH, fall back to
+          ``proxmox_write_file`` (1 MB cap).
+
+        When ``verify_checksum=True``, computes a SHA-256 locally and
+        re-checks it inside the guest after transfer. If the guest lacks
+        ``sha256sum`` (e.g. minimal Alpine CTs), the success response
+        carries ``checksum_verified=False`` and a ``warning`` field
+        rather than silently treating the transfer as verified.
+        """
+        if not ssh_client:
+            return {
+                "status": "error",
+                "error": "Large-file transfer requires SSH. Add an ssh.hosts[] entry for the Proxmox node (or the VM).",
+            }
+        try:
+            local_path = _staging_path(client, source)
+        except ValueError as e:
+            return {"status": "error", "error": str(e)}
+        if not local_path.is_file():
+            return {
+                "status": "error",
+                "error": (
+                    f"Staging file {source!r} not found. Place it in "
+                    f"{_staging_dir(client)} first (SCP, dashboard, etc.)."
+                ),
+            }
+        size_bytes = local_path.stat().st_size
+        max_bytes = client._config.server.transfers_max_mb * 1024 * 1024
+        if size_bytes > max_bytes:
+            return {
+                "status": "error",
+                "error": (
+                    f"File size {size_bytes} bytes exceeds the configured "
+                    f"transfers_max_mb ({client._config.server.transfers_max_mb} MB)."
+                ),
+            }
+        if not isinstance(dest, str) or not dest.startswith("/"):
+            return {"status": "error", "error": "`dest` must be an absolute path inside the guest."}
+
+        loop = asyncio.get_running_loop()
+        vm_type = await loop.run_in_executor(None, _detect_vm_type, client, node, vmid)
+        if not vm_type:
+            return {"status": "error", "error": f"VM/CT {vmid} not found on node '{node}'."}
+
+        started = time.monotonic()
+        local_sha = await loop.run_in_executor(None, _sha256_file, local_path) if verify_checksum else None
+
+        if vm_type == "lxc":
+            node_tmp = f"/tmp/beaconmcp-upload-{uuid.uuid4().hex[:12]}"
+            try:
+                await ssh_client.sftp_put(node, str(local_path), node_tmp)
+            except Exception as e:
+                return {"status": "error", "error": f"SFTP to node {node!r} failed: {e}"}
+            push_res = await ssh_client.exec_command(
+                node,
+                f"pct push {vmid} {shlex.quote(node_tmp)} {shlex.quote(dest)}",
+                timeout=600,
+            )
+            await ssh_client.sftp_remove(node, node_tmp)
+            if push_res.get("exit_code") != 0:
+                return {
+                    "status": "error",
+                    "error": f"pct push failed: {push_res.get('stderr') or push_res.get('error') or 'unknown'}",
+                }
+            remote_sha = None
+            if verify_checksum:
+                sum_res = await ssh_client.exec_command(
+                    node,
+                    f"pct exec {vmid} -- sha256sum {shlex.quote(dest)}",
+                    timeout=300,
+                )
+                if sum_res.get("exit_code") == 0 and sum_res.get("stdout"):
+                    remote_sha = sum_res["stdout"].split()[0]
+                if remote_sha and remote_sha != local_sha:
+                    return {
+                        "status": "error",
+                        "error": f"Checksum mismatch after upload: local={local_sha} remote={remote_sha}",
+                        "bytes": size_bytes,
+                    }
+            result: dict[str, Any] = {
+                "status": "success", "vmid": vmid, "node": node, "dest": dest,
+                "bytes": size_bytes, "sha256": local_sha,
+                "duration_s": round(time.monotonic() - started, 2),
+                "transport": "sftp+pct_push",
+                "checksum_verified": remote_sha is not None,
+            }
+            if verify_checksum and remote_sha is None:
+                result["warning"] = (
+                    "sha256sum unavailable in guest; transfer was not checksum-verified."
+                )
+            return result
+
+        # QEMU: try direct SSH into the VM.
+        try:
+            ssh_client.resolve(str(vmid))
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": (
+                    f"VM {vmid} is not reachable via SSH ({e}). "
+                    "Either declare it under ssh.hosts[] (or set ssh.vmid_to_ip), "
+                    "or use proxmox_write_file for files ≤1MB."
+                ),
+            }
+        try:
+            await ssh_client.sftp_put(str(vmid), str(local_path), dest)
+        except Exception as e:
+            return {"status": "error", "error": f"SFTP to VM {vmid} failed: {e}"}
+        remote_sha = None
+        if verify_checksum:
+            sum_res = await ssh_client.exec_command(
+                str(vmid), f"sha256sum {shlex.quote(dest)}", timeout=300,
+            )
+            if sum_res.get("exit_code") == 0 and sum_res.get("stdout"):
+                remote_sha = sum_res["stdout"].split()[0]
+            if remote_sha and remote_sha != local_sha:
+                return {
+                    "status": "error",
+                    "error": f"Checksum mismatch after upload: local={local_sha} remote={remote_sha}",
+                    "bytes": size_bytes,
+                }
+        result: dict[str, Any] = {
+            "status": "success", "vmid": vmid, "node": node, "dest": dest,
+            "bytes": size_bytes, "sha256": local_sha,
+            "duration_s": round(time.monotonic() - started, 2),
+            "transport": "sftp",
+            "checksum_verified": remote_sha is not None,
+        }
+        if verify_checksum and remote_sha is None:
+            result["warning"] = (
+                "sha256sum unavailable in guest; transfer was not checksum-verified."
+            )
+        return result
+
+    @mcp.tool()
+    async def proxmox_download_file(
+        node: str,
+        vmid: int,
+        source: str,
+        dest: str,
+        verify_checksum: bool = True,
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """Download a large file from a VM/CT into the BeaconMCP staging dir.
+
+        ``source`` is an absolute path inside the guest. ``dest`` is a plain
+        basename written under ``server.transfers_dir`` (default
+        ``~/.cache/beaconmcp/transfers``). Capped by
+        ``server.transfers_max_mb`` (default 500 MB) — oversized sources
+        are rejected before any data is moved.
+
+        Set ``overwrite=True`` to replace an existing file in the staging
+        directory. Without it, the tool refuses to clobber existing files.
+        Data is streamed to a sibling ``<dest>.part`` file and atomically
+        renamed on success, so an interrupted transfer never leaves a
+        half-written file at ``dest``.
+
+        When ``verify_checksum=True`` but the guest lacks ``sha256sum``,
+        the success response carries ``checksum_verified=False`` and a
+        ``warning`` field rather than silently treating the transfer as
+        verified.
+
+        - **LXC**: ``pct pull`` to ``/tmp/`` on the Proxmox node, then
+          SFTP-streams it back to the staging dir, and cleans up.
+        - **VM**: SFTP-streams directly from the VM. Requires the VM to be
+          SSH-reachable (see ``proxmox_upload_file`` for details).
+        """
+        if not ssh_client:
+            return {
+                "status": "error",
+                "error": "Large-file transfer requires SSH. Add an ssh.hosts[] entry for the Proxmox node (or the VM).",
+            }
+        try:
+            local_path = _staging_path(client, dest)
+        except ValueError as e:
+            return {"status": "error", "error": str(e)}
+        if local_path.exists() and not overwrite:
+            return {
+                "status": "error",
+                "error": (
+                    f"Staging file {dest!r} already exists. "
+                    "Pass overwrite=True to replace it."
+                ),
+            }
+        if not isinstance(source, str) or not source.startswith("/"):
+            return {"status": "error", "error": "`source` must be an absolute path inside the guest."}
+
+        loop = asyncio.get_running_loop()
+        vm_type = await loop.run_in_executor(None, _detect_vm_type, client, node, vmid)
+        if not vm_type:
+            return {"status": "error", "error": f"VM/CT {vmid} not found on node '{node}'."}
+        max_bytes = client._config.server.transfers_max_mb * 1024 * 1024
+        started = time.monotonic()
+
+        if vm_type == "lxc":
+            # Pre-flight: refuse oversized files before any data movement.
+            size_res = await ssh_client.exec_command(
+                node,
+                f"pct exec {vmid} -- stat -c %s {shlex.quote(source)}",
+                timeout=60,
+            )
+            if size_res.get("exit_code") != 0:
+                return {
+                    "status": "error",
+                    "error": f"Could not stat {source!r} in CT {vmid}: {size_res.get('stderr') or size_res.get('error')}",
+                }
+            try:
+                src_size = int((size_res.get("stdout") or "0").strip())
+            except ValueError:
+                src_size = 0
+            if src_size > max_bytes:
+                return {
+                    "status": "error",
+                    "error": (
+                        f"Source size {src_size} bytes exceeds the configured "
+                        f"transfers_max_mb ({client._config.server.transfers_max_mb} MB)."
+                    ),
+                }
+            remote_sha = None
+            if verify_checksum:
+                sum_res = await ssh_client.exec_command(
+                    node,
+                    f"pct exec {vmid} -- sha256sum {shlex.quote(source)}",
+                    timeout=300,
+                )
+                if sum_res.get("exit_code") == 0 and sum_res.get("stdout"):
+                    remote_sha = sum_res["stdout"].split()[0]
+            node_tmp = f"/tmp/beaconmcp-download-{uuid.uuid4().hex[:12]}"
+            # Stream into a sibling .part file and rename on success so an
+            # interrupted transfer never leaves a half-written file at dest.
+            tmp_path = local_path.with_name(local_path.name + ".part")
+            pull_res = await ssh_client.exec_command(
+                node,
+                f"pct pull {vmid} {shlex.quote(source)} {shlex.quote(node_tmp)}",
+                timeout=600,
+            )
+            if pull_res.get("exit_code") != 0:
+                await ssh_client.sftp_remove(node, node_tmp)
+                return {
+                    "status": "error",
+                    "error": f"pct pull failed: {pull_res.get('stderr') or pull_res.get('error') or 'unknown'}",
+                }
+            try:
+                await ssh_client.sftp_get(node, node_tmp, str(tmp_path))
+            except Exception as e:
+                await ssh_client.sftp_remove(node, node_tmp)
+                tmp_path.unlink(missing_ok=True)
+                return {"status": "error", "error": f"SFTP from node {node!r} failed: {e}"}
+            await ssh_client.sftp_remove(node, node_tmp)
+            local_sha = await loop.run_in_executor(None, _sha256_file, tmp_path) if verify_checksum else None
+            if verify_checksum and remote_sha and local_sha != remote_sha:
+                size = tmp_path.stat().st_size
+                tmp_path.unlink(missing_ok=True)
+                return {
+                    "status": "error",
+                    "error": f"Checksum mismatch after download: remote={remote_sha} local={local_sha}",
+                    "bytes": size,
+                }
+            tmp_path.replace(local_path)
+            result: dict[str, Any] = {
+                "status": "success", "vmid": vmid, "node": node,
+                "source": source, "staged_path": str(local_path),
+                "bytes": local_path.stat().st_size, "sha256": local_sha or remote_sha,
+                "duration_s": round(time.monotonic() - started, 2),
+                "transport": "pct_pull+sftp",
+                "checksum_verified": remote_sha is not None,
+            }
+            if verify_checksum and remote_sha is None:
+                result["warning"] = (
+                    "sha256sum unavailable in guest; transfer was not checksum-verified."
+                )
+            return result
+
+        # QEMU: direct SSH.
+        try:
+            ssh_client.resolve(str(vmid))
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": (
+                    f"VM {vmid} is not reachable via SSH ({e}). "
+                    "Either declare it under ssh.hosts[] (or set ssh.vmid_to_ip), "
+                    "or use proxmox_read_file for files ≤1MB."
+                ),
+            }
+        size_res = await ssh_client.exec_command(
+            str(vmid), f"stat -c %s {shlex.quote(source)}", timeout=60,
+        )
+        if size_res.get("exit_code") != 0:
+            return {
+                "status": "error",
+                "error": f"Could not stat {source!r} in VM {vmid}: {size_res.get('stderr') or size_res.get('error')}",
+            }
+        try:
+            src_size = int((size_res.get("stdout") or "0").strip())
+        except ValueError:
+            src_size = 0
+        if src_size > max_bytes:
+            return {
+                "status": "error",
+                "error": (
+                    f"Source size {src_size} bytes exceeds the configured "
+                    f"transfers_max_mb ({client._config.server.transfers_max_mb} MB)."
+                ),
+            }
+        remote_sha = None
+        if verify_checksum:
+            sum_res = await ssh_client.exec_command(
+                str(vmid), f"sha256sum {shlex.quote(source)}", timeout=300,
+            )
+            if sum_res.get("exit_code") == 0 and sum_res.get("stdout"):
+                remote_sha = sum_res["stdout"].split()[0]
+        # Stream into a sibling .part file and rename on success so an
+        # interrupted transfer never leaves a half-written file at dest.
+        tmp_path = local_path.with_name(local_path.name + ".part")
+        try:
+            await ssh_client.sftp_get(str(vmid), source, str(tmp_path))
+        except Exception as e:
+            tmp_path.unlink(missing_ok=True)
+            return {"status": "error", "error": f"SFTP from VM {vmid} failed: {e}"}
+        local_sha = await loop.run_in_executor(None, _sha256_file, tmp_path) if verify_checksum else None
+        if verify_checksum and remote_sha and local_sha != remote_sha:
+            size = tmp_path.stat().st_size
+            tmp_path.unlink(missing_ok=True)
+            return {
+                "status": "error",
+                "error": f"Checksum mismatch after download: remote={remote_sha} local={local_sha}",
+                "bytes": size,
+            }
+        tmp_path.replace(local_path)
+        result: dict[str, Any] = {
+            "status": "success", "vmid": vmid, "node": node,
+            "source": source, "staged_path": str(local_path),
+            "bytes": local_path.stat().st_size, "sha256": local_sha or remote_sha,
+            "duration_s": round(time.monotonic() - started, 2),
+            "transport": "sftp",
+            "checksum_verified": remote_sha is not None,
+        }
+        if verify_checksum and remote_sha is None:
+            result["warning"] = (
+                "sha256sum unavailable in guest; transfer was not checksum-verified."
+            )
+        return result
+
+    @mcp.tool()
+    def proxmox_list_transfers() -> dict[str, Any]:
+        """List files currently in the BeaconMCP staging directory.
+
+        Returns each file's basename, size in bytes, and last-modified epoch.
+        Use this to discover which ``source`` names are available for
+        ``proxmox_upload_file``, or to confirm a ``proxmox_download_file``
+        landed.
+        """
+        base = _staging_dir(client)
+        entries: list[dict[str, Any]] = []
+        for entry in sorted(base.iterdir()):
+            if not entry.is_file():
+                continue
+            stat = entry.stat()
+            entries.append({
+                "name": entry.name,
+                "bytes": stat.st_size,
+                "modified": int(stat.st_mtime),
+            })
+        return {
+            "transfers_dir": str(base),
+            "max_mb": client._config.server.transfers_max_mb,
+            "files": entries,
+            "total": len(entries),
+        }
+
+    @mcp.tool()
+    def proxmox_delete_transfer(name: str) -> dict[str, Any]:
+        """Delete a file from the BeaconMCP staging directory.
+
+        ``name`` must be a plain basename (no slashes). Use
+        ``proxmox_list_transfers`` to see available files.
+        """
+        try:
+            target = _staging_path(client, name)
+        except ValueError as e:
+            return {"status": "error", "error": str(e)}
+        if not target.is_file():
+            return {"status": "error", "error": f"File {name!r} not found in staging directory."}
+        size = target.stat().st_size
+        target.unlink()
+        return {"status": "success", "deleted": name, "freed_bytes": size}
 
     @mcp.tool()
     def proxmox_storage_status(node: str = "") -> dict[str, Any]:
