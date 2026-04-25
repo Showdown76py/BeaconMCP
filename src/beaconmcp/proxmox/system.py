@@ -248,7 +248,7 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any =
                 )
                 if sum_res.get("exit_code") == 0 and sum_res.get("stdout"):
                     remote_sha = sum_res["stdout"].split()[0]
-                if remote_sha != local_sha:
+                if remote_sha and remote_sha != local_sha:
                     return {
                         "status": "error",
                         "error": f"Checksum mismatch after upload: local={local_sha} remote={remote_sha}",
@@ -259,6 +259,7 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any =
                 "bytes": size_bytes, "sha256": local_sha,
                 "duration_s": round(time.monotonic() - started, 2),
                 "transport": "sftp+pct_push",
+                "checksum_verified": remote_sha is not None,
             }
 
         # QEMU: try direct SSH into the VM.
@@ -284,7 +285,7 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any =
             )
             if sum_res.get("exit_code") == 0 and sum_res.get("stdout"):
                 remote_sha = sum_res["stdout"].split()[0]
-            if remote_sha != local_sha:
+            if remote_sha and remote_sha != local_sha:
                 return {
                     "status": "error",
                     "error": f"Checksum mismatch after upload: local={local_sha} remote={remote_sha}",
@@ -295,6 +296,7 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any =
             "bytes": size_bytes, "sha256": local_sha,
             "duration_s": round(time.monotonic() - started, 2),
             "transport": "sftp",
+            "checksum_verified": remote_sha is not None,
         }
 
     @mcp.tool()
@@ -304,6 +306,7 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any =
         source: str,
         dest: str,
         verify_checksum: bool = True,
+        overwrite: bool = False,
     ) -> dict[str, Any]:
         """Download a large file from a VM/CT into the BeaconMCP staging dir.
 
@@ -312,6 +315,9 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any =
         ``~/.cache/beaconmcp/transfers``). Capped by
         ``server.transfers_max_mb`` (default 500 MB) — oversized sources
         are rejected before any data is moved.
+
+        Set ``overwrite=True`` to replace an existing file in the staging
+        directory. Without it, the tool refuses to clobber existing files.
 
         - **LXC**: ``pct pull`` to ``/tmp/`` on the Proxmox node, then
           SFTP-streams it back to the staging dir, and cleans up.
@@ -327,6 +333,14 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any =
             local_path = _staging_path(client, dest)
         except ValueError as e:
             return {"status": "error", "error": str(e)}
+        if local_path.exists() and not overwrite:
+            return {
+                "status": "error",
+                "error": (
+                    f"Staging file {dest!r} already exists. "
+                    "Pass overwrite=True to replace it."
+                ),
+            }
         if not isinstance(source, str) or not source.startswith("/"):
             return {"status": "error", "error": "`source` must be an absolute path inside the guest."}
 
@@ -487,6 +501,23 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any =
             "files": entries,
             "total": len(entries),
         }
+
+    @mcp.tool()
+    def proxmox_delete_transfer(name: str) -> dict[str, Any]:
+        """Delete a file from the BeaconMCP staging directory.
+
+        ``name`` must be a plain basename (no slashes). Use
+        ``proxmox_list_transfers`` to see available files.
+        """
+        try:
+            target = _staging_path(client, name)
+        except ValueError as e:
+            return {"status": "error", "error": str(e)}
+        if not target.is_file():
+            return {"status": "error", "error": f"File {name!r} not found in staging directory."}
+        size = target.stat().st_size
+        target.unlink()
+        return {"status": "success", "deleted": name, "freed_bytes": size}
 
     @mcp.tool()
     def proxmox_storage_status(node: str = "") -> dict[str, Any]:

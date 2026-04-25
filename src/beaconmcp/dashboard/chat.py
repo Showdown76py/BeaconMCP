@@ -154,6 +154,7 @@ _NEEDS_CONFIRMATION: frozenset[str] = frozenset({
     # Large-file transfers: write into / read from a guest filesystem.
     "proxmox_upload_file",
     "proxmox_download_file",
+    "proxmox_delete_transfer",
     # Legacy names (pre-unified tools) -- kept defensively.
     "ssh_exec_command",
     "ssh_exec_command_async",
