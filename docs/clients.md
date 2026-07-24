@@ -51,6 +51,26 @@ page presents the same information with copy-pasteable snippets per platform
 
 ---
 
+## Assistant (web, mobile, desktop)
+
+Assistant drives the full OAuth 2.1 flow against BeaconMCP, so nothing long-lived is stored on its
+side — you type the TOTP into the authorization page whenever a new token is issued.
+
+1. **Settings → Integrations → Add custom connector.**
+2. Fill in:
+   - **Name:** BeaconMCP
+   - **Remote MCP server URL:** `https://<your-host>/mcp`
+   - **OAuth Client ID** and **OAuth Client Secret** from `beaconmcp auth create`.
+3. **Add.**
+
+On first use, and after each 24-hour token expiry, Assistant redirects to the BeaconMCP
+authorization page. Read the current 6-digit code from your authenticator app and type it in.
+Assistant never holds the TOTP seed, so a leaked session cannot mint a new token without a fresh
+code from your phone.
+
+For the web app, add its origin to `server.allowed_origins` (see the allowlist note above);
+the desktop app uses a loopback callback and needs no entry.
+
 ## ChatGPT (OAuth 2.1)
 
 ChatGPT's Developer Mode connector only accepts **OAuth with Dynamic Client
