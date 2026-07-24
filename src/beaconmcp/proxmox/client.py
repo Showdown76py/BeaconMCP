@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from typing import Any
@@ -11,6 +12,40 @@ from requests.exceptions import ConnectionError, Timeout
 from ..config import Config
 
 _logger = logging.getLogger("beaconmcp.proxmox")
+
+# Every Proxmox endpoint this server builds is an f-string with caller-supplied
+# values spliced in as path segments (`.../snapshot/{snapname}/rollback`,
+# `.../storage/{storage}/content`, ...). A value containing `/` or `..` would
+# silently re-target the request at a different API endpoint than the tool
+# advertises. Constrain each segment to the character set Proxmox itself
+# allows for node names, storage ids, snapshot names and guest types.
+#
+# Deliberately excludes `/`, `..`, `.` and a leading `_` -- the latter because
+# `api_call` walks the path with getattr() and proxmoxer's __getattr__ refuses
+# (or, worse, resolves) dunder/private attribute names.
+_SAFE_PATH_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@+-]*$")
+
+
+class UnsafePathSegmentError(ValueError):
+    """Raised when a caller-supplied value would escape its path segment."""
+
+
+def _split_api_path(path: str) -> list[str]:
+    """Split an API path into segments, rejecting anything traversal-shaped.
+
+    Raises :class:`UnsafePathSegmentError` with the offending segment so the
+    caller can surface an actionable message instead of issuing a request
+    against an endpoint nobody asked for.
+    """
+    parts = [p for p in path.strip("/").split("/")]
+    for part in parts:
+        if not _SAFE_PATH_SEGMENT.match(part):
+            raise UnsafePathSegmentError(
+                f"illegal Proxmox API path segment {part!r} in {path!r}: "
+                "segments must match [A-Za-z0-9][A-Za-z0-9._@+-]* "
+                "(no slashes, no '..')"
+            )
+    return parts
 
 # Transient-error retry: Proxmox API over the wire frequently hiccups on
 # momentary network blips (TCP reset during cluster sync, TLS renegotiation
@@ -70,12 +105,18 @@ class ProxmoxClient:
         network errors get one quick retry; sustained unreachability returns
         the descriptive error message.
         """
+        try:
+            parts = _split_api_path(path)
+        except UnsafePathSegmentError as e:
+            _logger.warning("rejected Proxmox API call on %s: %s", node_name, e)
+            return {"error": str(e)}
+
         last_exc: Exception | None = None
         for attempt in range(_RETRY_ATTEMPTS):
             try:
                 conn = self._get_connection(node_name)
                 obj = conn
-                for part in path.strip("/").split("/"):
+                for part in parts:
                     obj = getattr(obj, part)
                 return getattr(obj, method)(**kwargs)
             except NodeNotFoundError:

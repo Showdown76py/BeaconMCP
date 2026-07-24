@@ -141,26 +141,56 @@ ChatEvent = (
 
 
 # Tool names that MUST go through a human approval step before we run
-# them from a Gemini turn. Anything that can fire arbitrary shell on a
-# host or VM (SSH directly, QEMU Guest Agent exec via proxmox_run) belongs
-# here -- otherwise a single compromised/confused turn could rm -rf a
-# production box. Legacy ``*_exec_command*`` names are kept for
-# defense-in-depth in case an older MCP server is still wired up.
-# Keep this list tight; every entry adds a modal click to the UX.
+# them from a Gemini turn. Two classes belong here:
+#
+#   1. Anything that can fire arbitrary code on a host or VM -- SSH
+#      directly, QEMU Guest Agent exec via proxmox_run, and any primitive
+#      that lets an attacker *become* code execution (writing
+#      ~/.ssh/authorized_keys or /etc/cron.d via proxmox_write_file /
+#      proxmox_upload_file is exactly as good as a shell).
+#   2. Anything destructive or irreversible at the guest/hardware level
+#      (mass power actions, snapshot rollback/delete, backup restore,
+#      BMC power cuts).
+#
+# The gate exists because the model's input is untrusted: a log line, a
+# file, or a web-search result can carry an injected instruction. Without
+# the modal, one confused turn rm -rf's a production box.
+#
+# Legacy ``*_exec_command*`` names are kept for defense-in-depth in case
+# an older MCP server is still wired up.
 _NEEDS_CONFIRMATION: frozenset[str] = frozenset({
-    # Current (unified) tools.
+    # --- arbitrary code execution -------------------------------------
     "ssh_run",
     "proxmox_run",
-    # Large-file transfers: write into / read from a guest filesystem.
+    # Guest filesystem writes are code execution in one hop.
+    "proxmox_write_file",
     "proxmox_upload_file",
     "proxmox_download_file",
     "proxmox_delete_transfer",
-    # Legacy names (pre-unified tools) -- kept defensively.
+    # --- destructive / irreversible -----------------------------------
+    "vm_bulk_action",
+    "proxmox_vm_stop",
+    "proxmox_vm_restart",
+    "proxmox_vm_migrate",
+    "proxmox_snapshot_rollback",
+    "proxmox_snapshot_delete",
+    "proxmox_backup_restore",
+    "bmc_power_off",
+    "bmc_power_reset",
+    # --- legacy names (pre-unified tools) -----------------------------
     "ssh_exec_command",
     "ssh_exec_command_async",
     "proxmox_exec_command",
     "proxmox_exec_command_async",
 })
+
+# Tools that are read-only in one call shape and mutating in another.
+# ``proxmox_vm_config`` returns the config without ``updates`` and rewrites
+# it with them, so gating the whole tool would put a modal in front of
+# every read. Map: tool name -> arg whose presence makes the call mutate.
+_CONFIRM_WHEN_ARG_PRESENT: dict[str, str] = {
+    "proxmox_vm_config": "updates",
+}
 
 
 def _tool_call_requires_confirmation(name: str, args: Any) -> bool:
@@ -172,13 +202,22 @@ def _tool_call_requires_confirmation(name: str, args: Any) -> bool:
     is set and ``command`` is not -- is read-only and must not trigger a
     confirmation modal. We keep the allow-list name-based for everything
     else, then peel off the poll case here.
+
+    ``dry_run=True`` calls are also let through: those tools return a
+    "would do X" string without touching the cluster.
     """
+    mutating_arg = _CONFIRM_WHEN_ARG_PRESENT.get(name)
+    if mutating_arg is not None:
+        return bool(isinstance(args, dict) and args.get(mutating_arg))
     if name not in _NEEDS_CONFIRMATION:
         return False
-    if name in {"ssh_run", "proxmox_run"} and isinstance(args, dict):
-        exec_id = args.get("exec_id")
-        command = args.get("command")
-        if exec_id and not command:
+    if isinstance(args, dict):
+        if name in {"ssh_run", "proxmox_run"}:
+            exec_id = args.get("exec_id")
+            command = args.get("command")
+            if exec_id and not command:
+                return False
+        if args.get("dry_run") is True:
             return False
     return True
 

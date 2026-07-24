@@ -49,6 +49,11 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
 else
     echo "[*] Existing .env preserved."
 fi
+# The .env holds every secret the server has: Proxmox API tokens, BMC admin
+# passwords, SSH passwords, the dashboard session key. `cp` and the shell
+# create it with the default umask (0644), which leaves it readable by every
+# local user. Make it owner-only, on fresh and pre-existing installs alike.
+chmod 600 "$INSTALL_DIR/.env"
 
 # 5.b beaconmcp.yaml config file
 if [ ! -f "$INSTALL_DIR/beaconmcp.yaml" ]; then

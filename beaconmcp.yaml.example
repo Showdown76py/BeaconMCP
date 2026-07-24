@@ -208,6 +208,18 @@ bmc:
       password: ${RACK2_IPMI_PASSWORD}
       # no jump_host = direct connection
 
+    - id: rack3-idrac
+      type: idrac            # idrac | supermicro | redfish -> Redfish over HTTPS
+      host: 192.168.10.22
+      user: root
+      password: ${RACK3_IDRAC_PASSWORD}
+      # Verify the BMC's TLS certificate on Redfish calls. Defaults to
+      # false because BMCs ship self-signed certs out of the factory; the
+      # admin password is sent on every request, so turn this on (after
+      # installing a cert the host trusts) for any BMC that is not on a
+      # fully trusted management VLAN.
+      verify_tls: false
+
 features:
   dashboard:
     enabled: true

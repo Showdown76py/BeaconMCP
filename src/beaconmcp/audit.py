@@ -32,8 +32,12 @@ _logger = logging.getLogger("beaconmcp.audit")
 
 # Argument keys whose values are always masked before emission.
 _REDACT_KEYS = frozenset({
-    "password", "secret", "token", "token_secret", "client_secret",
-    "api_key", "authorization", "totp", "bearer",
+    "password", "passwd", "secret", "token", "token_secret", "client_secret",
+    "client_secret_hash", "api_key", "apikey", "authorization", "totp",
+    "totp_secret", "bearer", "access_token", "refresh_token",
+    # OAuth / session material: a code_verifier or a session_id is as good
+    # as a credential to whoever reads the log.
+    "code_verifier", "session_id", "session_key", "private_key",
 })
 
 

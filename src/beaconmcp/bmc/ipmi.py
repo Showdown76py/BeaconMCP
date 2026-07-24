@@ -9,6 +9,7 @@ BeaconMCP on a host that is. SSH-jump tunneling is not supported here
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 from ..config import BMCDevice, Config
@@ -25,14 +26,29 @@ class GenericIPMIBackend:
         self._config = config
 
     def _argv(self, *extra: str) -> list[str]:
+        """Build the ipmitool argv.
+
+        The BMC password is deliberately NOT passed as ``-P <password>``:
+        argv is world-readable through ``/proc/<pid>/cmdline`` (``ps aux``),
+        so every local user on the host could read the BMC admin password
+        for as long as the call ran. ``-E`` makes ipmitool pick it up from
+        the ``IPMI_PASSWORD`` environment variable instead, which is only
+        readable by the process owner and root. See :meth:`_env`.
+        """
         return [
             "ipmitool",
             "-H", self._device.host,
             "-U", self._device.user,
-            "-P", self._device.password,
+            "-E",
             "-I", "lanplus",
             *extra,
         ]
+
+    def _env(self) -> dict[str, str]:
+        """Child environment carrying the BMC password out of band."""
+        env = dict(os.environ)
+        env["IPMI_PASSWORD"] = self._device.password or ""
+        return env
 
     async def _run(self, *extra: str) -> dict[str, Any]:
         argv = self._argv(*extra)
@@ -41,6 +57,7 @@ class GenericIPMIBackend:
                 *argv,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=self._env(),
             )
             stdout_b, stderr_b = await proc.communicate()
         except FileNotFoundError:

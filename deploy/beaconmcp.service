@@ -11,5 +11,13 @@ ExecStart=/opt/beaconmcp/.venv/bin/python -m beaconmcp serve
 Restart=on-failure
 RestartSec=5
 
+# Files the server creates at runtime (clients.json, tokens.db, dashboard.db,
+# audit.log) all hold secrets. Default umask 0022 would make them
+# world-readable before the explicit chmod calls land; 0077 closes that
+# window and covers anything not chmod'd individually.
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
 [Install]
 WantedBy=multi-user.target

@@ -71,10 +71,28 @@ async def test_power_on_calls_ipmitool_with_correct_argv() -> None:
     assert argv[0] == "ipmitool"
     assert "-H" in argv and "10.0.0.11" in argv
     assert "-U" in argv and "admin" in argv
-    assert "-P" in argv and "pw" in argv
     assert argv[-3:] == ("chassis", "power", "on")
     assert result["action"] == "power_on"
     assert result["result"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_password_never_appears_in_argv() -> None:
+    """The BMC password must travel via IPMI_PASSWORD, not `-P` on argv.
+
+    argv is readable by every local user through /proc/<pid>/cmdline.
+    """
+    backend = _backend()
+    mock = AsyncMock(return_value=_FakeProc(b"Chassis Power is on\n"))
+
+    with patch("asyncio.create_subprocess_exec", mock):
+        await backend.power_status()
+
+    argv = mock.await_args.args
+    assert "-P" not in argv
+    assert "pw" not in argv
+    assert "-E" in argv
+    assert mock.await_args.kwargs["env"]["IPMI_PASSWORD"] == "pw"
 
 
 @pytest.mark.asyncio

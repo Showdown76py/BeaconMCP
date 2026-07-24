@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import pyotp
 
@@ -103,20 +104,35 @@ def current_client_id() -> str | None:
 CLIENTS_FILE = Path("/opt/beaconmcp/clients.json")
 
 
-# Redirect URI prefixes that are not CORS origins and therefore cannot be
-# modeled via ``server.allowed_origins``.
-TRUSTED_NON_ORIGIN_REDIRECT_PREFIXES: tuple[str, ...] = (
-    # OS-level custom URI schemes used by desktop clients.
+# OS-level custom URI schemes used by desktop clients. Not CORS origins, so
+# they cannot be modeled via ``server.allowed_origins``. Prefix-matched: the
+# scheme itself is the authority (only the registering app can claim it).
+TRUSTED_CUSTOM_SCHEME_PREFIXES: tuple[str, ...] = (
     "vscode://",
     "vscode-insiders://",
     "cursor://",
-    # Local loopback for CLI / terminal clients (RFC 8252 style).
-    "http://localhost:",
-    "http://localhost/",
-    "http://127.0.0.1:",
-    "http://127.0.0.1/",
-    "http://[::1]:",
-    "http://[::1]/",
+)
+
+# Loopback callback hosts for CLI / terminal clients (RFC 8252 style).
+# Matched against the *parsed* hostname, never by string prefix: a prefix
+# test on "http://localhost:" also accepts
+# ``http://localhost:1@attacker.example/cb``, whose real host is
+# attacker.example -- a straight authorization-code exfiltration path.
+TRUSTED_LOOPBACK_HOSTS: frozenset[str] = frozenset(
+    {"localhost", "127.0.0.1", "::1"}
+)
+
+# Kept for backwards compatibility with anything importing the old name.
+TRUSTED_NON_ORIGIN_REDIRECT_PREFIXES: tuple[str, ...] = (
+    TRUSTED_CUSTOM_SCHEME_PREFIXES
+    + (
+        "http://localhost:",
+        "http://localhost/",
+        "http://127.0.0.1:",
+        "http://127.0.0.1/",
+        "http://[::1]:",
+        "http://[::1]/",
+    )
 )
 
 
@@ -128,17 +144,31 @@ def is_trusted_redirect_uri(
 
     Web origins are sourced from ``allowed_origins`` (typically
     ``config.server.allowed_origins``), so redirect trust follows the same
-    operator-controlled allowlist as CORS. Non-origin redirect forms (custom
-    URI schemes and loopback callbacks) are covered by
-    :data:`TRUSTED_NON_ORIGIN_REDIRECT_PREFIXES`.
+    operator-controlled allowlist as CORS. Non-origin redirect forms are
+    covered by :data:`TRUSTED_CUSTOM_SCHEME_PREFIXES` (desktop schemes) and
+    :data:`TRUSTED_LOOPBACK_HOSTS` (RFC 8252 loopback callbacks).
     """
     if not isinstance(redirect_uri, str):
         return False
     redirect_uri = redirect_uri.strip()
     if not redirect_uri:
         return False
-    if any(redirect_uri.startswith(p) for p in TRUSTED_NON_ORIGIN_REDIRECT_PREFIXES):
+    if any(redirect_uri.startswith(p) for p in TRUSTED_CUSTOM_SCHEME_PREFIXES):
         return True
+    # Loopback: resolve the real host instead of trusting the string shape,
+    # so userinfo tricks (``http://localhost:1@evil.example/cb``) don't slip
+    # through as "starts with http://localhost:".
+    try:
+        parsed = urlparse(redirect_uri)
+    except ValueError:
+        return False
+    if parsed.scheme == "http":
+        hostname = (parsed.hostname or "").strip().lower()
+        if hostname in TRUSTED_LOOPBACK_HOSTS:
+            return True
+        # Any other plaintext-HTTP callback is untrusted, full stop --
+        # never fall through to the origin allowlist for it.
+        return False
     if allowed_origins:
         for origin in allowed_origins:
             if not isinstance(origin, str) or not origin:
