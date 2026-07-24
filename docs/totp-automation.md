@@ -1,7 +1,7 @@
 # Automating the TOTP flow
 
 > [!CAUTION]
-> **Read this page end-to-end before automating anything.** Everything below describes how to derive BeaconMCP's second factor from a machine. Doing so **defeats the purpose of the second factor**: whoever holds the seed *is* the second factor. The recommended setup — the one documented in [README.md](../README.md#connecting-clients) — is to keep the TOTP seed in an authenticator app on a phone you physically control and type the 6-digit code by hand. Automation exists for a narrow set of legitimate cases (unattended services, CI pipelines, scheduled jobs on your own infra). If you are a human at a keyboard, do not automate this.
+> **Read this page end-to-end before automating anything.** Everything below describes how to derive BeaconMCP's second factor from a machine. Doing so **defeats the purpose of the second factor**: whoever holds the seed *is* the second factor. The recommended setup — the one documented in [security.md](security.md#totp) — is to keep the TOTP seed in an authenticator app on a phone you physically control and type the 6-digit code by hand. Automation exists for a narrow set of legitimate cases (unattended services, CI pipelines, scheduled jobs on your own infra). If you are a human at a keyboard, do not automate this.
 
 ---
 
@@ -15,7 +15,7 @@ Do **not** automate TOTP in any of these situations:
 - The seed would be pasted into a chat client, an LLM prompt, a notebook, or an IDE workspace.
 - The automation is a convenience shortcut ("I don't want to pick up my phone"). Pick up your phone.
 
-If any of these apply, stop reading and go back to the [regular connection flow](../README.md#connecting-clients).
+If any of these apply, stop reading and go back to the [regular connection flow](clients.md).
 
 ## When automation is (reluctantly) acceptable
 
@@ -126,4 +126,4 @@ Then rotate the seed and the client secret, and audit recent tool calls in the B
 
 ---
 
-Back to the normal flow: [Connecting clients](../README.md#connecting-clients).
+Back to the normal flow: [Client setup](clients.md).
