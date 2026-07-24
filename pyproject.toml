@@ -36,9 +36,9 @@ dev = ["pytest", "pytest-asyncio", "ruff"]
 beaconmcp = "beaconmcp.__main__:main"
 
 [tool.hatch.build.targets.wheel]
-# Templates, static assets and the logo live inside the package directory, so
-# hatchling already ships them. Re-declaring them under force-include made the
-# build abort on a duplicate archive entry.
+# Templates, static assets and the logo already ship with the package
+# directory; re-declaring them under force-include aborted the build on a
+# duplicate archive entry.
 packages = ["src/beaconmcp"]
 
 [tool.ruff]

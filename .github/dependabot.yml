@@ -13,6 +13,3 @@ updates:
       interval: monthly
     commit-message:
       prefix: "chore(deps)"
-    # Dependencies are unpinned ranges in pyproject.toml; only security-
-    # relevant bumps are worth a PR here.
-    open-pull-requests-limit: 5
