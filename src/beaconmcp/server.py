@@ -1,5 +1,4 @@
 import base64
-import functools
 import inspect
 import os
 from pathlib import Path
@@ -22,7 +21,7 @@ from .security.tools import register_security_tools
 from .ssh.client import SSHClient
 from .ssh.tools import register_ssh_tools
 
-from functools import wraps
+from functools import partial, wraps
 import time
 from . import audit
 from .auth import current_client_id
@@ -155,7 +154,7 @@ def _metric_tool(*args, **kwargs):
                 if is_coro:
                     return await func(*f_args, **f_kwargs)
                 return await anyio.to_thread.run_sync(
-                    functools.partial(func, *f_args, **f_kwargs)
+                    partial(func, *f_args, **f_kwargs)
                 )
             except Exception:
                 status = "error"

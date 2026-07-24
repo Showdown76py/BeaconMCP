@@ -1,7 +1,9 @@
 name: CI
 
 on:
+  # Branch-scoped so a push to a branch with an open PR doesn't run twice.
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -19,9 +21,10 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
 
       - name: Install dependencies
-        run: pip install -e ".[wizard]" pytest pytest-asyncio ruff
+        run: pip install -e ".[wizard,dev]"
 
       - name: Lint
         run: ruff check src/ tests/

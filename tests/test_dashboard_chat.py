@@ -14,6 +14,7 @@ from starlette.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from beaconmcp.auth import TotpResult
 from beaconmcp.dashboard.app import BEARER_TTL_SECONDS, DashboardDeps, build_dashboard_routes
 from beaconmcp.dashboard.chat import (
     ErrorEvent,
@@ -33,7 +34,8 @@ from beaconmcp.dashboard.session import SessionStore
 
 class FakeClientStore:
     def verify(self, cid, sec): return cid == "c" and sec == "s"
-    def verify_totp(self, cid, code): return code == "123456"
+    def check_totp(self, cid, code):
+        return TotpResult.OK if code == "123456" else TotpResult.INVALID
     def get_name(self, cid): return "Test"
 
 

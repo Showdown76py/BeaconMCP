@@ -48,7 +48,7 @@ zone-wide if you cannot scope it.
 Rule expression (copy-paste into the *Edit expression* box):
 
 ```
-(http.request.uri.path contains "/mcp") or (http.request.uri.path contains "/oauth/") or (starts_with(http.request.uri.path, "/.well-known/"))
+(starts_with(http.request.uri.path, "/mcp")) or (starts_with(http.request.uri.path, "/oauth/")) or (starts_with(http.request.uri.path, "/.well-known/"))
 ```
 
 Action: **Skip**, and check every relevant box:
@@ -61,6 +61,15 @@ Action: **Skip**, and check every relevant box:
 
 Place this rule **first** in the custom-rules list so it short-circuits before
 anything blocks the request.
+
+> **What you give up, and what replaces it.** This rule removes Cloudflare's
+> protection from your *authentication* endpoints, which is not a decision to
+> make blindly. BeaconMCP enforces its own equivalents on those paths: a
+> per-IP rate limit on `/oauth/token` and `/authorize`, a 5-strike / 5-minute
+> TOTP lockout per client, and mandatory OAuth 2.1 + TOTP on every exchange.
+> That is why skipping is safe *here* and only here — keep the expression
+> anchored with `starts_with` so it can't widen to the rest of your zone.
+> (`contains "/mcp"` would also match `/anything/mcp-foo`.)
 
 > The paths cover the MCP endpoint (`/mcp`, `/mcp/c/<slug>`), the OAuth
 > authorization/token/registration endpoints (`/oauth/...`), and RFC 9728 /
@@ -152,7 +161,10 @@ Checks:
 - A **401** whose JSON body contains a `hint` about `cf-ray` even though you
   *did* send a valid bearer → Access/WAF stripped your `Authorization` header.
   Revisit §2. BeaconMCP logs the matching warning to
-  `journalctl -u beaconmcp` (look for `cf-ray=` + "Cloudflare").
+  `journalctl -u beaconmcp` (look for `cf-ray=` + "Cloudflare"). That warning
+  is throttled to one line per 5 minutes — a public endpoint gets scanned
+  constantly and every drive-by hit carries a `cf-ray` — so the line reports
+  how many similar events it stands for rather than one line per request.
 - A clean `401 {"error":"unauthorized"}` with no bearer, and a `200` with a
   valid bearer → everything is wired correctly.
 

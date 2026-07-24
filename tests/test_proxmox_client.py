@@ -1,9 +1,9 @@
-"""Tests for the thread-safety of :class:`ProxmoxClient`'s connection cache.
+"""Tests for :class:`ProxmoxClient`'s connection cache.
 
-Sync Proxmox tools now run on a worker-thread pool (see
-``server._metric_tool``), so ``_get_connection`` is hit concurrently. The
-cache must hand back a valid connection from every thread, create exactly
-one connection per node, and never corrupt the backing dict.
+A ProxmoxAPI wraps a requests.Session, which is not thread-safe. Sync Proxmox
+tools now run on a worker-thread pool (see ``server._metric_tool``), so the
+cache is per-thread: every thread gets its own connection object, and no two
+threads are ever handed the same one.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from requests.exceptions import ConnectionError as RequestsConnectionError
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
@@ -63,7 +64,7 @@ def fake_proxmox_api(monkeypatch: pytest.MonkeyPatch) -> list[object]:
     return built
 
 
-def test_get_connection_caches_per_node(fake_proxmox_api: list[object]) -> None:
+def test_get_connection_caches_within_a_thread(fake_proxmox_api: list[object]) -> None:
     c = ProxmoxClient(_FakeConfig(["pve1"]))
     first = c._get_connection("pve1")
     second = c._get_connection("pve1")
@@ -71,22 +72,19 @@ def test_get_connection_caches_per_node(fake_proxmox_api: list[object]) -> None:
     assert len(fake_proxmox_api) == 1
 
 
-def test_get_connection_unknown_node_raises(
-    fake_proxmox_api: list[object],
-) -> None:
+def test_get_connection_unknown_node_raises(fake_proxmox_api: list[object]) -> None:
     c = ProxmoxClient(_FakeConfig(["pve1"]))
     with pytest.raises(NodeNotFoundError):
         c._get_connection("nope")
 
 
-def test_concurrent_get_connection_single_node(
-    fake_proxmox_api: list[object],
-) -> None:
-    """Many threads racing for the same node all get a valid, identical
-    connection and the cache is not corrupted."""
+def test_each_thread_gets_its_own_connection(fake_proxmox_api: list[object]) -> None:
+    """The point of the thread-local cache: no two threads share a ProxmoxAPI,
+    and therefore never share a requests.Session."""
     c = ProxmoxClient(_FakeConfig(["pve1"]))
 
-    barrier = threading.Barrier(20)
+    n_threads = 20
+    barrier = threading.Barrier(n_threads)
     results: list[object] = []
     errors: list[Exception] = []
     lock = threading.Lock()
@@ -95,31 +93,28 @@ def test_concurrent_get_connection_single_node(
         barrier.wait()
         try:
             conn = c._get_connection("pve1")
+            # Within one thread the cache must still hold.
+            assert c._get_connection("pve1") is conn
             with lock:
                 results.append(conn)
-        except Exception as e:  # pragma: no cover - failure path
+        except Exception as e:
             with lock:
                 errors.append(e)
 
-    threads = [threading.Thread(target=worker) for _ in range(20)]
+    threads = [threading.Thread(target=worker) for _ in range(n_threads)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
 
     assert not errors, f"unexpected errors: {errors}"
-    assert len(results) == 20
-    # Every thread observed the exact same cached connection object.
-    assert all(r is results[0] for r in results)
-    # The cache holds exactly one entry for the node.
-    assert list(c._connections) == ["pve1"]
+    assert len({id(r) for r in results}) == n_threads
+    assert len(fake_proxmox_api) == n_threads
 
 
-def test_concurrent_get_connection_many_nodes(
-    fake_proxmox_api: list[object],
-) -> None:
-    """Threads hammering several distinct nodes end up with one connection
-    per node and no dropped/duplicated cache entries."""
+def test_concurrent_get_connection_many_nodes(fake_proxmox_api: list[object]) -> None:
+    """Threads hammering several distinct nodes always get the connection for
+    the node they asked for."""
     node_names = [f"pve{i}" for i in range(8)]
     c = ProxmoxClient(_FakeConfig(node_names))
 
@@ -131,9 +126,8 @@ def test_concurrent_get_connection_many_nodes(
         barrier.wait()
         try:
             for _ in range(5):
-                conn = c._get_connection(name)
-                assert conn.host == f"{name}.example.com"
-        except Exception as e:  # pragma: no cover - failure path
+                assert c._get_connection(name).host == f"{name}.example.com"
+        except Exception as e:
             with lock:
                 errors.append(e)
 
@@ -148,4 +142,41 @@ def test_concurrent_get_connection_many_nodes(
         t.join()
 
     assert not errors, f"unexpected errors: {errors}"
-    assert sorted(c._connections) == sorted(node_names)
+
+
+class _DeadEndpoint:
+    """Stands in for ``conn.nodes``; fails the way a dropped socket does."""
+
+    def get(self, **_kwargs: object) -> None:
+        raise RequestsConnectionError("socket died")
+
+
+def test_transient_error_evicts_only_the_calling_thread(
+    fake_proxmox_api: list[object],
+) -> None:
+    """A retry drops the failing thread's socket without yanking the
+    connection out from under another thread that may be mid-request on it."""
+    c = ProxmoxClient(_FakeConfig(["pve1"]))
+    primed = threading.Event()
+    main_done = threading.Event()
+    seen: list[object] = []
+
+    def worker() -> None:
+        seen.append(c._get_connection("pve1"))
+        primed.set()
+        main_done.wait(timeout=10)
+        seen.append(c._get_connection("pve1"))
+
+    t = threading.Thread(target=worker)
+    t.start()
+    assert primed.wait(timeout=10)
+
+    c._get_connection("pve1").nodes = _DeadEndpoint()  # type: ignore[attr-defined]
+    assert "error" in c.api_call("pve1", "get", "nodes")
+
+    main_done.set()
+    t.join(timeout=10)
+
+    # The worker's connection survived the main thread's eviction.
+    assert len(seen) == 2
+    assert seen[1] is seen[0]

@@ -2,6 +2,8 @@ import argparse
 import logging
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -109,6 +111,35 @@ _CF_HINT = (
     "see docs/cloudflare.md"
 )
 
+# A public /mcp endpoint gets scanned continuously, and every one of those
+# unauthenticated hits carries a cf-ray. Logging each one hands any anonymous
+# caller a journal-flooding lever, so the warning is throttled: it exists to
+# tell an operator "your edge is eating the header", which one line per
+# interval conveys just as well as ten thousand.
+_CF_LOG_INTERVAL_SECONDS = 300.0
+_cf_log_state = {"last": 0.0, "suppressed": 0}
+_cf_log_lock = threading.Lock()
+
+
+def _log_cloudflare_unauthorized(cf_ray: str) -> None:
+    now = time.monotonic()
+    with _cf_log_lock:
+        elapsed = now - _cf_log_state["last"]
+        if _cf_log_state["last"] and elapsed < _CF_LOG_INTERVAL_SECONDS:
+            _cf_log_state["suppressed"] += 1
+            return
+        suppressed = _cf_log_state["suppressed"]
+        _cf_log_state["last"] = now
+        _cf_log_state["suppressed"] = 0
+
+    _logger.warning(
+        "Unauthorized MCP request proxied by Cloudflare (cf-ray=%s) with no "
+        "valid Authorization header. A Cloudflare WAF/Access/Bot-Fight-Mode "
+        "rule is likely stripping or blocking it. See docs/cloudflare.md.%s",
+        cf_ray,
+        f" ({suppressed} similar suppressed)" if suppressed else "",
+    )
+
 
 def _build_unauthorized_body(headers, *, error: str) -> dict:
     """Build the JSON body for a 401 on an MCP/OAuth-protected request.
@@ -117,20 +148,16 @@ def _build_unauthorized_body(headers, *, error: str) -> dict:
     minimal: ``{"error": "unauthorized"}``. When the request carries
     Cloudflare's ``cf-ray`` edge header but no usable bearer, that strongly
     signals an edge rule ate the ``Authorization`` header, so we enrich the
-    body with a ``hint`` pointing at the Cloudflare guide and emit a warning
-    (the operator sees this in ``journalctl -u beaconmcp``). The 401 status
-    and ``WWW-Authenticate`` header are set by the caller and never change --
-    OAuth discovery depends on them.
+    body with a ``hint`` pointing at the Cloudflare guide and emit a throttled
+    warning (the operator sees this in ``journalctl -u beaconmcp``). The 401
+    status and ``WWW-Authenticate`` header are set by the caller and never
+    change -- OAuth discovery depends on them.
     """
     body: dict[str, str] = {"error": error}
-    if headers.get(_CF_EDGE_HEADER):
+    cf_ray = headers.get(_CF_EDGE_HEADER)
+    if cf_ray:
         body["hint"] = _CF_HINT
-        _logger.warning(
-            "Unauthorized MCP request proxied by Cloudflare (cf-ray=%s) with no "
-            "valid Authorization header. A Cloudflare WAF/Access/Bot-Fight-Mode "
-            "rule is likely stripping or blocking it. See docs/cloudflare.md.",
-            headers.get(_CF_EDGE_HEADER),
-        )
+        _log_cloudflare_unauthorized(cf_ray)
     return body
 
 
@@ -407,7 +434,6 @@ def _cmd_auth(args):
 def _run_http(mcp, host: str, port: int):
     """Run the MCP server over Streamable HTTP with OAuth client credentials."""
     import html
-    import time
     import uvicorn
     from contextlib import asynccontextmanager
     from starlette.applications import Starlette
@@ -421,7 +447,14 @@ def _run_http(mcp, host: str, port: int):
 
     from . import audit
     from . import auth
-    from .auth import ClientStore, CodeStore, TokenStore, current_bearer_token
+    from .auth import (
+        TOTP_REPLAY_MESSAGE,
+        ClientStore,
+        CodeStore,
+        TokenStore,
+        TotpResult,
+        current_bearer_token,
+    )
     from .ratelimit import RateLimiter, client_ip
     from .server import config
 
@@ -897,15 +930,24 @@ h1 {{ margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015
             return _render_authorize_form(normalized, locked=True)
 
         code_totp = body.get("totp", "")
-        if not client_store.verify_totp(client_id, code_totp):
-            totp_record_failure(client_id)
+        totp_result = client_store.check_totp(client_id, code_totp)
+        if totp_result is not TotpResult.OK:
+            # A replayed code is the operator re-submitting one they already
+            # spent, not an attack -- it must not count towards the lockout.
+            if totp_result is TotpResult.INVALID:
+                totp_record_failure(client_id)
             audit.emit(
                 "auth.authorize.fail", client_id=client_id,
+                reason=totp_result.value,
                 ip=client_ip(request, tuple(config.server.trusted_proxies)),
             )
             return _render_authorize_form(
                 normalized,
-                error="Incorrect code. Check that your device clock is in sync.",
+                error=(
+                    TOTP_REPLAY_MESSAGE
+                    if totp_result is TotpResult.REPLAY
+                    else "Incorrect code. Check that your device clock is in sync."
+                ),
                 locked=totp_locked(client_id),
             )
         totp_record_success(client_id)
@@ -970,12 +1012,19 @@ h1 {{ margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015
                     status_code=400,
                 )
             code_totp = body.get("totp", "")
-            if not client_store.verify_totp(client_id, code_totp):
-                totp_record_failure(client_id)
+            totp_result = client_store.check_totp(client_id, code_totp)
+            if totp_result is not TotpResult.OK:
+                # Replays don't count towards the lockout -- see /authorize.
+                if totp_result is TotpResult.INVALID:
+                    totp_record_failure(client_id)
                 return JSONResponse(
                     {
                         "error": "invalid_grant",
-                        "error_description": "missing or invalid totp",
+                        "error_description": (
+                            "totp code already used"
+                            if totp_result is TotpResult.REPLAY
+                            else "missing or invalid totp"
+                        ),
                     },
                     status_code=400,
                 )

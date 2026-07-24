@@ -28,12 +28,33 @@ import time
 from collections.abc import Iterable
 from contextvars import ContextVar
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
 import pyotp
 
 _logger = logging.getLogger("beaconmcp.auth")
+
+
+class TotpResult(Enum):
+    """Outcome of :meth:`ClientStore.check_totp`."""
+
+    OK = "ok"
+    #: Wrong, malformed, or expired code -- a real failed auth attempt.
+    INVALID = "invalid"
+    #: Correct code, but already spent in this 30 s step. Not an attack:
+    #: the operator hit a second 2FA prompt before the code rolled over.
+    REPLAY = "replay"
+
+
+#: Shown to the operator when a correct-but-already-used code is submitted.
+#: The distinction matters -- "invalid code" sends people hunting for a clock
+#: skew problem they don't have.
+TOTP_REPLAY_MESSAGE = (
+    "That 2FA code was already used. Wait for your authenticator to show the "
+    "next one, then try again."
+)
 
 
 # Populated by the HTTP auth middleware at the start of each request and
@@ -313,7 +334,7 @@ class ClientStore:
         client = self._clients.get(client_id)
         return client.name if client else None
 
-    def verify_totp(self, client_id: str, code: str) -> bool:
+    def check_totp(self, client_id: str, code: str) -> TotpResult:
         """Validate a TOTP code for a given client.
 
         Uses a ±1 step (±30 s) window so a clock drift between the server and
@@ -331,22 +352,29 @@ class ClientStore:
         reject any code whose matched step is not strictly newer. Keying on
         the owner (not the client) ensures two clients sharing one owner's
         seed cannot each replay the same code.
+
+        ``REPLAY`` is reported separately from ``INVALID`` because the two
+        need different handling: a genuinely wrong code is a failed auth
+        attempt and must count towards the lockout, whereas re-submitting a
+        code the operator already spent (a second 2FA prompt inside the same
+        30 s step, a browser POST replay) is an honest mistake. Counting it
+        as a failure would lock a legitimate operator out for 5 minutes.
         """
         client = self._clients.get(client_id)
         if not client:
-            return False
+            return TotpResult.INVALID
         if not code or not code.isdigit() or len(code) != 6:
-            return False
+            return TotpResult.INVALID
 
         if client.owner_client_id is not None:
             owner = self._clients.get(client.owner_client_id)
             if owner is None or not owner.totp_secret:
-                return False
+                return TotpResult.INVALID
             seed = owner.totp_secret
             replay_key = client.owner_client_id
         else:
             if not client.totp_secret:
-                return False
+                return TotpResult.INVALID
             seed = client.totp_secret
             replay_key = client_id
 
@@ -361,16 +389,21 @@ class ClientStore:
                 matched_step = current_step + offset
                 break
         if matched_step is None:
-            return False
+            return TotpResult.INVALID
 
         # Reject replays: the matched step must be strictly newer than the
         # last one accepted for this owner.
         with self._totp_lock:
             last = self._last_totp_step.get(replay_key)
             if last is not None and matched_step <= last:
-                return False
+                return TotpResult.REPLAY
             self._last_totp_step[replay_key] = matched_step
-        return True
+        return TotpResult.OK
+
+    def verify_totp(self, client_id: str, code: str) -> bool:
+        """Boolean form of :meth:`check_totp` for callers that don't need to
+        tell a replay apart from a wrong code."""
+        return self.check_totp(client_id, code) is TotpResult.OK
 
     def list_clients(self) -> list[dict[str, Any]]:
         """List all registered clients (without secrets)."""
