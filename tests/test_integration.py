@@ -322,7 +322,7 @@ def test_proxmox_exec(runner: TestRunner, tools: dict) -> None:
     result = call_tool(tools, "proxmox_run", node="pve1", vmid=vmid,
                        command="cat /etc/hostname", timeout=30)
     runner.record(
-        f"proxmox_run 'cat /etc/hostname' returns exit_code 0",
+        "proxmox_run 'cat /etc/hostname' returns exit_code 0",
         isinstance(result, dict) and result.get("exit_code") == 0,
         f"exit_code = {result.get('exit_code')}, stdout = {result.get('stdout', '')[:100]}",
         result,
@@ -431,7 +431,7 @@ def test_proxmox_vm_lifecycle(runner: TestRunner, tools: dict, test_vmid: int | 
     runner.record(
         f"proxmox_vm_config (read) for VMID {test_vmid}",
         isinstance(result, dict) and ("config" in result or "error" in result),
-        f"Expected config or error",
+        "Expected config or error",
         result,
     )
 
@@ -456,7 +456,7 @@ def test_proxmox_vm_lifecycle(runner: TestRunner, tools: dict, test_vmid: int | 
             f"Expected UPID, got: {result}",
             result,
         )
-        print(f"  Waiting 10s for VM to stop...")
+        print("  Waiting 10s for VM to stop...")
         time.sleep(10)
 
     # T15: Start
@@ -468,7 +468,7 @@ def test_proxmox_vm_lifecycle(runner: TestRunner, tools: dict, test_vmid: int | 
         result,
     )
     if isinstance(result, dict) and "upid" in result:
-        print(f"  Waiting 10s for VM to start...")
+        print("  Waiting 10s for VM to start...")
         time.sleep(10)
 
     # T16: Verify it's running
@@ -512,7 +512,7 @@ def test_proxmox_vm_lifecycle(runner: TestRunner, tools: dict, test_vmid: int | 
 
     # Cleanup: delete the clone if it was created
     if isinstance(result, dict) and "upid" in result:
-        print(f"  Waiting 15s for clone to complete...")
+        print("  Waiting 15s for clone to complete...")
         time.sleep(15)
         # Stop clone if running, then delete
         call_tool(tools, "proxmox_vm_stop", node="pve1", vmid=clone_id, force=True)
@@ -880,7 +880,7 @@ def main() -> None:
     runner = TestRunner()
     tools = get_tools()
 
-    print(f"\nBeaconMCP Integration Tests")
+    print("\nBeaconMCP Integration Tests")
     print(f"Tools registered: {len(tools)}")
     print(f"Section: {args.section}")
     if args.test_vmid:

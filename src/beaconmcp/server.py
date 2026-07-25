@@ -1,6 +1,9 @@
 import base64
+import inspect
 import os
 from pathlib import Path
+
+import anyio
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -18,7 +21,7 @@ from .security.tools import register_security_tools
 from .ssh.client import SSHClient
 from .ssh.tools import register_ssh_tools
 
-from functools import wraps
+from functools import partial, wraps
 import time
 from . import audit
 from .auth import current_client_id
@@ -127,17 +130,32 @@ mcp = FastMCP(
 )
 
 
-# Wrap mcp.tool to inject metrics tracking
+# Wrap mcp.tool to inject metrics tracking.
+#
+# FastMCP (mcp 1.27) runs sync tool functions INLINE in the asyncio event
+# loop -- it never offloads them to a thread. Most Proxmox tools are sync
+# ``def`` wrappers around blocking proxmoxer calls (5s timeout x 2 retries),
+# so a single unreachable node would otherwise freeze the entire server.
+# We therefore make EVERY registered tool async from FastMCP's view and push
+# sync bodies onto a worker thread, keeping blocking work off the event loop.
+# ``@wraps(func)`` preserves the original signature so FastMCP still derives
+# the tool input schema correctly.
 _orig_tool = mcp.tool
 def _metric_tool(*args, **kwargs):
     def decorator(func):
         tool_name = func.__name__
+        is_coro = inspect.iscoroutinefunction(func)
+
         @wraps(func)
-        async def async_wrapper(*f_args, **f_kwargs):
+        async def wrapper(*f_args, **f_kwargs):
             start = time.monotonic()
             status = "ok"
             try:
-                return await func(*f_args, **f_kwargs)
+                if is_coro:
+                    return await func(*f_args, **f_kwargs)
+                return await anyio.to_thread.run_sync(
+                    partial(func, *f_args, **f_kwargs)
+                )
             except Exception:
                 status = "error"
                 raise
@@ -151,33 +169,7 @@ def _metric_tool(*args, **kwargs):
                     client_id=current_client_id(), args=audit.compact_args(f_kwargs),
                 )
 
-        @wraps(func)
-        def sync_wrapper(*f_args, **f_kwargs):
-            start = time.monotonic()
-            status = "ok"
-            try:
-                return func(*f_args, **f_kwargs)
-            except Exception:
-                status = "error"
-                raise
-            finally:
-                latency = (time.monotonic() - start) * 1000
-                tool_calls.inc(tool=tool_name, status=status)
-                tool_latency_ms.observe(latency, tool=tool_name)
-                audit.emit(
-                    "tool.call", tool=tool_name, status=status,
-                    duration_ms=round(latency, 1),
-                    client_id=current_client_id(), args=audit.compact_args(f_kwargs),
-                )
-                
-        
-        import inspect
-        if inspect.iscoroutinefunction(func):
-            wrapped = async_wrapper
-        else:
-            wrapped = sync_wrapper
-
-        return _orig_tool(*args, **kwargs)(wrapped)
+        return _orig_tool(*args, **kwargs)(wrapper)
     return decorator
 mcp.tool = _metric_tool
 

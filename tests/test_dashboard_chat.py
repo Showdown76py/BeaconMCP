@@ -14,13 +14,13 @@ from starlette.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from beaconmcp.auth import TotpResult
 from beaconmcp.dashboard.app import BEARER_TTL_SECONDS, DashboardDeps, build_dashboard_routes
 from beaconmcp.dashboard.chat import (
     ErrorEvent,
     FakeChatEngine,
     FakeScript,
     TextDelta,
-    ThinkingDelta,
     ToolCallEnd,
     ToolCallStart,
     ToolConfirmRequired,
@@ -34,7 +34,8 @@ from beaconmcp.dashboard.session import SessionStore
 
 class FakeClientStore:
     def verify(self, cid, sec): return cid == "c" and sec == "s"
-    def verify_totp(self, cid, code): return code == "123456"
+    def check_totp(self, cid, code):
+        return TotpResult.OK if code == "123456" else TotpResult.INVALID
     def get_name(self, cid): return "Test"
 
 
@@ -569,7 +570,8 @@ def test_chat_stream_ssh_tool_emits_confirm_event(app_and_client, engine, deps):
     """ssh_run triggers a tool_confirm_required SSE frame and the
     engine must wait for a decision via /app/api/chat/confirm.
     """
-    import threading, time as _t
+    import threading
+    import time as _t
 
     engine.script = FakeScript(events=[
         ToolCallStart(id="tc1", name="ssh_run", args={"host": "pve1", "command": "ls"}),

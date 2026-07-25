@@ -1,4 +1,3 @@
-import pytest
 from unittest.mock import MagicMock
 from beaconmcp.proxmox.vms import register_vm_tools
 

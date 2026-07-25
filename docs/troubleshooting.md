@@ -13,6 +13,7 @@
 | `SSH connection to 'X' failed` | SSH auth disabled or firewall dropping the connection | `grep PasswordAuthentication /etc/ssh/sshd_config` on the target; check firewall rules. |
 | `invalid_client` | Wrong client id or secret | `beaconmcp auth list` to confirm the id, re-check the secret (or revoke + recreate). |
 | `421 Misdirected Request` | Public hostname missing from the DNS-rebinding allowlist | Add the FQDN under `server.allowed_hosts` in `beaconmcp.yaml` (or `BEACONMCP_ALLOWED_HOSTS` in `.env`), then restart. |
+| MCP returns 401/403 only via the public Cloudflare URL (works on `localhost`) | Cloudflare Bot Fight Mode / WAF blocks the headless MCP client, or Cloudflare Access strips the `Authorization` header | Add a WAF skip rule + cache bypass for the MCP/OAuth paths and exclude `/mcp` from Access. See **[docs/cloudflare.md](cloudflare.md)**. A 401 body whose `hint` mentions `cf-ray` confirms the header was stripped at the edge. |
 | `{"error":"unauthorized"}` on `/authorize` | Client id not registered server-side | Create the client with `beaconmcp auth create`, then paste the returned id into the connector. |
 | `invalid_grant` with `missing or invalid totp` | 2FA code wrong, expired (>30 s), or already used | Generate a fresh code. Compare the server clock against the phone (`timedatectl` vs. authenticator). |
 | `Too many attempts` on the 2FA page | 5 consecutive failed TOTP codes triggered a 5-minute lockout | Wait. The counter resets on the next valid code. |

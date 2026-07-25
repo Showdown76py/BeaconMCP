@@ -173,7 +173,7 @@ curl http://localhost:8420/health
 
 ### 5. Expose publicly
 
-Place BeaconMCP behind a reverse proxy that terminates TLS and forwards the public hostname to `http://localhost:8420`. Declare that hostname under `server.allowed_hosts` in `beaconmcp.yaml`; without it the MCP SDK rejects incoming requests with `421 Misdirected Request` (DNS-rebinding protection). If you're proxying through Cloudflare, add `cloudflare` to `server.trusted_proxies` so BeaconMCP can safely trust forwarded client IPs for auth rate limiting.
+Place BeaconMCP behind a reverse proxy that terminates TLS and forwards the public hostname to `http://localhost:8420`. Declare that hostname under `server.allowed_hosts` in `beaconmcp.yaml`; without it the MCP SDK rejects incoming requests with `421 Misdirected Request` (DNS-rebinding protection). If you're proxying through Cloudflare, add `cloudflare` to `server.trusted_proxies` so BeaconMCP can safely trust forwarded client IPs for auth rate limiting. Cloudflare's bot/WAF/Access defaults block headless MCP clients or strip the `Authorization` header — see [docs/cloudflare.md](docs/cloudflare.md) for the required skip and cache-bypass rules.
 
 ### 6. Updating BeaconMCP
 

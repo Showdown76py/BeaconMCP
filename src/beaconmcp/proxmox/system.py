@@ -12,7 +12,6 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from ..utils import filter_fields
 from .client import ProxmoxClient
 
 

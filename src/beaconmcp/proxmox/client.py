@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Any
 
@@ -26,11 +27,27 @@ class ProxmoxClient:
 
     def __init__(self, config: Config) -> None:
         self._config = config
-        self._connections: dict[str, ProxmoxAPI] = {}
+        # A ProxmoxAPI wraps a requests.Session, which is not thread-safe.
+        # Sync tools now run on a worker-thread pool (see server._metric_tool),
+        # so a shared cache would hand the same Session to several threads at
+        # once. Each thread gets its own connection per node instead: no lock,
+        # no shared mutable state, and full parallelism across nodes. Worker
+        # threads are pooled and long-lived, so the cache still pays off.
+        self._local = threading.local()
+
+    def _cache(self) -> dict[str, ProxmoxAPI]:
+        """Return the calling thread's node -> connection cache."""
+        cache = getattr(self._local, "connections", None)
+        if cache is None:
+            cache = {}
+            self._local.connections = cache
+        return cache
 
     def _get_connection(self, node_name: str) -> ProxmoxAPI:
-        if node_name in self._connections:
-            return self._connections[node_name]
+        cache = self._cache()
+        conn = cache.get(node_name)
+        if conn is not None:
+            return conn
 
         pve_node = self._config.get_node(node_name)
         if not pve_node:
@@ -43,7 +60,7 @@ class ProxmoxClient:
             token_value=pve_node.token_secret,
             verify_ssl=self._config.verify_ssl,
         )
-        self._connections[node_name] = conn
+        cache[node_name] = conn
         return conn
 
     def api_call(self, node_name: str, method: str, path: str, **kwargs: Any) -> Any:
@@ -65,9 +82,10 @@ class ProxmoxClient:
                 raise
             except (ConnectionError, Timeout) as e:
                 last_exc = e
-                # Drop the cached connection so the retry rebuilds TLS state
-                # rather than re-using a half-broken socket.
-                self._connections.pop(node_name, None)
+                # Drop this thread's cached connection so the retry rebuilds
+                # TLS state rather than re-using a half-broken socket. Other
+                # threads keep their own healthy sessions.
+                self._cache().pop(node_name, None)
                 if attempt + 1 < _RETRY_ATTEMPTS:
                     _logger.warning(
                         "transient error on %s %s (attempt %d/%d): %s",

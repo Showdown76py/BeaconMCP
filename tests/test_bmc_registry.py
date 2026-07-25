@@ -6,9 +6,8 @@ import pytest
 
 from beaconmcp.bmc import build_registry
 from beaconmcp.bmc.hp_ilo import HPILOBackend
-from beaconmcp.bmc.idrac import IDRACStubBackend
 from beaconmcp.bmc.ipmi import GenericIPMIBackend
-from beaconmcp.bmc.supermicro import SupermicroStubBackend
+from beaconmcp.bmc.redfish import RedfishBackend
 from beaconmcp.config import (
     BMCDevice,
     Config,
@@ -64,8 +63,9 @@ def test_multiple_mixed_devices() -> None:
     assert set(registry.keys()) == {"ilo", "ipmi", "dell", "smci"}
     assert isinstance(registry["ilo"], HPILOBackend)
     assert isinstance(registry["ipmi"], GenericIPMIBackend)
-    assert isinstance(registry["dell"], IDRACStubBackend)
-    assert isinstance(registry["smci"], SupermicroStubBackend)
+    # idrac and supermicro device types both build to the universal Redfish backend.
+    assert isinstance(registry["dell"], RedfishBackend)
+    assert isinstance(registry["smci"], RedfishBackend)
 
 
 def test_unknown_type_raises_at_startup() -> None:
@@ -77,11 +77,23 @@ def test_unknown_type_raises_at_startup() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stub_backend_returns_error() -> None:
+async def test_redfish_backend_returns_error_when_unreachable() -> None:
+    # An idrac device builds to RedfishBackend; with no real network the
+    # underlying httpx request fails and power_status() surfaces an error dict
+    # rather than raising.
     cfg = _make_config(
-        [BMCDevice(id="dell", type="idrac", host="10.0.0.12", user="a", password="z")]
+        [
+            BMCDevice(
+                id="dell",
+                type="idrac",
+                host="127.0.0.1:1",  # unreachable: nothing listening here
+                user="a",
+                password="z",
+            )
+        ]
     )
     registry = build_registry(cfg)
+    assert isinstance(registry["dell"], RedfishBackend)
     result = await registry["dell"].power_status()
+    assert isinstance(result, dict)
     assert "error" in result
-    assert "iDRAC" in result["error"]

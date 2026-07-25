@@ -28,6 +28,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
 from .. import audit
+from ..auth import TOTP_REPLAY_MESSAGE, TotpResult
 from . import csrf as csrf
 from .chat import (
     ChatEngine,
@@ -223,6 +224,25 @@ def _bearer_live(deps: DashboardDeps, session: Session) -> bool:
     return True
 
 
+def _check_totp(deps: DashboardDeps, client_id: str, code: str) -> TotpResult:
+    """Check a 2FA code, recording a lockout strike only for a wrong one.
+
+    The dashboard prompts for 2FA on several actions (login, minting a token,
+    adding a connector). Doing two of them inside the same 30 s step means the
+    authenticator still shows the code the operator just spent, so a replay is
+    an ordinary mistake -- counting it towards the 5-strike lockout would lock
+    a legitimate operator out of their own panel.
+    """
+    result = deps.client_store.check_totp(client_id, code)  # type: ignore[attr-defined]
+    if result is TotpResult.INVALID:
+        deps.totp_record_failure(client_id)
+    return result
+
+
+def _totp_error(result: TotpResult, invalid_message: str) -> str:
+    return TOTP_REPLAY_MESSAGE if result is TotpResult.REPLAY else invalid_message
+
+
 # ---------------------------------------------------------------------------
 # Route factories
 # ---------------------------------------------------------------------------
@@ -319,11 +339,17 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                 locked=True,
             )
 
-        if not deps.client_store.verify_totp(client_id, totp):  # type: ignore[attr-defined]
-            deps.totp_record_failure(client_id)
-            audit.emit("dashboard.login.fail", client_id=client_id, reason="totp")
+        totp_result = _check_totp(deps, client_id, totp)
+        if totp_result is not TotpResult.OK:
+            audit.emit(
+                "dashboard.login.fail", client_id=client_id,
+                reason=f"totp:{totp_result.value}",
+            )
             return _fail(
-                "Invalid 2FA code. Check that your device clock is in sync.",
+                _totp_error(
+                    totp_result,
+                    "Invalid 2FA code. Check that your device clock is in sync.",
+                ),
                 status=401,
                 locked=deps.totp_locked(client_id),
             )
@@ -410,10 +436,10 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                 status=429, locked=True,
             )
 
-        if not deps.client_store.verify_totp(session.client_id, totp):  # type: ignore[attr-defined]
-            deps.totp_record_failure(session.client_id)
+        totp_result = _check_totp(deps, session.client_id, totp)
+        if totp_result is not TotpResult.OK:
             return _fail(
-                "Invalid 2FA code.",
+                _totp_error(totp_result, "Invalid 2FA code."),
                 status=401,
                 locked=deps.totp_locked(session.client_id),
             )
@@ -529,11 +555,11 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                 form_error="Too many 2FA attempts; try again in 5 minutes.",
                 form_name=name,
             )
-        if not deps.client_store.verify_totp(session.client_id, totp):  # type: ignore[attr-defined]
-            deps.totp_record_failure(session.client_id)
+        totp_result = _check_totp(deps, session.client_id, totp)
+        if totp_result is not TotpResult.OK:
             return _render_tokens_page(
                 request, session, deps,
-                form_error="Invalid 2FA code.",
+                form_error=_totp_error(totp_result, "Invalid 2FA code."),
                 form_name=name,
             )
         deps.totp_record_success(session.client_id)
@@ -660,10 +686,12 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                 form_error="Too many 2FA attempts; try again in 5 minutes.",
                 form_label=label,
             )
-        if not deps.client_store.verify_totp(session.client_id, totp_code):  # type: ignore[attr-defined]
-            deps.totp_record_failure(session.client_id)
+        totp_result = _check_totp(deps, session.client_id, totp_code)
+        if totp_result is not TotpResult.OK:
             return _render_connectors_page(
-                request, session, form_error="Invalid 2FA code.", form_label=label,
+                request, session,
+                form_error=_totp_error(totp_result, "Invalid 2FA code."),
+                form_label=label,
             )
         deps.totp_record_success(session.client_id)
 

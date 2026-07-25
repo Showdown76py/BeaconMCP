@@ -19,6 +19,7 @@ from starlette.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from beaconmcp.auth import TOTP_REPLAY_MESSAGE, TotpResult
 from beaconmcp.dashboard.app import (
     BEARER_TTL_SECONDS,
     DashboardDeps,
@@ -48,9 +49,9 @@ class FakeClientStore:
         c = self.clients.get(client_id)
         return bool(c and c["secret"] == secret)
 
-    def verify_totp(self, client_id, code):
+    def check_totp(self, client_id, code):
         c = self.clients.get(client_id)
-        return bool(c and c["totp"] == code)
+        return TotpResult.OK if (c and c["totp"] == code) else TotpResult.INVALID
 
     def get_name(self, client_id):
         c = self.clients.get(client_id)
@@ -352,6 +353,40 @@ def test_login_after_5_failed_totp_locks_out(client, deps):
     r = client.post("/app/login", data=_login_form(token))
     assert r.status_code == 429
     assert "Too many attempts" in r.text
+
+
+def test_replayed_totp_never_locks_the_operator_out(deps, monkeypatch):
+    """Re-submitting an already-spent code is an ordinary mistake, not a
+    failed auth attempt: the dashboard asks for 2FA on several actions, so an
+    operator hitting two of them inside one 30 s step would otherwise burn
+    through the 5-strike lockout without ever typing a wrong code.
+    """
+    # The operator already spent this code on a previous action.
+    spent = {"123456"}
+
+    def check_totp(client_id, code):
+        if code != "123456":
+            return TotpResult.INVALID
+        return TotpResult.REPLAY if code in spent else TotpResult.OK
+
+    monkeypatch.setattr(deps.client_store, "check_totp", check_totp)
+    client = TestClient(
+        Starlette(routes=build_dashboard_routes(deps)), follow_redirects=False
+    )
+    token = _csrf(client)
+
+    # Well past the 5-strike lockout, if replays counted.
+    for _ in range(10):
+        r = client.post("/app/login", data=_login_form(token))
+        assert r.status_code == 401
+        assert TOTP_REPLAY_MESSAGE in r.text
+        # Not "wrong code" -- the operator must not be sent clock-hunting.
+        assert "clock is in sync" not in r.text
+
+    assert not deps.totp_locked("beaconmcp_test")
+    # And the next code rolls over into a normal login.
+    spent.clear()
+    assert client.post("/app/login", data=_login_form(token)).status_code == 303
 
 
 def test_logout_csrf_required(client):

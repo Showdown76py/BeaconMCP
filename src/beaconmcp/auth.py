@@ -26,14 +26,35 @@ import sqlite3
 import threading
 import time
 from collections.abc import Iterable
-
-_logger = logging.getLogger("beaconmcp.auth")
 from contextvars import ContextVar
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
 import pyotp
+
+_logger = logging.getLogger("beaconmcp.auth")
+
+
+class TotpResult(Enum):
+    """Outcome of :meth:`ClientStore.check_totp`."""
+
+    OK = "ok"
+    #: Wrong, malformed, or expired code -- a real failed auth attempt.
+    INVALID = "invalid"
+    #: Correct code, but already spent in this 30 s step. Not an attack:
+    #: the operator hit a second 2FA prompt before the code rolled over.
+    REPLAY = "replay"
+
+
+#: Shown to the operator when a correct-but-already-used code is submitted.
+#: The distinction matters -- "invalid code" sends people hunting for a clock
+#: skew problem they don't have.
+TOTP_REPLAY_MESSAGE = (
+    "That 2FA code was already used. Wait for your authenticator to show the "
+    "next one, then try again."
+)
 
 
 # Populated by the HTTP auth middleware at the start of each request and
@@ -198,6 +219,12 @@ class ClientStore:
     def __init__(self, path: Path | None = None) -> None:
         self._path = path or CLIENTS_FILE
         self._clients: dict[str, Client] = {}
+        # Last accepted TOTP timestep (30s counter) per seed owner, used to
+        # reject replays of an already-consumed code. Keyed by the SEED owner
+        # so two clients sharing one owner's seed can't each spend the same
+        # code. Guarded by its own lock -- verify_totp runs on worker threads.
+        self._last_totp_step: dict[str, int] = {}
+        self._totp_lock = threading.Lock()
         self._load()
 
     def _load(self) -> None:
@@ -307,10 +334,10 @@ class ClientStore:
         client = self._clients.get(client_id)
         return client.name if client else None
 
-    def verify_totp(self, client_id: str, code: str) -> bool:
+    def check_totp(self, client_id: str, code: str) -> TotpResult:
         """Validate a TOTP code for a given client.
 
-        Uses ``valid_window=1`` so a ±30 s clock drift between the server and
+        Uses a ±1 step (±30 s) window so a clock drift between the server and
         the authenticator app is tolerated.
 
         Dynamic clients (those with ``owner_client_id`` set) delegate
@@ -318,20 +345,65 @@ class ClientStore:
         always the account owner, regardless of which client they are
         minting a token for. The delegation chain is single-hop — an
         owner whose own ``owner_client_id`` is set would be a bug.
+
+        Replay protection: each 6-digit code stays valid for its whole 30 s
+        step (plus drift), so without bookkeeping the same code could be
+        spent twice. We record the last accepted timestep per SEED OWNER and
+        reject any code whose matched step is not strictly newer. Keying on
+        the owner (not the client) ensures two clients sharing one owner's
+        seed cannot each replay the same code.
+
+        ``REPLAY`` is reported separately from ``INVALID`` because the two
+        need different handling: a genuinely wrong code is a failed auth
+        attempt and must count towards the lockout, whereas re-submitting a
+        code the operator already spent (a second 2FA prompt inside the same
+        30 s step, a browser POST replay) is an honest mistake. Counting it
+        as a failure would lock a legitimate operator out for 5 minutes.
         """
         client = self._clients.get(client_id)
         if not client:
-            return False
+            return TotpResult.INVALID
         if not code or not code.isdigit() or len(code) != 6:
-            return False
+            return TotpResult.INVALID
+
         if client.owner_client_id is not None:
             owner = self._clients.get(client.owner_client_id)
             if owner is None or not owner.totp_secret:
-                return False
-            return pyotp.TOTP(owner.totp_secret).verify(code, valid_window=1)
-        if not client.totp_secret:
-            return False
-        return pyotp.TOTP(client.totp_secret).verify(code, valid_window=1)
+                return TotpResult.INVALID
+            seed = owner.totp_secret
+            replay_key = client.owner_client_id
+        else:
+            if not client.totp_secret:
+                return TotpResult.INVALID
+            seed = client.totp_secret
+            replay_key = client_id
+
+        # Find which 30s timestep the code matches (within the ±1 window).
+        totp = pyotp.TOTP(seed)
+        now = time.time()
+        current_step = int(now // totp.interval)
+        matched_step: int | None = None
+        for offset in (-1, 0, 1):
+            at_time = now + offset * totp.interval
+            if totp.verify(code, for_time=at_time):
+                matched_step = current_step + offset
+                break
+        if matched_step is None:
+            return TotpResult.INVALID
+
+        # Reject replays: the matched step must be strictly newer than the
+        # last one accepted for this owner.
+        with self._totp_lock:
+            last = self._last_totp_step.get(replay_key)
+            if last is not None and matched_step <= last:
+                return TotpResult.REPLAY
+            self._last_totp_step[replay_key] = matched_step
+        return TotpResult.OK
+
+    def verify_totp(self, client_id: str, code: str) -> bool:
+        """Boolean form of :meth:`check_totp` for callers that don't need to
+        tell a replay apart from a wrong code."""
+        return self.check_totp(client_id, code) is TotpResult.OK
 
     def list_clients(self) -> list[dict[str, Any]]:
         """List all registered clients (without secrets)."""
@@ -441,7 +513,12 @@ class TokenStore:
     ) -> None:
         self._tokens: dict[str, AccessToken] = {}
         self._db: sqlite3.Connection | None = None
-        self._lock = threading.Lock()
+        # Re-entrant: tools now run on worker threads (see server._metric_tool),
+        # so the in-memory dict is touched concurrently. Several methods hold
+        # the lock and then call a helper that re-acquires it (issue ->
+        # _cleanup, revoke_named -> revoke), so a plain Lock would deadlock.
+        # Never held across a blocking call -- all work here is in-memory.
+        self._lock = threading.RLock()
         # Effective named-token lifetime: explicit value wins, else default.
         # ``0`` is a deliberate setting (tokens never expire, revoke-only),
         # so only ``None`` falls back to the 30-day default.
@@ -522,48 +599,51 @@ class TokenStore:
         named-token cap. Raises :class:`TokenCapExceeded` if the cap is
         already met.
         """
-        if name is not None:
-            if self.count_named(client_id) >= self.NAMED_TOKEN_CAP:
-                raise TokenCapExceeded(
-                    f"client {client_id} already has "
-                    f"{self.NAMED_TOKEN_CAP} named tokens"
-                )
-        # Named tokens get the (longer, configurable) named lifetime; internal
-        # session bearers keep the short 24 h TTL. A named TTL of 0 means
-        # "never expires": the token lives until explicitly revoked.
-        ttl = self.named_token_ttl if name is not None else self.TOKEN_TTL
-        token = secrets.token_hex(32)
-        now = time.time()
-        expires_at = float("inf") if (name is not None and ttl == 0) else now + ttl
-        at = AccessToken(
-            token=token,
-            client_id=client_id,
-            expires_at=expires_at,
-            name=name,
-            created_at=now,
-        )
-        self._tokens[token] = at
-        if name is not None:
-            self._persist(at)
-        self._cleanup()
-        return token, ttl
+        with self._lock:
+            if name is not None:
+                if self.count_named(client_id) >= self.NAMED_TOKEN_CAP:
+                    raise TokenCapExceeded(
+                        f"client {client_id} already has "
+                        f"{self.NAMED_TOKEN_CAP} named tokens"
+                    )
+            # Named tokens get the (longer, configurable) named lifetime; internal
+            # session bearers keep the short 24 h TTL. A named TTL of 0 means
+            # "never expires": the token lives until explicitly revoked.
+            ttl = self.named_token_ttl if name is not None else self.TOKEN_TTL
+            token = secrets.token_hex(32)
+            now = time.time()
+            expires_at = float("inf") if (name is not None and ttl == 0) else now + ttl
+            at = AccessToken(
+                token=token,
+                client_id=client_id,
+                expires_at=expires_at,
+                name=name,
+                created_at=now,
+            )
+            self._tokens[token] = at
+            if name is not None:
+                self._persist(at)
+            self._cleanup()
+            return token, ttl
 
     def list_named(self, client_id: str) -> list[AccessToken]:
         """Return named tokens for ``client_id`` (newest first)."""
-        self._cleanup()
-        out = [
-            t for t in self._tokens.values()
-            if t.client_id == client_id and t.name is not None
-        ]
+        with self._lock:
+            self._cleanup()
+            out = [
+                t for t in self._tokens.values()
+                if t.client_id == client_id and t.name is not None
+            ]
         out.sort(key=lambda t: t.created_at, reverse=True)
         return out
 
     def count_named(self, client_id: str) -> int:
-        self._cleanup()
-        return sum(
-            1 for t in self._tokens.values()
-            if t.client_id == client_id and t.name is not None
-        )
+        with self._lock:
+            self._cleanup()
+            return sum(
+                1 for t in self._tokens.values()
+                if t.client_id == client_id and t.name is not None
+            )
 
     def revoke_named(self, token_prefix: str, client_id: str) -> bool:
         """Revoke a named token owned by ``client_id``, identified by prefix.
@@ -573,27 +653,29 @@ class TokenStore:
         """
         if len(token_prefix) < 6:
             return False
-        matches = [
-            t for t in self._tokens.values()
-            if t.token.startswith(token_prefix)
-            and t.client_id == client_id
-            and t.name is not None
-        ]
-        if len(matches) != 1:
-            return False
-        return self.revoke(matches[0].token)
+        with self._lock:
+            matches = [
+                t for t in self._tokens.values()
+                if t.token.startswith(token_prefix)
+                and t.client_id == client_id
+                and t.name is not None
+            ]
+            if len(matches) != 1:
+                return False
+            return self.revoke(matches[0].token)
 
     def validate(self, token: str) -> str | None:
         """Validate a token. Returns client_id if valid, None otherwise."""
-        access_token = self._tokens.get(token)
-        if not access_token:
-            return None
-        if time.time() > access_token.expires_at:
-            if access_token.name is not None:
-                self._unpersist(token)
-            del self._tokens[token]
-            return None
-        return access_token.client_id
+        with self._lock:
+            access_token = self._tokens.get(token)
+            if not access_token:
+                return None
+            if time.time() > access_token.expires_at:
+                if access_token.name is not None:
+                    self._unpersist(token)
+                del self._tokens[token]
+                return None
+            return access_token.client_id
 
     # Seconds to keep a revoked token alive so the current MCP response /
     # SSE stream has time to reach the client before the middleware starts
@@ -609,25 +691,27 @@ class TokenStore:
         needs) can finish; after that the standard expiration check in
         :meth:`validate` rejects it.
         """
-        access_token = self._tokens.get(token)
-        if access_token is None:
-            return False
-        deadline = time.time() + self.REVOKE_GRACE_SECONDS
-        if access_token.expires_at > deadline:
-            access_token.expires_at = deadline
-        # Drop from durable storage immediately so a restart inside the grace
-        # window doesn't resurrect a token the user just revoked.
-        if access_token.name is not None:
-            self._unpersist(token)
-        return True
+        with self._lock:
+            access_token = self._tokens.get(token)
+            if access_token is None:
+                return False
+            deadline = time.time() + self.REVOKE_GRACE_SECONDS
+            if access_token.expires_at > deadline:
+                access_token.expires_at = deadline
+            # Drop from durable storage immediately so a restart inside the grace
+            # window doesn't resurrect a token the user just revoked.
+            if access_token.name is not None:
+                self._unpersist(token)
+            return True
 
     def _cleanup(self) -> None:
-        now = time.time()
-        expired = [t for t, at in self._tokens.items() if now > at.expires_at]
-        for t in expired:
-            if self._tokens[t].name is not None:
-                self._unpersist(t)
-            del self._tokens[t]
+        with self._lock:
+            now = time.time()
+            expired = [t for t, at in self._tokens.items() if now > at.expires_at]
+            for t in expired:
+                if self._tokens[t].name is not None:
+                    self._unpersist(t)
+                del self._tokens[t]
 
 
 class CodeStore:
