@@ -8,7 +8,11 @@ version = "2.0.0"
 description = "Remote MCP server for Proxmox VE and BMC (iLO/IPMI) infrastructure management"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp[cli]>=1.0",
+    # 2.0 renamed mcp.server.fastmcp to mcp.server.mcpserver and FastMCP to
+    # MCPServer, which every tool module imports. Hold at 1.x until that
+    # migration lands; the range was open-ended, so CI started installing
+    # 2.0 the day it shipped and stopped collecting four test modules.
+    "mcp[cli]>=1.0,<2",
     "proxmoxer",
     "requests",
     "python-hpilo",
