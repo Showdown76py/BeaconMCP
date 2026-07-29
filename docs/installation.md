@@ -105,7 +105,12 @@ beaconmcp auth create --name "Assistant Web"
 
 This prints a client id, a client secret and a TOTP seed with an ASCII QR code. **Both secrets are
 shown exactly once.** Scan the QR into an authenticator app (Google Authenticator, Authy, 1Password,
-Aegis) right away, or store the raw seed in a secrets manager.
+Aegis) right away — on a device you physically control.
+
+Do not park the raw seed next to the client secret, in a `.env` or in a secrets manager: that
+collapses the two factors into one. See [security.md#totp](security.md#totp). Unattended services
+that genuinely need machine-held codes are covered in
+[totp-automation.md](totp-automation.md).
 
 Create one client per MCP client that should have access. To review or remove them:
 

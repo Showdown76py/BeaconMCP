@@ -1,7 +1,8 @@
 # MCP tools
 
-44 tools across six modules. Each module is only registered when the matching capability is
-configured, so an SSH-only deployment exposes 3 tools and nothing else.
+44 tools across six modules. The infrastructure modules are only registered when the matching
+capability is configured, so an SSH-only deployment exposes the 2 SSH tools and nothing else from
+Proxmox or BMC. `security_end_session` is always registered, whatever the topology.
 
 Long-running commands (`proxmox_run`, `ssh_run`) are synchronous by default. Pass `wait=False` to
 start one in the background and get an `exec_id` back, then call the same tool with `exec_id=` to
