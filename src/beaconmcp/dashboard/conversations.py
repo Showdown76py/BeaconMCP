@@ -52,6 +52,10 @@ class ToolCall:
     status: str = "pending"  # pending | ok | error
     preview: str | None = None
     duration_ms: int | None = None
+    # ``ui://`` panel this tool declared, when it ships one (MCP Apps).
+    # Enough to re-open the frame from history; the snapshot behind it is
+    # deliberately not stored -- see assemble_assistant_message.
+    ui_resource_uri: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -110,6 +114,7 @@ def _decode_tool_calls(raw: str | None) -> list[ToolCall]:
                 status=item.get("status", "ok"),
                 preview=item.get("preview"),
                 duration_ms=item.get("duration_ms"),
+                ui_resource_uri=item.get("ui_resource_uri"),
             )
         )
     return out

@@ -1,30 +1,33 @@
 /* Shared look for the ui:// panels. Injected alongside bridge.js by panel.py.
 
-   Colours are defaults only: the host overrides them through
-   hostContext.styles.variables, so the panels sit inside the client's own
-   theme rather than next to it. */
+   Every colour is a host variable with a local fallback. A host that sends
+   hostContext.styles.variables (the spec's standardized names, which
+   bridge.js writes onto :root) drives the palette; one that sends nothing
+   but a theme falls through to the values below. Both halves of the theme
+   read the same variable so the host's choice wins either way -- the dark
+   block only changes what happens when it stays silent. */
 
 :root {
-  --bg: #ffffff;
-  --fg: #1a1a1a;
-  --muted: #6b7280;
-  --line: #e5e7eb;
-  --accent: #2563eb;
-  --danger: #dc2626;
-  --ok: #16a34a;
-  --warn: #d97706;
-  --track: #f3f4f6;
+  --bg: var(--color-background-primary, #ffffff);
+  --fg: var(--color-text-primary, #1a1a1a);
+  --muted: var(--color-text-tertiary, #6b7280);
+  --line: var(--color-border-primary, #e5e7eb);
+  --accent: var(--color-ring-primary, #2563eb);
+  --danger: var(--color-text-danger, #dc2626);
+  --ok: var(--color-text-success, #16a34a);
+  --warn: var(--color-text-warning, #d97706);
+  --track: var(--color-background-tertiary, #f3f4f6);
 }
 :root[data-theme="dark"] {
-  --bg: #1c1c1c;
-  --fg: #ededed;
-  --muted: #9ca3af;
-  --line: #333333;
-  --accent: #60a5fa;
-  --danger: #f87171;
-  --ok: #4ade80;
-  --warn: #fbbf24;
-  --track: #2a2a2a;
+  --bg: var(--color-background-primary, #1c1c1c);
+  --fg: var(--color-text-primary, #ededed);
+  --muted: var(--color-text-tertiary, #9ca3af);
+  --line: var(--color-border-primary, #333333);
+  --accent: var(--color-ring-primary, #60a5fa);
+  --danger: var(--color-text-danger, #f87171);
+  --ok: var(--color-text-success, #4ade80);
+  --warn: var(--color-text-warning, #fbbf24);
+  --track: var(--color-background-tertiary, #2a2a2a);
 }
 
 * { box-sizing: border-box; }

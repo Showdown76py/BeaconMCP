@@ -70,8 +70,13 @@ read, so each one still ships as a single document.
 
 **They hold no cluster access of their own.** Every button issues an ordinary `tools/call` for
 the tools listed elsewhere in this document — `proxmox_vm_start`, `_stop`, `_restart`, `_config`
-— so whatever approval your client puts in front of a tool call applies here too. A panel is a
-nicer way to issue the call, not a way around the prompt.
+— which the host relays, and which the host decides whether to approve. A panel is a nicer way
+to issue the call, not a channel that bypasses the host.
+
+What the host does with that call is the host's policy. BeaconMCP's own dashboard lets a panel
+drive the guest lifecycle unattended (a labelled button is the click) but refuses anything in its
+confirmation list, and refuses `proxmox_vm_config` for any key that is not sizing — see
+[the dashboard guide](dashboard.md#interactive-panels-mcp-apps). Other hosts set their own line.
 
 After an action, a panel pushes the fresh state back into the conversation with
 `ui/update-model-context`. Without it the model keeps whatever the tool returned when the panel
@@ -82,7 +87,8 @@ dashboard one that asks it to open a specific VM's panel. Both features are gate
 advertising the capability and are simply hidden when it does not.
 
 Clients that did not negotiate the extension ignore `_meta.ui` and show the tool's return value,
-which is the same snapshot as data. Nothing breaks; you just don't get the frame.
+which is the same snapshot as data. Nothing breaks; you just don't get the frame. BeaconMCP's own
+`/app/chat` negotiates it and renders the panels inline.
 
 ## Proxmox — system and files (9)
 

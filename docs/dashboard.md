@@ -114,6 +114,38 @@ When Gemini fires a gated call:
 
 The allow-list is hard-coded in `src/beaconmcp/dashboard/chat.py` (`_NEEDS_CONFIRMATION`, `_CONFIRM_WHEN_ARG_PRESENT`, `_tool_call_requires_confirmation`). Only the integrated chat enforces this gate; external MCP clients (Assistant Desktop, Gemini CLI, ChatGPT MCP) must enable their own per-call approval mode (see the **Security** section of the root README).
 
+## Interactive panels (MCP Apps)
+
+Tools that carry `_meta.ui.resourceUri` — `proxmox_vm_panel`, `proxmox_logs_panel`, `cluster_overview_interactive` — render as a live interface in the chat instead of a block of JSON. The dashboard implements both halves of the [MCP Apps extension](https://modelcontextprotocol.io/extensions/apps/overview): it announces `io.modelcontextprotocol/ui` when it opens its MCP session, and it plays host to the `ui://` document over `postMessage`.
+
+The extension is declared through `ClientCapabilities.extensions`, a field mcp only types in 2.0. The `<2` pin is not in the way: the model accepts extra fields, so the capability serialises under the name the spec gives it and the server reads the same JSON either way (`dashboard/mcp_bridge.py`).
+
+### How a panel is isolated
+
+The document is served by `/app/api/mcp/panel` and framed with `sandbox="allow-scripts"` and **no** `allow-same-origin`. That puts it on an opaque origin: it cannot read the session cookie, cannot read the CSRF token, cannot reach into the parent page. Its response also carries its own `Content-Security-Policy` — `default-src 'none'`, `connect-src 'none'`, `frame-ancestors 'self'` — so it cannot open a socket of its own either.
+
+What is left is `postMessage` to the parent. Every tool call a panel makes therefore goes through `/app/api/mcp/call`, which is session-authenticated and CSRF-protected, and where the policy below is applied.
+
+### What a panel may call on its own
+
+A panel button is a labelled control a human clicked, so the approval modal — which exists because the *model's* input is untrusted — would restate the click rather than check it. Panel calls are therefore not gated. What is *not* granted is a blanket exemption for anything running in a frame: a `ui://` document is HTML the server wrote, and this dashboard is a general MCP host, so a blanket rule would hand every connected server a way around the gate it is documented to be subject to.
+
+The exemption is a closed list, enforced server-side in `panel_call_allowed()`:
+
+- `proxmox_vm_start` / `_stop` / `_restart` — one guest per call, visible in the panel, reversible from it.
+- `proxmox_vm_config`, but only when every key in `updates` is sizing (`cores`, `sockets`, `memory`, `balloon`, `cpulimit`, `cpuunits`). Exempting the tool itself would exempt `hookscript`, raw QEMU `args` and device passthrough along with it.
+- Everything that was never gated in the first place — the read-only tools, including the three panel tools themselves.
+
+Anything else is refused with `403 confirmation_required`, and the panel shows the reason. It is refused rather than prompted because there is no turn in flight to hang a modal on — and because the panel already has a way through: `ui/message` hands the request to the model, which puts it back under the modal where it belongs.
+
+### Model context
+
+A panel that acts on the cluster pushes the fresh state back with `ui/update-model-context`. The page holds the latest update per panel and sends it with the next message, labelled as coming from the panel rather than from the operator. Without it, stopping a VM from the panel would leave the next turn believing it still runs — the button's result goes to the iframe, not into the conversation.
+
+### Reopening from history
+
+Only the `ui://` URI is stored with the tool call, never the snapshot behind it. A panel in an older conversation renders as an **Open panel** button; clicking it mounts the frame and refetches. Live figures in a panel that has been sitting in the transcript for a week would be worse than a short spinner.
+
 ## Stored data
 
 SQLite at `/opt/beaconmcp/dashboard.db` (WAL mode). Five tables:
