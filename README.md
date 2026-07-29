@@ -58,7 +58,8 @@ install. Both are covered in [Installation](docs/installation.md).
 |-------|--------------|
 | [Installation](docs/installation.md) | Requirements, Docker, systemd install, config wizard, reverse proxy, updates |
 | [Configuration](docs/configuration.md) | The two config files, every YAML key that matters, where to run the server |
-| [Tools](docs/tools.md) | The 44 MCP tools, grouped by module |
+| [Tools](docs/tools.md) | The 46 MCP tools, grouped by module |
+| [Updates](docs/updates.md) | The update notice, the self-update tools, and how to turn both off |
 | [Client setup](docs/clients.md) | Assistant, ChatGPT, Gemini, Mistral, VS Code, Cursor, OpenCode |
 | [Security](docs/security.md) | What to review before approving a tool call, token handling, TOTP hygiene |
 | [Dashboard](docs/dashboard.md) | The optional `/app/*` web panel: login, API tokens, Gemini chat |

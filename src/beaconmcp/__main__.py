@@ -2180,6 +2180,8 @@ def _run_http(mcp, host: str, port: int):
         login_limiter=_login_limiter,
         trusted_proxies=tuple(config.server.trusted_proxies),
         passkey_service=passkey_service,
+        updates=config.features.updates,
+        config_path=config.source_path,
     )
 
     app = Starlette(
@@ -2246,7 +2248,8 @@ def _build_dashboard_routes(client_store, token_store, totp_locked,
                              totp_record_failure, totp_record_success,
                              *, dyn_reg=None, shared_database=None,
                              login_limiter=None, trusted_proxies=(),
-                             passkey_service=None):
+                             passkey_service=None, updates=None,
+                             config_path=None):
     """Build dashboard routes if enabled. Returns [] when disabled."""
     from . import dashboard
     if not dashboard.is_enabled():
@@ -2320,6 +2323,11 @@ def _build_dashboard_routes(client_store, token_store, totp_locked,
         login_limiter=login_limiter,
         trusted_proxies=trusted_proxies,
         passkeys=passkey_service,
+        updates_enabled=updates.enabled if updates is not None else True,
+        allow_self_update=(
+            updates.allow_self_update if updates is not None else True
+        ),
+        config_path=config_path,
     )
     return build_dashboard_routes(deps)
 

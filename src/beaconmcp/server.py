@@ -12,6 +12,7 @@ from mcp.types import Icon
 from .bmc import build_registry as build_bmc_registry
 from .bmc import register_bmc_tools
 from .config import Config
+from .maintenance import register_maintenance_tools
 from .proxmox.aggregators import register_aggregator_tools
 from .proxmox.client import ProxmoxClient
 from .proxmox.monitoring import register_monitoring_tools
@@ -290,3 +291,8 @@ if config.ssh and config.ssh.hosts:
 if bmc_registry:
     register_bmc_tools(mcp, bmc_registry)
 register_security_tools(mcp)
+# Not tied to any infrastructure capability: keeping the server itself
+# current is useful on every deployment shape.
+register_maintenance_tools(
+    mcp, config.features.updates, config_path=config.source_path,
+)

@@ -145,6 +145,9 @@
       localhost address).
     </p>
 
+    {# Filled in by login.js once the session exists -- see update_banner.js #}
+    <a class="update-note" id="update-note" href="/app/tokens" hidden></a>
+
     <button type="button" class="btn-primary" id="finish-btn">
       <span class="btn-label">Finish signing in</span>
       <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
@@ -152,6 +155,6 @@
   </section>
 </div>
 
-<script src="/app/static/webauthn.js"></script>
-<script src="/app/static/login.js"></script>
+<script src="/app/static/webauthn.js?v={{ asset_v }}"></script>
+<script src="/app/static/login.js?v={{ asset_v }}"></script>
 {% endblock %}

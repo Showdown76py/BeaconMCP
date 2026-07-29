@@ -230,6 +230,20 @@ features:
     public_url: https://mcp.example.com   # used to generate MCP URLs in the UI
     mcp_mode: local                       # "local" (default) or "remote"
 
+  # Update notifications. When enabled, the server periodically compares
+  # this checkout against the upstream default branch and shows a notice
+  # in the dashboard (signed-in operators only), with instructions matched
+  # to how BeaconMCP was installed here. Also exposes the
+  # beaconmcp_check_update / beaconmcp_self_update MCP tools.
+  updates:
+    # Set to false on an air-gapped or change-controlled deployment: the
+    # server then never contacts the git remote at all.
+    enabled: true
+    # Set to false to keep the notification but forbid applying it from
+    # the dashboard or over MCP -- appropriate when updates go through a
+    # deployment pipeline. Manual instructions are still shown.
+    allow_self_update: true
+
 # Free-form infrastructure context exposed as an MCP resource. Edit freely:
 # the LLM reads this to understand your topology, naming conventions, and
 # operational notes.

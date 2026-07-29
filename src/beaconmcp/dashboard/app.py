@@ -103,6 +103,13 @@ class DashboardDeps:
     # unset (or reporting ``available is False``), the login page hides
     # every passkey affordance and the TOTP path is the only way in.
     passkeys: PasskeyService | None = None
+    # Update notifications. ``updates_enabled`` gates the check (and with
+    # it any network egress); ``allow_self_update`` gates the "Update now"
+    # button. ``config_path`` is the YAML the update flow re-validates
+    # against freshly pulled code.
+    updates_enabled: bool = True
+    allow_self_update: bool = True
+    config_path: Path | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +177,7 @@ def _render(
     if not token:
         token = csrf.issue_token()
     context["csrf_token"] = token
+    context["asset_v"] = ASSET_VERSION
     response = _TEMPLATES.TemplateResponse(
         request, template, context, status_code=status_code
     )
@@ -191,6 +199,11 @@ def _render(
 def _apply_security_headers(response: Response) -> None:
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    # Panel pages and API replies are per-session and must not be reused --
+    # by a shared cache, or by the back button after a sign-out. It also
+    # keeps the asset fingerprints these pages embed from going stale.
+    # setdefault, so the SSE stream keeps its own directives.
+    response.headers.setdefault("Cache-Control", "no-store")
     response.headers.setdefault(
         "Referrer-Policy", "strict-origin-when-cross-origin"
     )
@@ -255,6 +268,60 @@ def _check_totp(deps: DashboardDeps, client_id: str, code: str) -> TotpResult:
 
 def _totp_error(result: TotpResult, invalid_message: str) -> str:
     return TOTP_REPLAY_MESSAGE if result is TotpResult.REPLAY else invalid_message
+
+
+def _compute_asset_version() -> str:
+    """Fingerprint the static bundle, for cache-busting query strings.
+
+    Starlette serves static files with ``ETag``/``Last-Modified`` but no
+    ``Cache-Control``, which leaves browsers on *heuristic* freshness: an
+    asset untouched for weeks is reused for a long time without ever
+    revalidating. That was survivable when upgrading meant an operator
+    running commands by hand; now that the server can update itself, the
+    next page load would happily keep executing the previous release's
+    JavaScript against a new backend.
+
+    Stamping the URLs with a fingerprint fixes it deterministically -- new
+    bytes mean a new URL, which no cache can satisfy from an old entry --
+    and lets the files themselves be cached hard (see
+    :class:`_ImmutableStaticFiles`). Newest mtime in the directory is
+    enough: a ``git pull`` rewrites the files it changes.
+    """
+    try:
+        newest = max(
+            p.stat().st_mtime
+            for p in (_DASHBOARD_DIR / "static").iterdir()
+            if p.is_file()
+        )
+    except (OSError, ValueError):
+        return "0"
+    return format(int(newest), "x")
+
+
+#: Computed once per process: a restart is exactly when the bundle can change.
+ASSET_VERSION = _compute_asset_version()
+
+
+class _ImmutableStaticFiles(StaticFiles):
+    """StaticFiles for URLs that carry a content fingerprint.
+
+    Safe to cache hard *because* the query string changes whenever the
+    bytes do. Requests without a version (a hand-typed URL, an old cached
+    page) fall back to revalidate-every-time so they can never pin stale
+    code.
+    """
+
+    def file_response(self, full_path, stat_result, scope, *args, **kwargs) -> Response:
+        response = super().file_response(
+            full_path, stat_result, scope, *args, **kwargs
+        )
+        query = scope.get("query_string") or b""
+        versioned = b"v=" in query
+        response.headers.setdefault(
+            "Cache-Control",
+            "public, max-age=31536000, immutable" if versioned else "no-cache",
+        )
+        return response
 
 
 def _wants_json(request: Request) -> bool:
@@ -1096,6 +1163,89 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         )
         return response
 
+    # --- Update notifications --------------------------------------------
+
+    async def api_update_status(request: Request) -> Response:
+        """Update status for the signed-in operator.
+
+        Deliberately session-gated: an anonymous visitor learning the exact
+        revision a server runs is free reconnaissance, and the banner is
+        only ever rendered to someone already signed in.
+        """
+        session = _require_active_session(request, deps)
+        if isinstance(session, Response):
+            return session
+        if not deps.updates_enabled:
+            return _json({"enabled": False, "available": False})
+
+        from .. import updates as updates_mod
+
+        force = request.query_params.get("force") == "1"
+        # The check shells out to git (network); keep it off the event loop.
+        info = await asyncio.to_thread(
+            updates_mod.check_for_update, force=force, config_path=deps.config_path,
+        )
+        payload = info.to_json()
+        payload["enabled"] = True
+        payload["self_update_allowed"] = deps.allow_self_update
+        if not deps.allow_self_update:
+            payload["can_self_update"] = False
+        return _json(payload)
+
+    async def api_update_apply(request: Request) -> Response:
+        """Apply an update from the dashboard, behind a fresh 2FA code.
+
+        Pulling code and restarting the process is the most privileged
+        thing this panel can do, so it is gated exactly like minting a
+        token: a session is not enough, the operator re-proves the second
+        factor at the moment of the action.
+        """
+        session = _require_active_session(request, deps)
+        if isinstance(session, Response):
+            return session
+        if not await csrf.verify(request):
+            return _json({"error": "csrf"}, status=403)
+        if not (deps.updates_enabled and deps.allow_self_update):
+            return _json(
+                {
+                    "ok": False,
+                    "error": "Self-update is disabled on this server "
+                             "(features.updates.allow_self_update).",
+                },
+                status=403,
+            )
+
+        body = await _read_json(request)
+        totp = str(body.get("totp") or "").strip()
+        if not totp:
+            return _json({"ok": False, "error": "2FA code is required."}, status=400)
+        if deps.totp_locked(session.client_id):
+            return _json(
+                {"ok": False, "error": "Too many 2FA attempts; try again in 5 minutes."},
+                status=429,
+            )
+        totp_result = _check_totp(deps, session.client_id, totp)
+        if totp_result is not TotpResult.OK:
+            return _json(
+                {"ok": False, "error": _totp_error(totp_result, "Invalid 2FA code.")},
+                status=401,
+            )
+        deps.totp_record_success(session.client_id)
+
+        from .. import updates as updates_mod
+
+        audit.emit("dashboard.update.start", client_id=session.client_id)
+        result = await asyncio.to_thread(
+            updates_mod.apply_update, config_path=deps.config_path,
+        )
+        audit.emit(
+            "dashboard.update.finish", client_id=session.client_id,
+            ok=result.ok, from_ref=result.from_ref, to_ref=result.to_ref,
+            rolled_back=result.rolled_back,
+        )
+        updates_mod.invalidate_cache()
+        return _json(result.to_json(), status=200 if result.ok else 500)
+
     async def chat_get(request: Request) -> Response:
         session = _load_session(request, deps)
         if not session:
@@ -1467,6 +1617,8 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         ),
         Route("/app/api/passkeys/delete", api_passkeys_delete, methods=["POST"]),
         Route("/app/passkeys/remove", passkeys_remove, methods=["POST"]),
+        Route("/app/api/update", api_update_status, methods=["GET"]),
+        Route("/app/api/update/apply", api_update_apply, methods=["POST"]),
         Route(
             "/app/api/passkeys/auth/options",
             api_passkeys_auth_options, methods=["POST"],
@@ -1478,7 +1630,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         Route("/", index, methods=["GET"]),
         Mount(
             "/app/static",
-            app=StaticFiles(directory=_DASHBOARD_DIR / "static"),
+            app=_ImmutableStaticFiles(directory=_DASHBOARD_DIR / "static"),
             name="dashboard-static",
         ),
     ]
