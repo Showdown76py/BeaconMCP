@@ -2,7 +2,7 @@
 
 Optional web panel served by BeaconMCP on the same origin as the MCP endpoint (`https://<your-host>/app/...`). Three pages:
 
-- **`/app/login`** — exchanges a client id + client secret + TOTP code for an MCP bearer, and stores it in a 90-day HttpOnly session cookie. Removes the need to issue `curl` requests from a phone.
+- **`/app/login`** — exchanges a client id + client secret + a second factor (TOTP code or passkey) for an MCP bearer, and stores it in a 90-day HttpOnly session cookie. Removes the need to issue `curl` requests from a phone.
 - **`/app/chat`** — multi-conversation chat with Gemini 2.5 Flash/Pro (stable) or Gemini 3 Flash / 3.1 Pro (preview, Google allowlist required). **Requires `GEMINI_API_KEY`.**
 - **`/app/tokens`** — generates named bearers so external MCP clients (Gemini web, ChatGPT, Assistant Desktop) can be wired up without the OAuth dance. **Works without `GEMINI_API_KEY`.**
 
@@ -36,9 +36,32 @@ or `(chat: disabled, tokens only)` when the Gemini key is missing, or `disabled`
 ## Flow
 
 1. Navigate to `https://<your-host>/` on any device — the root path redirects to `/app/login`.
-2. Enter client id + client secret + current TOTP code (once per 90-day window).
-3. Land on `/app/chat` (or `/app/tokens` in tokens-only mode) with the conversation history restored.
-4. Every 24 hours the underlying MCP bearer expires. The dashboard prompts only for a fresh TOTP code on `/app/refresh`; the client id and secret remain encrypted server-side.
+2. Enter client id + client secret, then the current TOTP code — or use a passkey instead, from the
+   link under the code boxes (see [Passkeys](#passkeys)). <kbd>Enter</kbd> validates as soon as the
+   sixth digit lands.
+3. A confirmation screen shows when the MCP access and the signed-in session expire, offers to
+   register a passkey on this device, and waits for **Finish signing in**.
+4. Land on `/app/chat` (or `/app/tokens` in tokens-only mode) with the conversation history restored.
+5. Every 24 hours the underlying MCP bearer expires. The dashboard prompts only for a fresh TOTP code on `/app/refresh`; the client id and secret remain encrypted server-side.
+
+With JavaScript disabled the page falls back to the previous behaviour: a plain form POST that
+redirects straight to the landing page, no confirmation screen and no passkeys.
+
+## Passkeys
+
+A passkey replaces the 6-digit code, not the client secret — signing in still needs both factors.
+Enrol one from the confirmation screen right after a normal sign-in, then on the next visit use
+**Use a passkey instead** under the code boxes.
+
+The same option is on the OAuth consent page (`/oauth/authorize`), which now also confirms before
+redirecting: it shows when the granted access expires, offers passkey enrolment, and only mints the
+authorization code when you press **Finish signing in**.
+
+Registered passkeys are listed at the bottom of `/app/tokens` with their label, when they were added
+and when they were last used, each with a **Remove** button.
+
+Caveats — hostname binding, the HTTPS/loopback requirement, and why you should keep your TOTP seed —
+are covered in [security.md](security.md#passkeys).
 
 ## Tokens page
 

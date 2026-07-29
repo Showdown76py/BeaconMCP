@@ -20,6 +20,9 @@ dependencies = [
     "python-dotenv",
     "pyyaml",
     "pyotp",
+    # Passkeys (WebAuthn) on the login / authorize pages. Imported lazily:
+    # the auth pages fall back to TOTP-only when it is missing.
+    "webauthn>=2,<4",
     "qrcode",
     "cryptography>=42",
     "jinja2>=3",

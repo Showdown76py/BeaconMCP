@@ -259,6 +259,39 @@
             </div>
           </div>
 
+          {% if passkeys_enabled %}
+          <div style="margin-top:22px">
+            <div class="subhead">Passkeys</div>
+            {% if passkeys %}
+            <div>
+              {% for p in passkeys %}
+              <div class="passkey-row">
+                <div class="passkey-meta">
+                  <div class="passkey-name">{{ p.label }}</div>
+                  <div class="passkey-sub">
+                    Added {{ p.created_human }}{% if p.last_used_human %} · last used {{ p.last_used_human }}{% else %} · never used{% endif %}
+                  </div>
+                </div>
+                <form method="POST" action="/app/passkeys/remove" class="token-revoke-form">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <input type="hidden" name="credential_id" value="{{ p.credential_id }}">
+                  <button type="submit" class="btn-danger" aria-label="Remove passkey">
+                    <svg width="12" height="12"><use href="#i-trash"/></svg>
+                    Remove
+                  </button>
+                </form>
+              </div>
+              {% endfor %}
+            </div>
+            {% else %}
+            <p class="muted">
+              No passkey registered. Add one right after your next sign-in to skip
+              the 2FA code on this device.
+            </p>
+            {% endif %}
+          </div>
+          {% endif %}
+
           <p class="small muted" style="margin-top:14px">
             Concrete setup per client is in the <strong>By platform</strong> tab.
           </p>

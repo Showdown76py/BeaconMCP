@@ -56,6 +56,51 @@ Unattended services (scheduled jobs, CI pipelines) sometimes genuinely need mach
 case, with its required precautions, is covered separately in
 [totp-automation.md](totp-automation.md). Read it end to end before deciding.
 
+## Passkeys
+
+A passkey (WebAuthn) replaces the **TOTP factor**, never the client secret. Both login pages keep the
+same two-factor shape:
+
+1. `client_id` + `client_secret`
+2. a 6-digit code **or** a passkey assertion
+
+That ordering is what makes a stolen passkey worthless on its own, and it is also a practical
+constraint: the dashboard session encrypts the client secret so it can re-mint MCP bearers later, so
+a fully usernameless login could not build a working session anyway.
+
+Where they work:
+
+| Page | Sign in with a passkey | Enrol a passkey |
+|------|------------------------|-----------------|
+| `/app/login` | Link under the 2FA step | On the post-2FA screen |
+| `/oauth/authorize` | Link under the 2FA step | On the approval screen |
+
+Credentials are stored in the dashboard database (`passkeys` table): a credential id, a **public**
+key and a signature counter. Nothing secret leaves the authenticator.
+
+Things worth knowing before you enrol:
+
+- **Passkeys are bound to the hostname.** The relying-party ID is derived from the request host, so
+  a credential registered on `beacon.example` will not work on `beacon.internal` or on a raw IP that
+  differs from the one used at registration. Settle on your public hostname first.
+- **A secure context is required.** Browsers only expose the WebAuthn API over HTTPS or on loopback.
+  On a plain-HTTP LAN deployment the passkey buttons are hidden and TOTP stays the only path in.
+- **Keep TOTP working.** Passkeys are an alternative, not a replacement: losing every enrolled device
+  must not lock you out. The authenticator seed remains the recovery path.
+- **Dynamically-registered clients delegate**, exactly like TOTP: a client created through the DCR
+  bootstrap is authorized by its *owner's* passkeys, so the second factor never leaves the owner.
+- Registrations, revocations and passkey sign-ins are recorded in the audit log
+  (`dashboard.passkey.*`, `auth.passkey.*`, and `login`/`authorize` events tagged `via=passkey`).
+
+Passkey ceremonies are rate-limited per IP by the same limiter that guards `/app/login`, and a TOTP
+lockout also blocks the passkey path for that client.
+
+Manage enrolled credentials from `/app/tokens`, or drop them all for a client with:
+
+```sql
+DELETE FROM passkeys WHERE client_id = 'beaconmcp_...';
+```
+
 ## Audit trail
 
 `server.audit_log` records tool calls, dashboard logins, OAuth authorizations and client revocations

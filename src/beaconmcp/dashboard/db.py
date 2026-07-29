@@ -19,7 +19,7 @@ def db_path() -> Path:
     return Path(override) if override else DEFAULT_DB_PATH
 
 
-_LATEST_VERSION = 4
+_LATEST_VERSION = 5
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -144,6 +144,30 @@ def _migrate(conn: sqlite3.Connection) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_oauth_slugs_owner
               ON oauth_dynamic_slugs(owner_client_id, created_at DESC);
+            """
+        )
+
+    if version < 5:
+        # WebAuthn credentials, one row per registered passkey. The public
+        # key and signature counter are all we need to verify assertions;
+        # nothing here is secret (a public key is public), but the table
+        # still lives in the 0600 dashboard database because knowing which
+        # credentials a client owns is useful to an attacker.
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS passkeys (
+              credential_id  TEXT PRIMARY KEY,
+              client_id      TEXT NOT NULL,
+              public_key     BLOB NOT NULL,
+              sign_count     INTEGER NOT NULL DEFAULT 0,
+              transports     TEXT,
+              label          TEXT NOT NULL,
+              created_at     REAL NOT NULL,
+              last_used_at   REAL,
+              backed_up      INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_passkeys_client
+              ON passkeys(client_id, created_at DESC);
             """
         )
 

@@ -2,13 +2,15 @@
 {% block title %}Sign in · BeaconMCP{% endblock %}
 {% block body_class %}auth-page{% endblock %}
 {% block body %}
-<div class="auth-card">
+<div class="auth-card"
+     data-passkeys-enabled="{{ 'true' if passkeys_enabled else 'false' }}"
+     data-secure-context="{{ 'true' if secure_context else 'false' }}">
   <div class="auth-brand">
     <span class="name">BeaconMCP</span>
   </div>
 
   <form method="POST" action="/app/login" autocomplete="on" id="login-form">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="csrf_token" id="csrf-token" value="{{ csrf_token }}">
     {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
 
     {# Step 1 — Client ID + Client Secret #}
@@ -58,7 +60,7 @@
       </div>
     </section>
 
-    {# Step 2 — TOTP #}
+    {# Step 2 — TOTP, or a passkey instead #}
     <section id="step-2" hidden>
       <button type="button" class="back-btn" id="back-to-1">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
@@ -73,6 +75,8 @@
         Client verified: <b class="mono" style="font-family:var(--font-mono);margin-left:2px" id="client-verified">—</b>
       </div>
 
+      <div class="banner banner-error" id="step-2-error" hidden></div>
+
       <div class="totp-inputs" id="totp-inputs">
         <input maxlength="1" inputmode="numeric" aria-label="Digit 1">
         <input maxlength="1" inputmode="numeric" aria-label="Digit 2">
@@ -84,12 +88,70 @@
       <input type="hidden" name="totp" id="totp" required pattern="\d{6}">
 
       <button type="submit" class="btn-primary" id="verify-btn" disabled>
-        Verify and sign in
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>
+        <span class="btn-label">Verify and sign in</span>
+        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>
       </button>
+
+      {% if passkeys_enabled %}
+      <div id="passkey-login-block" {% if not secure_context %}hidden{% endif %}>
+        <div class="alt-divider"><span>or</span></div>
+        <button type="button" class="btn-ghost" id="passkey-login-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="8" r="4"/><path d="M10.9 13.1A6 6 0 0 0 4 19v1h7"/><path d="M17.5 12a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z"/><path d="M17.5 17v4l1.5-1.2 1.5 1.2v-4"/></svg>
+          <span class="btn-label">Use a passkey instead</span>
+        </button>
+        <p class="hint" id="passkey-login-hint">Skip the 6-digit code with a passkey registered on this device.</p>
+      </div>
+      <p class="hint" id="passkey-unsupported" hidden>
+        This browser can't use passkeys here — they require HTTPS (or a
+        localhost address).
+      </p>
+      {% endif %}
     </section>
   </form>
+
+  {# Step 3 — signed in: session lifetime, passkey enrolment, finish #}
+  <section id="step-3" hidden>
+    <div class="success-mark" aria-hidden="true">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>
+    </div>
+
+    <h1>You're signed in</h1>
+    <p class="sub">Signed in as <strong id="success-client">—</strong>.</p>
+
+    <div class="banner banner-error" id="step-3-error" hidden></div>
+    <div class="banner banner-success" id="step-3-ok" hidden></div>
+
+    <dl class="expiry-card">
+      <div class="expiry-row">
+        <dt>MCP access expires</dt>
+        <dd id="bearer-expiry">—</dd>
+      </div>
+      <div class="expiry-row">
+        <dt>Stay signed in until</dt>
+        <dd id="session-expiry">—</dd>
+      </div>
+    </dl>
+    <p class="hint" id="expiry-note">After that you only re-enter your 2FA code — no need to paste your credentials again.</p>
+
+    <div id="passkey-add-block" hidden>
+      <button type="button" class="btn-ghost" id="add-passkey-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="8" r="4"/><path d="M10.9 13.1A6 6 0 0 0 4 19v1h7"/><path d="M18 13v6M15 16h6"/></svg>
+        <span class="btn-label">Add a passkey</span>
+      </button>
+      <p class="hint" id="passkey-add-hint">Register this device so next time you can skip the 2FA code.</p>
+    </div>
+    <p class="hint" id="passkey-add-unsupported" hidden>
+      This browser can't register a passkey here — they require HTTPS (or a
+      localhost address).
+    </p>
+
+    <button type="button" class="btn-primary" id="finish-btn">
+      <span class="btn-label">Finish signing in</span>
+      <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+    </button>
+  </section>
 </div>
 
+<script src="/app/static/webauthn.js"></script>
 <script src="/app/static/login.js"></script>
 {% endblock %}
