@@ -154,6 +154,63 @@ def test_read_only_calls_do_not_require_confirmation(name: str, args: dict) -> N
     assert not _tool_call_requires_confirmation(name, args), name
 
 
+@pytest.mark.parametrize(
+    "name,args",
+    [
+        ("ssh_run", {"host": "pve1", "command": "rm -rf /", "dry_run": True}),
+        ("proxmox_run", {"node": "pve1", "vmid": 100, "command": "id", "dry_run": True}),
+        ("proxmox_write_file", {
+            "node": "pve1", "vmid": 100,
+            "path": "/root/.ssh/authorized_keys", "content": "ssh-rsa ...",
+            "dry_run": True,
+        }),
+        ("vm_bulk_action", {"vmids": [1, 2], "action": "stop", "dry_run": True}),
+        ("bmc_power_off", {"device_id": "rack1", "dry_run": True}),
+        ("proxmox_backup_restore", {
+            "node": "pve1", "vmid": 100, "archive": "a", "dry_run": True,
+        }),
+    ],
+)
+def test_dry_run_does_not_bypass_gate_on_tools_lacking_it(name: str, args: dict) -> None:
+    """A stray ``dry_run`` must not talk a tool past the modal.
+
+    None of these tools declare ``dry_run``, and FastMCP validates
+    arguments with a plain pydantic model, so the extra key is dropped
+    server-side and the call runs for real. Trusting the argument would
+    make the gate bypassable by adding one word to an injected
+    instruction.
+    """
+    assert _tool_call_requires_confirmation(name, args), name
+
+
+def test_dry_run_aware_tools_actually_declare_dry_run() -> None:
+    """Every entry in the allow-list must really implement ``dry_run``.
+
+    Guards the list against drifting as tools are renamed or reworked:
+    an entry whose tool has lost the parameter would silently become a
+    bypass again.
+    """
+    import inspect
+
+    from beaconmcp.dashboard.chat import _DRY_RUN_AWARE
+    from beaconmcp.proxmox.vms import register_vm_tools
+
+    registered: dict[str, object] = {}
+
+    class _Recorder:
+        def tool(self, *_a: object, **_kw: object):
+            def deco(fn):
+                registered[fn.__name__] = fn
+                return fn
+            return deco
+
+    register_vm_tools(_Recorder(), object())  # type: ignore[arg-type]
+
+    assert _DRY_RUN_AWARE <= registered.keys()
+    for name in _DRY_RUN_AWARE:
+        assert "dry_run" in inspect.signature(registered[name]).parameters, name
+
+
 # --- BMC verify_tls actually reaches the backend ----------------------------
 
 
@@ -208,6 +265,10 @@ def test_verify_tls_defaults_to_false_when_absent(tmp_path: Path) -> None:
 # --- dashboard.db must not be world-readable --------------------------------
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows os.chmod only toggles the read-only bit; POSIX modes are meaningless there",
+)
 def test_dashboard_db_is_owner_only(tmp_path: Path) -> None:
     db_file = tmp_path / "dashboard.db"
     Database(db_file)

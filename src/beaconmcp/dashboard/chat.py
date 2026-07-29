@@ -192,6 +192,25 @@ _CONFIRM_WHEN_ARG_PRESENT: dict[str, str] = {
     "proxmox_vm_config": "updates",
 }
 
+# Tools that actually implement a ``dry_run`` parameter and return a
+# "would do X" string without touching the cluster. Only these may skip
+# the modal on ``dry_run=True``.
+#
+# This list must stay exhaustive, and honouring dry_run cannot be assumed
+# from the argument alone: FastMCP validates tool arguments with a plain
+# pydantic model, so pydantic's default ``extra='ignore'`` silently drops
+# any argument the tool does not declare. A trusting
+# ``args.get("dry_run") is True`` check would therefore let
+# ``ssh_run(command="rm -rf /", dry_run=True)`` past the modal and then
+# run it for real, with the stray argument discarded server-side --
+# turning the gate into a one-word bypass for exactly the injected
+# instruction it exists to stop.
+_DRY_RUN_AWARE: frozenset[str] = frozenset({
+    "proxmox_snapshot_create",
+    "proxmox_snapshot_rollback",
+    "proxmox_snapshot_delete",
+})
+
 
 def _tool_call_requires_confirmation(name: str, args: Any) -> bool:
     """Return True when a tool call needs human approval before running.
@@ -203,8 +222,9 @@ def _tool_call_requires_confirmation(name: str, args: Any) -> bool:
     confirmation modal. We keep the allow-list name-based for everything
     else, then peel off the poll case here.
 
-    ``dry_run=True`` calls are also let through: those tools return a
-    "would do X" string without touching the cluster.
+    ``dry_run=True`` is also let through, but only for the tools in
+    :data:`_DRY_RUN_AWARE` that declare the parameter -- see the note
+    there on why the argument alone is not evidence the tool honours it.
     """
     mutating_arg = _CONFIRM_WHEN_ARG_PRESENT.get(name)
     if mutating_arg is not None:
@@ -217,7 +237,7 @@ def _tool_call_requires_confirmation(name: str, args: Any) -> bool:
             command = args.get("command")
             if exec_id and not command:
                 return False
-        if args.get("dry_run") is True:
+        if name in _DRY_RUN_AWARE and args.get("dry_run") is True:
             return False
     return True
 
