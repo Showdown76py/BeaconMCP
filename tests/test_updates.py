@@ -451,6 +451,116 @@ def test_apply_without_a_service_tells_you_to_restart(
 
 
 # ---------------------------------------------------------------------------
+# Concurrency
+#
+# Two entry points reach this code: the dashboard button and the MCP tool.
+# Two `git pull` / `pip install` runs in one checkout would fight over
+# index.lock and could leave a half-applied tree.
+# ---------------------------------------------------------------------------
+
+def test_a_second_update_is_refused_while_one_runs(checkout, upstream, monkeypatch):
+    import threading
+
+    _advance(upstream, "feat: thing")
+    started = threading.Event()
+    release = threading.Event()
+    second: dict[str, object] = {}
+
+    real_run = updates._run
+
+    def blocking_run(cmd, cwd, timeout):
+        if "pip" in " ".join(cmd):
+            started.set()
+            release.wait(10)
+            return 0, "pip output"
+        if "validate-config" in cmd:
+            return 0, ""
+        return real_run(cmd, cwd, timeout)
+
+    monkeypatch.setattr(updates, "_run", blocking_run)
+    monkeypatch.setattr(updates, "_schedule_restart", lambda service, delay: True)
+
+    install = _install(checkout)
+    first: dict[str, object] = {}
+
+    def run_first():
+        first["result"] = updates.apply_update(install=install)
+
+    t = threading.Thread(target=run_first)
+    t.start()
+    try:
+        assert started.wait(10), "first update never reached the pip step"
+        # A second caller must be told, not queued behind a long pip run.
+        second["result"] = updates.apply_update(install=install)
+    finally:
+        release.set()
+        t.join(15)
+
+    busy = second["result"]
+    assert busy.ok is False
+    assert "already running" in busy.message
+    assert busy.from_ref is None, "the refused caller must not touch git"
+    assert first["result"].ok is True
+
+
+def test_the_lock_is_released_after_a_failure(checkout, upstream, stub_side_effects):
+    _, outcomes = stub_side_effects
+    outcomes["validate"] = 1
+    _advance(upstream, "feat: thing")
+    first = updates.apply_update(install=_install(checkout))
+    assert first.ok is False and first.rolled_back is True
+    # Second call must run, not report "already running".
+    second = updates.apply_update(install=_install(checkout))
+    assert "already running" not in second.message
+
+
+def test_concurrent_checks_fetch_once(monkeypatch):
+    import threading
+
+    updates.invalidate_cache()
+    calls = []
+    gate = threading.Event()
+
+    def slow_check(**kwargs):
+        calls.append(1)
+        gate.wait(5)
+        return updates.UpdateInfo(checked_at=time.time())
+
+    monkeypatch.setattr(updates, "_check_uncached", slow_check)
+    threads = [
+        threading.Thread(target=lambda: updates.check_for_update())
+        for _ in range(4)
+    ]
+    for t in threads:
+        t.start()
+    time.sleep(0.4)
+    gate.set()
+    for t in threads:
+        t.join(10)
+
+    assert len(calls) == 1, f"expected one fetch, got {len(calls)}"
+    updates.invalidate_cache()
+
+
+def test_restart_command_passes_values_through_argv(monkeypatch):
+    """No shell interpolation, so a future configurable unit name is safe."""
+    seen = {}
+
+    class FakePopen:
+        def __init__(self, cmd, **kwargs):
+            seen["cmd"] = cmd
+
+    monkeypatch.setattr(updates.shutil, "which", lambda name: "/bin/systemctl")
+    monkeypatch.setattr(updates.subprocess, "Popen", FakePopen)
+    assert updates._schedule_restart("beaconmcp; rm -rf /", 5) is True
+    cmd = seen["cmd"]
+    # The dangerous string is an argument, never part of the script.
+    assert "beaconmcp; rm -rf /" in cmd
+    assert "rm -rf" not in cmd[2]
+    assert cmd[2] == 'sleep "$1"; systemctl restart "$2"'
+
+
+# ---------------------------------------------------------------------------
 # Dashboard endpoints
 # ---------------------------------------------------------------------------
 

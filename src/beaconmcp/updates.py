@@ -427,6 +427,17 @@ def _self_update_blockers(install: Installation, root: Path | None) -> list[str]
 _cache_lock = threading.Lock()
 _cached: UpdateInfo | None = None
 
+#: Serializes the git work. Two entry points can reach this concurrently --
+#: the dashboard button and the MCP tool -- and two ``git pull`` /
+#: ``pip install`` runs in one checkout would fight over index.lock and
+#: could leave a half-applied tree. ``_apply_lock`` is never waited on: a
+#: second updater is told one is already running rather than queueing
+#: behind a pip that may take minutes.
+_apply_lock = threading.Lock()
+#: Held across an uncached check so N dashboard tabs opening at once cause
+#: one ``git fetch``, not N. Waiters get the result the winner cached.
+_check_lock = threading.RLock()
+
 
 def check_for_update(
     *,
@@ -448,16 +459,29 @@ def check_for_update(
     if install is not None:
         return _check_uncached(config_path=config_path, install=install)
 
-    with _cache_lock:
-        cached = _cached
-    if cached is not None and not force:
+    def _fresh() -> UpdateInfo | None:
+        with _cache_lock:
+            cached = _cached
+        if cached is None:
+            return None
         ttl = FAILED_CHECK_TTL_SECONDS if cached.error else CHECK_TTL_SECONDS
-        if time.time() - cached.checked_at < ttl:
-            return cached
+        return cached if time.time() - cached.checked_at < ttl else None
 
-    info = _check_uncached(config_path=config_path)
-    with _cache_lock:
-        _cached = info
+    if not force:
+        hit = _fresh()
+        if hit is not None:
+            return hit
+
+    with _check_lock:
+        # Someone may have refreshed it while we waited for the lock; a
+        # forced check still runs, since that is the point of forcing.
+        if not force:
+            hit = _fresh()
+            if hit is not None:
+                return hit
+        info = _check_uncached(config_path=config_path)
+        with _cache_lock:
+            _cached = info
     return info
 
 
@@ -622,7 +646,13 @@ def _schedule_restart(service: str, delay: int) -> bool:
         return False
     try:
         subprocess.Popen(
-            ["sh", "-c", f"sleep {int(delay)}; systemctl restart {service}"],
+            # Values go through argv, never interpolated into the script:
+            # `service` is a literal today, but a future change that made it
+            # configurable must not turn this into a shell injection.
+            [
+                "sh", "-c", 'sleep "$1"; systemctl restart "$2"',
+                "sh", str(int(delay)), service,
+            ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
@@ -646,6 +676,32 @@ def apply_update(
     checkout is rolled back to where it started and nothing is restarted.
     An unattended update that bricks the server is worse than no update.
     """
+    if not _apply_lock.acquire(blocking=False):
+        busy = UpdateResult(ok=False)
+        busy.message = (
+            "An update is already running on this server. Wait for it to "
+            "finish before starting another one."
+        )
+        busy.steps.append(UpdateStep("preflight", False, busy.message))
+        return busy
+    try:
+        return _apply_update_locked(
+            restart=restart,
+            restart_delay=restart_delay,
+            config_path=config_path,
+            install=install,
+        )
+    finally:
+        _apply_lock.release()
+
+
+def _apply_update_locked(
+    *,
+    restart: bool,
+    restart_delay: int,
+    config_path: Path | None,
+    install: Installation | None,
+) -> UpdateResult:
     install = install or detect_installation()
     result = UpdateResult(ok=False)
 

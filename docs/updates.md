@@ -68,6 +68,10 @@ cannot load your config — a setting was renamed, a new one is now required —
 to exactly where it started, dependencies are restored, **nothing is restarted**, and the error from
 the validator is handed back to you. An update that bricks the server is worse than no update.
 
+Only one update runs at a time. The dashboard button and the MCP tool reach the same code, and two
+`git pull` / `pip install` runs in one checkout would fight over `index.lock`. A second caller is
+told one is already in progress rather than queued behind a pip that may take minutes.
+
 ### From the dashboard
 
 The **Update now** button asks for a fresh 2FA code before it runs. Pulling code and restarting the
