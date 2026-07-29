@@ -3,7 +3,7 @@
 Optional web panel served by BeaconMCP on the same origin as the MCP endpoint (`https://<your-host>/app/...`). Three pages:
 
 - **`/app/login`** — exchanges a client id + client secret + a second factor (TOTP code or passkey) for an MCP bearer, and stores it in a 90-day HttpOnly session cookie. Removes the need to issue `curl` requests from a phone.
-- **`/app/chat`** — multi-conversation chat with Gemini 2.5 Flash/Pro (stable) or Gemini 3 Flash / 3.1 Pro (preview, Google allowlist required). **Requires `GEMINI_API_KEY`.**
+- **`/app/chat`** — multi-conversation chat with Gemini 3.6 Flash / 3.5 Flash-Lite (GA) or Gemini 3.1 Pro (preview, Google allowlist required). **Requires `GEMINI_API_KEY`.**
 - **`/app/tokens`** — generates named bearers so external MCP clients (Gemini web, ChatGPT, Assistant Desktop) can be wired up without the OAuth dance. **Works without `GEMINI_API_KEY`.**
 
 ## Enabling
@@ -86,9 +86,12 @@ Constraints:
 
 ## Chat — models and thinking
 
-- **Gemini 2.5 Flash / Pro** — available on every AI Studio key. **Used by default** (`gemini-2.5-flash`).
-- **Gemini 3 Flash / 3.1 Pro (preview)** — gated by a Google allowlist. Without allowlist access, the dashboard surfaces a clear message pointing back to 2.5.
-- **Thinking effort** — dropdown with `minimal` / `low` / `medium` / `high`. `gemini-2.5-pro` cannot disable thinking, so `minimal` is clamped to the 128-token floor automatically.
+- **Gemini 3.6 Flash** — GA, available on every AI Studio key. **Used by default** (`gemini-3.6-flash`).
+- **Gemini 3.5 Flash-Lite** — GA, the cheap high-throughput option (`gemini-3.5-flash-lite`), 5× cheaper in and out than 3.6 Flash.
+- **Gemini 3.1 Pro (preview)** — gated by a Google allowlist. Without allowlist access, the dashboard surfaces a clear message pointing back to the two GA models.
+- **Thinking effort** — dropdown with `minimal` / `low` / `medium` / `high`. The Gemini 3 family takes a `thinking_level` enum; the token-budget mapping in `_BUDGET_BY_EFFORT` (and the 128-token floor `gemini-2.5-pro` needed) only applies to models outside it, and is kept for conversations that predate the switch.
+
+Gemini 2.5 Flash / Pro and `gemini-3-flash-preview` were retired from the picker when 3.6 Flash and 3.5 Flash-Lite went GA (2026-07-21). A conversation sitting on one of them is moved to the closest current model by the schema-6 migration; `messages.model` is left alone, so the transcript keeps naming whichever model actually wrote each reply, and `usage.py` keeps their rates so old turns are never re-priced.
 - **Markdown rendering** — the client parses headings (`#`–`######`), ordered and unordered lists, blockquotes, horizontal rules, code fences (with `lang-*` class), inline code, bold/italic/strikethrough, and HTTP(S) links.
 
 ## Mandatory confirmation for dangerous tools
@@ -97,13 +100,13 @@ The model's input is untrusted: a log line, a config file, or a web-search resul
 
 **Arbitrary code execution** — `ssh_run`, `proxmox_run`, and the primitives that become code execution in one hop (`proxmox_write_file`, `proxmox_upload_file`, `proxmox_download_file`, `proxmox_delete_transfer`). Writing `~/.ssh/authorized_keys` or a file under `/etc/cron.d` is exactly as good as a shell, which is why the file tools sit alongside the exec tools.
 
-**Destructive or irreversible** — `vm_bulk_action`, `proxmox_vm_stop`, `proxmox_vm_restart`, `proxmox_vm_migrate`, `proxmox_snapshot_rollback`, `proxmox_snapshot_delete`, `proxmox_backup_restore`, `bmc_power_off`, `bmc_power_reset`.
+**Destructive or irreversible** — `vm_bulk_action`, `proxmox_vm_stop`, `proxmox_vm_restart`, `proxmox_vm_migrate`, `proxmox_snapshot_rollback`, `proxmox_snapshot_delete`, `proxmox_backup_restore`, `bmc_power_off`, `bmc_power_reset`, and `beaconmcp_self_update` with `confirm=True` — which pulls new code, reinstalls dependencies and restarts the service, i.e. replaces the very process enforcing this gate.
 
 Three call shapes are let through without a modal, because they don't change anything:
 
 - `ssh_run` / `proxmox_run` carrying only `exec_id=` — that's read-only polling of an already-approved session.
 - `proxmox_snapshot_create` / `_rollback` / `_delete` called with `dry_run=True` — they only report what they *would* do. The exemption is limited to those three by name, never inferred from the argument: an undeclared `dry_run` is silently dropped during argument validation, so trusting it would let `ssh_run(command=..., dry_run=True)` past the modal and then run for real.
-- `proxmox_vm_config` without `updates` — the read shape of a read-or-write tool.
+- `proxmox_vm_config` without `updates`, and `beaconmcp_self_update` without `confirm=True` — the read shape of a read-or-write tool. Reading the argument is sound for these two because both parameters are declared by the tool, so what the gate reads is what the tool acts on; that is precisely what makes it unsound for an undeclared `dry_run`.
 
 When Gemini fires a gated call:
 
@@ -113,6 +116,38 @@ When Gemini fires a gated call:
 4. On rejection, Gemini receives a `FunctionResponse {"error": "user_rejected"}` and can revise its reply.
 
 The allow-list is hard-coded in `src/beaconmcp/dashboard/chat.py` (`_NEEDS_CONFIRMATION`, `_CONFIRM_WHEN_ARG_PRESENT`, `_tool_call_requires_confirmation`). Only the integrated chat enforces this gate; external MCP clients (Assistant Desktop, Gemini CLI, ChatGPT MCP) must enable their own per-call approval mode (see the **Security** section of the root README).
+
+## Interactive panels (MCP Apps)
+
+Tools that carry `_meta.ui.resourceUri` — `proxmox_vm_panel`, `proxmox_logs_panel`, `cluster_overview_interactive` — render as a live interface in the chat instead of a block of JSON. The dashboard implements both halves of the [MCP Apps extension](https://modelcontextprotocol.io/extensions/apps/overview): it announces `io.modelcontextprotocol/ui` when it opens its MCP session, and it plays host to the `ui://` document over `postMessage`.
+
+The extension is declared through `ClientCapabilities.extensions`, a field mcp only types in 2.0. The `<2` pin is not in the way: the model accepts extra fields, so the capability serialises under the name the spec gives it and the server reads the same JSON either way (`dashboard/mcp_bridge.py`).
+
+### How a panel is isolated
+
+The document is served by `/app/api/mcp/panel` and framed with `sandbox="allow-scripts"` and **no** `allow-same-origin`. That puts it on an opaque origin: it cannot read the session cookie, cannot read the CSRF token, cannot reach into the parent page. Its response also carries its own `Content-Security-Policy` — `default-src 'none'`, `connect-src 'none'`, `frame-ancestors 'self'` — so it cannot open a socket of its own either.
+
+What is left is `postMessage` to the parent. Every tool call a panel makes therefore goes through `/app/api/mcp/call`, which is session-authenticated and CSRF-protected, and where the policy below is applied.
+
+### What a panel may call on its own
+
+A panel button is a labelled control a human clicked, so the approval modal — which exists because the *model's* input is untrusted — would restate the click rather than check it. Panel calls are therefore not gated. What is *not* granted is a blanket exemption for anything running in a frame: a `ui://` document is HTML the server wrote, and this dashboard is a general MCP host, so a blanket rule would hand every connected server a way around the gate it is documented to be subject to.
+
+The exemption is a closed list, enforced server-side in `panel_call_allowed()`:
+
+- `proxmox_vm_start` / `_stop` / `_restart` — one guest per call, visible in the panel, reversible from it.
+- `proxmox_vm_config`, but only when every key in `updates` is sizing (`cores`, `sockets`, `memory`, `balloon`, `cpulimit`, `cpuunits`). Exempting the tool itself would exempt `hookscript`, raw QEMU `args` and device passthrough along with it.
+- Everything that was never gated in the first place — the read-only tools, including the three panel tools themselves.
+
+Anything else is refused with `403 confirmation_required`, and the panel shows the reason. It is refused rather than prompted because there is no turn in flight to hang a modal on — and because the panel already has a way through: `ui/message` hands the request to the model, which puts it back under the modal where it belongs.
+
+### Model context
+
+A panel that acts on the cluster pushes the fresh state back with `ui/update-model-context`. The page holds the latest update per panel and sends it with the next message, labelled as coming from the panel rather than from the operator. Without it, stopping a VM from the panel would leave the next turn believing it still runs — the button's result goes to the iframe, not into the conversation.
+
+### Reopening from history
+
+Only the `ui://` URI is stored with the tool call, never the snapshot behind it. A panel in an older conversation renders as an **Open panel** button; clicking it mounts the frame and refetches. Live figures in a panel that has been sitting in the transcript for a week would be worse than a short spinner.
 
 ## Stored data
 
@@ -141,14 +176,16 @@ Setting a variable to `0` disables that window. When a cap is exceeded, the next
 
 The chat footer shows a compact `5H XX% · 7D XX%` line updated after every turn via an SSE `usage_update` event. Clicking the bar opens a modal with progress bars, the 5 h reset time, a "rolling 7-day window" label, and a refresh button.
 
-Rates used (USD per 1 M tokens, aligned with the public Google AI Studio pricing on 2026-04-17):
+Rates used (USD per 1 M tokens, aligned with the public Google AI Studio pricing on 2026-07-29). The retired rows are kept because the ledger re-prices stored turns, and dropping a rate would silently re-bill that history at the fallback model's price:
 
 | Model | Input | Cached | Output |
 |-------|-------|--------|--------|
-| `gemini-2.5-flash` | $0.30 | $0.03 | $2.50 |
-| `gemini-2.5-pro` (≤200k / >200k) | $1.25 / $2.50 | $0.125 / $0.25 | $10.00 / $15.00 |
-| `gemini-3-flash-preview` | $0.50 | $0.05 | $3.00 |
+| `gemini-3.6-flash` | $1.50 | $0.15 | $7.50 |
+| `gemini-3.5-flash-lite` | $0.30 | $0.03 | $2.50 |
 | `gemini-3.1-pro-preview` (≤200k / >200k) | $2.00 / $4.00 | $0.20 / $0.40 | $12.00 / $18.00 |
+| `gemini-2.5-flash` *(retired)* | $0.30 | $0.03 | $2.50 |
+| `gemini-2.5-pro` *(retired, ≤200k / >200k)* | $1.25 / $2.50 | $0.125 / $0.25 | $10.00 / $15.00 |
+| `gemini-3-flash-preview` *(retired)* | $0.50 | $0.05 | $3.00 |
 
 Constants live in `src/beaconmcp/dashboard/usage.py` — update them when Google adjusts its prices.
 

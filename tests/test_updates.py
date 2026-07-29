@@ -789,10 +789,16 @@ def test_fingerprint_changes_when_an_asset_changes(tmp_path, monkeypatch):
     from beaconmcp.dashboard import app as dashboard_app
 
     before = dashboard_app._compute_asset_version()
-    target = dashboard_app._DASHBOARD_DIR / "static" / "app.css"
+    static_dir = dashboard_app._DASHBOARD_DIR / "static"
+    target = static_dir / "app.css"
     original = target.stat()
+    # Push past the newest file in the directory, not just past this one:
+    # the fingerprint is the directory maximum, so bumping a file that is
+    # not currently the newest changes nothing and the assertion below
+    # would fail for a reason that has nothing to do with fingerprinting.
+    newest = max(p.stat().st_mtime for p in static_dir.iterdir() if p.is_file())
     try:
-        os.utime(target, (original.st_atime, original.st_mtime + 120))
+        os.utime(target, (original.st_atime, newest + 120))
         assert dashboard_app._compute_asset_version() != before
     finally:
         os.utime(target, (original.st_atime, original.st_mtime))

@@ -103,6 +103,10 @@ class ToolCallEnd:
     status: str  # ok | error
     preview: str
     duration_ms: int
+    # Set only when the tool declares an MCP Apps panel. Carries the
+    # ``ui://`` URI plus the full ``CallToolResult`` -- the panel needs the
+    # whole payload, not the 500-char ``preview`` the tool card shows.
+    ui: dict[str, Any] | None = None
 
 
 @dataclass
@@ -188,8 +192,20 @@ _NEEDS_CONFIRMATION: frozenset[str] = frozenset({
 # ``proxmox_vm_config`` returns the config without ``updates`` and rewrites
 # it with them, so gating the whole tool would put a modal in front of
 # every read. Map: tool name -> arg whose presence makes the call mutate.
+#
+# ``beaconmcp_self_update`` belongs here for the same reason and is the
+# sharper case: with ``confirm=False`` it only previews, but with
+# ``confirm=True`` it pulls new code, reinstalls dependencies and restarts
+# the service. That is the single most consequential call this server
+# exposes, and nothing stops an injected instruction from asking for it.
+#
+# Reading the argument is sound here, unlike the ``dry_run`` case below:
+# ``confirm`` is a parameter the tool actually declares, so what we read is
+# what the tool will act on. The trap that note describes is an argument the
+# tool does *not* declare, which pydantic drops during validation.
 _CONFIRM_WHEN_ARG_PRESENT: dict[str, str] = {
     "proxmox_vm_config": "updates",
+    "beaconmcp_self_update": "confirm",
 }
 
 # Tools that actually implement a ``dry_run`` parameter and return a
@@ -242,6 +258,97 @@ def _tool_call_requires_confirmation(name: str, args: Any) -> bool:
     return True
 
 
+# Tools a ui:// panel is allowed to call by itself, without the modal.
+#
+# The gate above exists because the *model* decides those calls and the
+# model's input is untrusted. A panel button is not that: it is a labelled
+# control a human clicked, and putting "Approve stopping VM 104?" in front
+# of a button that says "Stop" restates the click rather than checking it.
+#
+# What the exemption is NOT is "calls from an iframe skip the gate". The
+# panel document is HTML the *server* wrote, not something the operator
+# typed, and this dashboard is a general MCP host -- any server an operator
+# connects can ship a ui:// resource. A blanket exemption would hand every
+# such server a way around the approval it is documented to be subject to.
+# So the list is closed and enumerated: guest lifecycle, one guest per
+# call, visible in the panel and reversible from it.
+#
+# There is a deliberate escape hatch for everything else. A panel that
+# wants a shell sends ``ui/message``, which puts the request back on the
+# model's path -- and therefore back under the modal it belongs to. That is
+# why the relay refuses out-of-list tools outright instead of prompting:
+# the prompt already exists, one hop further along.
+_PANEL_CALL_EXEMPT: frozenset[str] = frozenset({
+    "proxmox_vm_start",
+    "proxmox_vm_stop",
+    "proxmox_vm_restart",
+})
+
+# ``proxmox_vm_config`` cannot go in the set above, because ``updates`` is an
+# open-ended guest config: exempting the tool would exempt ``hookscript``,
+# raw QEMU ``args`` and device passthrough along with it. The panels edit
+# sizing, so sizing is what is exempt -- any other key falls back to the
+# normal gate and is refused.
+_PANEL_CONFIG_KEYS: frozenset[str] = frozenset({
+    "cores", "sockets", "memory", "balloon", "cpulimit", "cpuunits",
+})
+
+
+def panel_call_allowed(name: str, args: Any) -> bool:
+    """Return True when a panel may issue this ``tools/call`` unattended."""
+    if name in _PANEL_CALL_EXEMPT:
+        return True
+    if name == "proxmox_vm_config":
+        updates = args.get("updates") if isinstance(args, dict) else None
+        if not updates:
+            return True  # reading a config, not writing one
+        return isinstance(updates, dict) and set(updates).issubset(_PANEL_CONFIG_KEYS)
+    return not _tool_call_requires_confirmation(name, args)
+
+
+# Cap on what one panel's ``ui/update-model-context`` may inject, so a
+# cluster dashboard holding a few hundred guests cannot quietly become the
+# bulk of the prompt. The panels send a sentence plus a small object; this
+# is a backstop, not a working limit.
+_APP_CONTEXT_MAX_CHARS = 4000
+
+
+def format_app_context(entries: Any) -> str:
+    """Render panel context updates as one labelled block for the model.
+
+    Marked as coming from a panel rather than from the operator: the text
+    is written by the ``ui://`` document, so the model should weigh it as
+    tool output, which is exactly what it is.
+    """
+    if not isinstance(entries, list) or not entries:
+        return ""
+    lines: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        tool = str(entry.get("tool") or "panel")
+        parts: list[str] = []
+        text = entry.get("text")
+        if isinstance(text, str) and text.strip():
+            parts.append(text.strip())
+        structured = entry.get("structured")
+        if structured is not None:
+            parts.append(_json.dumps(structured, ensure_ascii=False, default=str))
+        if not parts:
+            continue
+        body = "\n".join(parts)
+        if len(body) > _APP_CONTEXT_MAX_CHARS:
+            body = body[: _APP_CONTEXT_MAX_CHARS - 1] + "…"
+        lines.append(f"[{tool}] {body}")
+    if not lines:
+        return ""
+    return (
+        "State reported by the interactive panels open in this conversation "
+        "(the user acted in the panel; these calls did not go through you):\n"
+        + "\n".join(lines)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Turn input
 # ---------------------------------------------------------------------------
@@ -266,6 +373,13 @@ class TurnInput:
     # must return ``True`` for approve / ``False`` for reject. If
     # ``None``, confirmation-gated tools auto-reject.
     confirm_tool: Callable[[ToolConfirmRequired], Awaitable[bool]] | None = None
+    # Latest ``ui/update-model-context`` payload from each open panel, as
+    # ``{"tool": name, "text": str | None, "structured": Any}``. Folded into
+    # this turn's user content so the model sees what the operator did in
+    # the frame -- without it, stopping a VM from the panel leaves the next
+    # turn still believing it runs, because the button's tools/call result
+    # went to the iframe rather than into the conversation.
+    app_context: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +453,12 @@ def assemble_assistant_message(
             tc.status = event.status
             tc.preview = event.preview
             tc.duration_ms = event.duration_ms
+            if isinstance(event.ui, dict):
+                # Only the URI is persisted, not the payload behind it. A
+                # cluster snapshot is large and goes stale the moment the
+                # turn ends; reopening the panel from history refetches
+                # rather than replaying what the cluster looked like then.
+                tc.ui_resource_uri = event.ui.get("resourceUri")
         # UsageAccumulated / ToolConfirmRequired / ErrorEvent don't
         # contribute to the persisted message body.
 
@@ -408,7 +528,7 @@ class GeminiChatEngine:
         )
 
     @staticmethod
-    def _build_contents(history, user_text):
+    def _build_contents(history, user_text, app_context=None):
         from google.genai import types  # type: ignore
         contents: list = []
         for msg in history:
@@ -422,6 +542,15 @@ class GeminiChatEngine:
                     role="model",
                     parts=[types.Part(text=msg.content)],
                 ))
+        block = format_app_context(app_context)
+        if block:
+            # Its own user turn rather than a prefix on the operator's
+            # message: the operator did not write this, and a model that
+            # quotes their message back should not quote panel telemetry
+            # as if they had typed it.
+            contents.append(types.Content(
+                role="user", parts=[types.Part(text=block)],
+            ))
         contents.append(types.Content(
             role="user",
             parts=[types.Part(text=user_text)],
@@ -484,7 +613,9 @@ class GeminiChatEngine:
         usage_total_output = 0
         emitted_visible_text = False
 
-        contents = self._build_contents(turn.history, turn.user_text)
+        contents = self._build_contents(
+            turn.history, turn.user_text, turn.app_context,
+        )
         thinking = self._build_thinking_config(turn.model, turn.effort)
 
         if turn.mcp_mode == "remote":
@@ -526,9 +657,15 @@ class GeminiChatEngine:
         # ``session.call_tool()``, and feed the results back in a new
         # ``generate_content_stream`` call until no function_call remains.
         try:
-            from mcp.client.session import ClientSession  # type: ignore
             from mcp.client.streamable_http import (  # type: ignore
                 streamablehttp_client,
+            )
+
+            from .mcp_bridge import (
+                AppsClientSession,
+                call_result_to_wire,
+                ui_resource_uri,
+                ui_resource_uris_by_tool,
             )
         except ImportError as e:
             yield ErrorEvent(code="sdk_missing", message=str(e))
@@ -552,7 +689,10 @@ class GeminiChatEngine:
             timeout=30,
             sse_read_timeout=300,
         ) as (read_stream, write_stream, _get_session_id):
-            async with ClientSession(read_stream, write_stream) as session:
+            # Apps-aware session: it declares io.modelcontextprotocol/ui at
+            # initialize, which is what lets the dashboard render the ui://
+            # panels its own tools point at instead of showing their JSON.
+            async with AppsClientSession(read_stream, write_stream) as session:
                     try:
                         init_result = await session.initialize()
                     except Exception as e:  # noqa: BLE001
@@ -597,6 +737,11 @@ class GeminiChatEngine:
                             ),
                         )
                         return
+
+                    # tool name -> ui:// panel, from each tool's _meta.ui.
+                    # Read once per turn; the tool list does not change
+                    # under us mid-turn.
+                    panel_uris = ui_resource_uris_by_tool(mcp_tools)
 
                     function_decls = [
                         _mcp_tool_to_declaration(t, types) for t in mcp_tools
@@ -854,6 +999,7 @@ class GeminiChatEngine:
                                 )
                                 continue
 
+                            ui: dict[str, Any] | None = None
                             try:
                                 result = await session.call_tool(name, args)
                                 payload = _mcp_call_result_to_response(result)
@@ -862,6 +1008,17 @@ class GeminiChatEngine:
                                     if getattr(result, "isError", False)
                                     else "ok"
                                 )
+                                # A result-level _meta.ui wins over the one
+                                # the tool declared, per the Apps spec.
+                                uri = (
+                                    ui_resource_uri(getattr(result, "meta", None))
+                                    or panel_uris.get(name)
+                                )
+                                if uri and status == "ok":
+                                    ui = {
+                                        "resourceUri": uri,
+                                        "result": call_result_to_wire(result),
+                                    }
                             except Exception as e:  # noqa: BLE001
                                 payload = {"error": str(e)}
                                 status = "error"
@@ -871,6 +1028,7 @@ class GeminiChatEngine:
                                 id=fc_id, status=status,
                                 preview=_short_preview(payload),
                                 duration_ms=duration,
+                                ui=ui,
                             )
 
                             response_parts.append(
@@ -1160,9 +1318,9 @@ def _classify_error(exc: BaseException, model: str) -> tuple[str, str]:
                 (
                     f"Your Gemini key does not have access to {model} "
                     "(Google allowlist required for preview models). Switch "
-                    "to gemini-2.5-flash or gemini-2.5-pro via the dropdown "
-                    "in the bottom-left — those are available on every AI "
-                    "Studio key."
+                    "to gemini-3.6-flash or gemini-3.5-flash-lite via the "
+                    "dropdown in the bottom-left — those are GA and "
+                    "available on every AI Studio key."
                 ),
             )
         return (

@@ -14,17 +14,25 @@ const VALID_EFFORTS = JSON.parse(root.dataset.validEfforts || "[]");
 
 // --- Model catalog (mirrors src/beaconmcp/dashboard/conversations.py) ---
 const MODEL_CATALOG = {
-  "gemini-2.5-flash": {
-    shortName: "2.5 Flash", name: "Gemini 2.5 Flash", group: "Gemini 2", preview: false,
+  "gemini-3.6-flash": {
+    shortName: "3.6 Flash", name: "Gemini 3.6 Flash", group: "Flash", preview: false,
   },
-  "gemini-2.5-pro": {
-    shortName: "2.5 Pro", name: "Gemini 2.5 Pro", group: "Gemini 2", preview: false,
-  },
-  "gemini-3-flash-preview": {
-    shortName: "3 Flash", name: "Gemini 3 Flash", group: "Gemini 3", preview: true,
+  "gemini-3.5-flash-lite": {
+    shortName: "3.5 Lite", name: "Gemini 3.5 Flash-Lite", group: "Flash", preview: false,
   },
   "gemini-3.1-pro-preview": {
-    shortName: "3.1 Pro", name: "Gemini 3.1 Pro", group: "Gemini 3", preview: true,
+    shortName: "3.1 Pro", name: "Gemini 3.1 Pro", group: "Pro", preview: true,
+  },
+  // Retired from the picker but still rendered on stored messages, which
+  // record whichever model actually wrote the reply.
+  "gemini-2.5-flash": {
+    shortName: "2.5 Flash", name: "Gemini 2.5 Flash", group: "Legacy", preview: false,
+  },
+  "gemini-2.5-pro": {
+    shortName: "2.5 Pro", name: "Gemini 2.5 Pro", group: "Legacy", preview: false,
+  },
+  "gemini-3-flash-preview": {
+    shortName: "3 Flash", name: "Gemini 3 Flash", group: "Legacy", preview: true,
   },
 };
 
@@ -300,6 +308,10 @@ const state = {
   abortController: null,
   model: DEFAULT_MODEL,
   effort: DEFAULT_EFFORT,
+  // Latest ui/update-model-context from each open panel, keyed by tool-call
+  // id so a panel that pushes twice overwrites itself rather than piling up.
+  // Drained into the next turn, then cleared.
+  appContext: new Map(),
 };
 
 const el = {
@@ -567,6 +579,7 @@ function toolNeedsConfirm(name, args) {
 }
 
 function renderMessages() {
+  destroyAllPanels("conversation re-rendered");
   el.messages.innerHTML = "";
   if (!state.messages.length) {
     el.messages.append(renderEmptyState());
@@ -609,6 +622,7 @@ function renderMessage(m) {
     const card = renderToolCard(tc, m.id);
     toolCardMap.set(tc.id, card);
     row.append(card);
+    if (tc.ui_resource_uri) attachPanel(card, tc, null);
   }
 
   if (!m.streaming) {
@@ -772,6 +786,426 @@ async function sendConfirmation(callId, approve, approveBtn, rejectBtn) {
 
 function scrollToBottom() {
   el.messages.scrollTop = el.messages.scrollHeight;
+}
+
+// ---------------- MCP Apps host ----------------
+//
+// A tool that carries _meta.ui.resourceUri gets its ui:// document rendered
+// here instead of its JSON. The document is served by /app/api/mcp/panel and
+// framed with sandbox="allow-scripts" and NO allow-same-origin, so it runs on
+// an opaque origin: no cookies, no CSRF token, no reach into this page. Its
+// only way out is postMessage to us, which is why every policy decision --
+// which tools it may call, whether it may talk to the model -- is made on
+// this side of the boundary and never inside the frame.
+//
+// The dialect is JSON-RPC 2.0 (MCP Apps, SEP-1865). We implement the host
+// half by hand rather than porting the SDK's AppBridge: it is TypeScript and
+// this dashboard ships JS with no build step.
+
+const UI_PROTOCOL_VERSION = "2026-01-26";
+const HOST_INFO = { name: "beaconmcp-dashboard", version: "1.0.0" };
+const PANEL_MAX_HEIGHT = 640;
+const PANEL_MIN_HEIGHT = 140;
+
+const panels = new Set();
+
+function currentTheme() {
+  return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+}
+
+// The panels are told our palette under the spec's standardized names, so
+// they sit inside the dashboard's theme rather than next to it. Computed
+// values, not var() references: the frame cannot resolve our variables.
+function hostStyleVariables() {
+  const cs = getComputedStyle(document.documentElement);
+  const v = (name) => cs.getPropertyValue(name).trim();
+  const map = {
+    "--color-background-primary": v("--bg-elev") || v("--bg"),
+    "--color-background-secondary": v("--bg-soft"),
+    "--color-background-tertiary": v("--bg-softer"),
+    "--color-text-primary": v("--fg"),
+    "--color-text-secondary": v("--fg-mid"),
+    "--color-text-tertiary": v("--fg-muted"),
+    "--color-text-danger": v("--danger"),
+    "--color-text-success": v("--success"),
+    "--color-text-warning": v("--warn"),
+    "--color-border-primary": v("--border"),
+    "--color-border-secondary": v("--border-subtle"),
+    "--color-ring-primary": v("--accent"),
+    "--font-sans": v("--font"),
+    "--font-mono": v("--font-mono"),
+    "--border-radius-sm": v("--radius-sm"),
+    "--border-radius-md": v("--radius"),
+  };
+  for (const key of Object.keys(map)) if (!map[key]) delete map[key];
+  return map;
+}
+
+function hostContext(panel) {
+  return {
+    theme: currentTheme(),
+    styles: { variables: hostStyleVariables() },
+    displayMode: panel.displayMode,
+    availableDisplayModes: ["inline", "fullscreen"],
+    containerDimensions: { maxHeight: PANEL_MAX_HEIGHT },
+    locale: navigator.language || "en-US",
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    userAgent: HOST_INFO.name,
+    platform: "web",
+    deviceCapabilities: {
+      touch: matchMedia("(pointer: coarse)").matches,
+      hover: matchMedia("(hover: hover)").matches,
+    },
+    toolInfo: { tool: { name: panel.toolName } },
+  };
+}
+
+// Capabilities we actually implement. Anything absent here is a method the
+// panels are expected to hide rather than call -- ui/open-link for instance
+// is not advertised, and the relay rejects it.
+function hostCapabilities() {
+  return {
+    serverTools: {},
+    updateModelContext: { text: {}, structuredContent: {} },
+    message: { text: {} },
+  };
+}
+
+async function relayToolCall(name, args) {
+  const res = await fetch("/app/api/mcp/call", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      "X-CSRF-Token": csrfToken(),
+    },
+    body: JSON.stringify({ name, arguments: args || {} }),
+    credentials: "same-origin",
+  });
+  if (res.status === 401) {
+    window.location.href = "/app/refresh?next=/app/chat";
+    throw new Error("unauthorized");
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.message || data.error || `tool call failed (${res.status})`);
+    err.refused = data.error === "confirmation_required";
+    throw err;
+  }
+  return data.result;
+}
+
+function createPanel({ callId, toolName, toolArgs, uri, result }) {
+  const panel = {
+    callId,
+    toolName,
+    toolArgs: toolArgs || {},
+    uri,
+    result: result || null,
+    displayMode: "inline",
+    frame: null,
+    ready: false,
+    root: null,
+    note: null,
+  };
+
+  const note = h("div", { class: "panel-note", hidden: true });
+  const wrap = h("div", { class: "panel-frame" });
+
+  const fullscreenBtn = h("button", {
+    type: "button", class: "panel-btn", "aria-label": "Toggle fullscreen",
+    onClick: () => setDisplayMode(panel, panel.displayMode === "fullscreen" ? "inline" : "fullscreen"),
+  }, [icon("expand", 13)]);
+
+  const closeBtn = h("button", {
+    type: "button", class: "panel-btn", "aria-label": "Close panel",
+    onClick: () => destroyPanel(panel, "closed by user"),
+  }, [icon("x", 13)]);
+
+  const root = h("div", { class: "panel", dataset: { mode: "inline" } }, [
+    h("div", { class: "panel-head" }, [
+      h("div", { class: "panel-icon" }, [icon("gauge", 13)]),
+      h("span", { class: "panel-name", text: toolName }),
+      h("span", { class: "panel-spacer" }),
+      fullscreenBtn,
+      closeBtn,
+    ]),
+    wrap,
+    note,
+  ]);
+
+  panel.root = root;
+  panel.note = note;
+  panel.wrap = wrap;
+  return panel;
+}
+
+function panelSetNote(panel, message, kind) {
+  if (!message) {
+    panel.note.hidden = true;
+    panel.note.textContent = "";
+    return;
+  }
+  panel.note.hidden = false;
+  panel.note.textContent = message;
+  panel.note.dataset.kind = kind || "info";
+}
+
+function mountPanelFrame(panel) {
+  if (panel.frame) return;
+  const frame = h("iframe", {
+    class: "panel-iframe",
+    // No allow-same-origin: the document must stay on an opaque origin.
+    // Adding it would let the frame read this page's cookies and call the
+    // dashboard API directly, which is precisely what the relay exists to
+    // prevent.
+    sandbox: "allow-scripts allow-forms",
+    referrerpolicy: "no-referrer",
+    title: `${panel.toolName} panel`,
+    src: `/app/api/mcp/panel?uri=${encodeURIComponent(panel.uri)}`,
+    style: { height: `${PANEL_MIN_HEIGHT}px` },
+  });
+  frame.addEventListener("error", () => {
+    panelSetNote(panel, "The panel document could not be loaded.", "error");
+  });
+  panel.frame = frame;
+  panel.wrap.innerHTML = "";
+  panel.wrap.append(frame);
+  panels.add(panel);
+}
+
+function destroyPanel(panel, reason) {
+  if (panel.frame && panel.ready) {
+    // Best effort: the frame is about to go away, so we do not wait for the
+    // acknowledgement the spec allows it to send.
+    postToPanel(panel, {
+      jsonrpc: "2.0", id: `teardown-${panel.callId}`,
+      method: "ui/resource-teardown", params: { reason: reason || "teardown" },
+    });
+  }
+  panels.delete(panel);
+  panel.ready = false;
+  panel.frame = null;
+  if (panel.displayMode === "fullscreen") document.body.classList.remove("panel-fullscreen");
+  panel.root.remove();
+}
+
+function destroyAllPanels(reason) {
+  for (const panel of [...panels]) destroyPanel(panel, reason || "conversation changed");
+}
+
+function setDisplayMode(panel, mode) {
+  const next = mode === "fullscreen" ? "fullscreen" : "inline";
+  panel.displayMode = next;
+  panel.root.dataset.mode = next;
+  document.body.classList.toggle("panel-fullscreen", next === "fullscreen");
+  if (next === "inline" && panel.frame) {
+    panel.frame.style.height = `${panel.lastHeight || PANEL_MIN_HEIGHT}px`;
+  } else if (panel.frame) {
+    panel.frame.style.height = "";
+  }
+  notifyPanel(panel, "ui/notifications/host-context-changed", { displayMode: next });
+  return next;
+}
+
+function postToPanel(panel, message) {
+  if (!panel.frame || !panel.frame.contentWindow) return;
+  // "*" because the frame is sandboxed onto an opaque origin, which cannot
+  // be named as a targetOrigin. Confidentiality comes from the frame being
+  // a document we served and nobody else being able to receive this.
+  panel.frame.contentWindow.postMessage(message, "*");
+}
+
+function notifyPanel(panel, method, params) {
+  if (!panel.ready) return;
+  postToPanel(panel, { jsonrpc: "2.0", method, params });
+}
+
+function replyToPanel(panel, id, result) {
+  postToPanel(panel, { jsonrpc: "2.0", id, result });
+}
+
+function replyErrorToPanel(panel, id, message, code) {
+  postToPanel(panel, {
+    jsonrpc: "2.0", id, error: { code: code || -32000, message },
+  });
+}
+
+// Push the tool result the panel renders from. On a live turn we already
+// have it; reopening a panel from history refetches instead, because the
+// snapshot a panel was built on is stale by then and showing month-old CPU
+// figures in a live-looking dashboard is worse than a short spinner.
+async function deliverToolResult(panel) {
+  notifyPanel(panel, "ui/notifications/tool-input", { arguments: panel.toolArgs });
+  let result = panel.result;
+  if (!result) {
+    try {
+      result = await relayToolCall(panel.toolName, panel.toolArgs);
+      panel.result = result;
+    } catch (err) {
+      notifyPanel(panel, "ui/notifications/tool-cancelled", {
+        reason: err.message || "could not refresh the panel",
+      });
+      panelSetNote(panel, err.message || "Could not refresh the panel.", "error");
+      return;
+    }
+  }
+  notifyPanel(panel, "ui/notifications/tool-result", result);
+}
+
+async function handlePanelRequest(panel, msg) {
+  const { id, method, params } = msg;
+  switch (method) {
+    case "ui/initialize": {
+      panel.ready = true;
+      replyToPanel(panel, id, {
+        protocolVersion: UI_PROTOCOL_VERSION,
+        hostInfo: HOST_INFO,
+        hostCapabilities: hostCapabilities(),
+        hostContext: hostContext(panel),
+      });
+      return;
+    }
+    case "ping":
+      replyToPanel(panel, id, {});
+      return;
+    case "tools/call": {
+      const name = params && params.name;
+      const args = (params && params.arguments) || {};
+      if (!name) {
+        replyErrorToPanel(panel, id, "tools/call needs a name", -32602);
+        return;
+      }
+      try {
+        replyToPanel(panel, id, await relayToolCall(name, args));
+      } catch (err) {
+        if (err.refused) panelSetNote(panel, err.message, "warn");
+        replyErrorToPanel(panel, id, err.message || "tool call failed");
+      }
+      return;
+    }
+    case "ui/update-model-context": {
+      const text = (params && Array.isArray(params.content))
+        ? params.content.filter((c) => c && c.type === "text").map((c) => c.text).join("\n")
+        : null;
+      state.appContext.set(panel.callId, {
+        tool: panel.toolName,
+        text: text || null,
+        structured: (params && params.structuredContent) ?? null,
+      });
+      replyToPanel(panel, id, {});
+      return;
+    }
+    case "ui/message": {
+      const content = params && params.content;
+      const blocks = Array.isArray(content) ? content : [content];
+      const text = blocks
+        .filter((c) => c && c.type === "text" && typeof c.text === "string")
+        .map((c) => c.text).join("\n").trim();
+      if (!text) {
+        replyErrorToPanel(panel, id, "Invalid message format", -32602);
+        return;
+      }
+      if (state.streaming) {
+        replyErrorToPanel(panel, id, "A turn is already running. Try again once it finishes.");
+        return;
+      }
+      replyToPanel(panel, id, {});
+      // The panel asked the model to do something. It goes in as an ordinary
+      // user turn, which is what puts anything dangerous it leads to back
+      // under the approval modal.
+      sendUserText(text).catch((err) => console.error(err));
+      return;
+    }
+    case "ui/request-display-mode": {
+      const mode = setDisplayMode(panel, params && params.mode);
+      replyToPanel(panel, id, { mode });
+      return;
+    }
+    default:
+      replyErrorToPanel(panel, id, `Unsupported method: ${method}`, -32601);
+  }
+}
+
+function handlePanelNotification(panel, msg) {
+  switch (msg.method) {
+    case "ui/notifications/initialized":
+      deliverToolResult(panel).catch((err) => console.error(err));
+      break;
+    case "ui/notifications/size-changed": {
+      const height = Number(msg.params && msg.params.height) || 0;
+      if (!panel.frame || !height) break;
+      panel.lastHeight = Math.min(PANEL_MAX_HEIGHT, Math.max(PANEL_MIN_HEIGHT, Math.ceil(height)));
+      if (panel.displayMode === "inline") panel.frame.style.height = `${panel.lastHeight}px`;
+      break;
+    }
+    case "notifications/message":
+      console.debug("[panel]", panel.toolName, msg.params);
+      break;
+  }
+}
+
+window.addEventListener("message", (event) => {
+  const msg = event.data;
+  if (!msg || msg.jsonrpc !== "2.0") return;
+  for (const panel of [...panels]) {
+    if (!panel.frame || !panel.frame.isConnected) { panels.delete(panel); continue; }
+    // Identity by window handle, not by origin: a sandboxed frame reports
+    // origin "null", which is a value any other opaque context also has.
+    if (event.source !== panel.frame.contentWindow) continue;
+    if (msg.method && msg.id != null) handlePanelRequest(panel, msg).catch((e) => console.error(e));
+    else if (msg.method) handlePanelNotification(panel, msg);
+    return;
+  }
+});
+
+// Follow the dashboard's own light/dark switch.
+new MutationObserver(() => {
+  for (const panel of panels) {
+    notifyPanel(panel, "ui/notifications/host-context-changed", {
+      theme: currentTheme(),
+      styles: { variables: hostStyleVariables() },
+    });
+  }
+}).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  for (const panel of panels) {
+    if (panel.displayMode === "fullscreen") { setDisplayMode(panel, "inline"); break; }
+  }
+});
+
+/**
+ * Insert the panel a tool call points at, right after its tool card.
+ *
+ * ``result`` is present on a live turn and absent when the conversation is
+ * reloaded from history -- in that case the panel is a click away rather
+ * than mounted eagerly, so opening an old thread does not fan out a tool
+ * call per panel it happens to contain.
+ */
+function attachPanel(afterNode, tc, uiPayload) {
+  const uri = (uiPayload && uiPayload.resourceUri) || tc.ui_resource_uri;
+  if (!uri || !afterNode || !afterNode.parentNode) return;
+  if (afterNode.nextSibling && afterNode.nextSibling.classList?.contains("panel")) return;
+
+  const panel = createPanel({
+    callId: tc.id,
+    toolName: tc.name,
+    toolArgs: tc.args || {},
+    uri,
+    result: uiPayload && uiPayload.result,
+  });
+  afterNode.parentNode.insertBefore(panel.root, afterNode.nextSibling);
+
+  if (panel.result) {
+    mountPanelFrame(panel);
+  } else {
+    panel.wrap.append(h("button", {
+      type: "button", class: "panel-open",
+      onClick: (e) => { e.currentTarget.remove(); mountPanelFrame(panel); },
+    }, [icon("gauge", 14), h("span", { text: "Open panel" })]));
+  }
 }
 
 // ---------------- Usage footer + modal ----------------
@@ -959,7 +1393,21 @@ async function submit() {
   }
   const text = el.composer.value.trim();
   if (!text) return;
+  el.composer.value = "";
+  autogrow();
+  try {
+    await sendUserText(text);
+  } catch (err) {
+    // Creating the conversation can fail before the message is ever shown.
+    // Put what they typed back rather than swallowing it.
+    if (!el.composer.value) { el.composer.value = text; autogrow(); }
+    throw err;
+  }
+}
 
+// Also the entry point for ui/message: a panel that asks the model to look
+// into something produces exactly the turn the operator would have typed.
+async function sendUserText(text) {
   if (!state.active) await createConversation();
 
   // Empty-state becomes inner list.
@@ -977,9 +1425,6 @@ async function submit() {
   state.messages.push(optimistic);
   inner.append(renderMessage(optimistic));
   scrollToBottom();
-
-  el.composer.value = "";
-  autogrow();
 
   await streamTurn(text, inner);
 }
@@ -1034,6 +1479,10 @@ async function streamTurn(userText, inner) {
         content: userText,
         model: state.model,
         effort: state.effort,
+        // Whatever the open panels have pushed since the last turn. Sent
+        // once and dropped: the spec says only the latest update needs to
+        // reach the model, and it is already in the transcript afterwards.
+        app_context: appContextPayload(),
       }),
       credentials: "same-origin",
       signal: controller.signal,
@@ -1099,6 +1548,13 @@ async function streamTurn(userText, inner) {
       ]));
     }
   }
+}
+
+function appContextPayload() {
+  if (!state.appContext.size) return [];
+  const payload = [...state.appContext.values()];
+  state.appContext.clear();
+  return payload;
 }
 
 function parseSseFrame(chunk) {
@@ -1181,9 +1637,13 @@ function handleEvent({ event, data }, assistantMsg, row, toolCardMap, thinkingCt
       entry.tc.status = data.status;
       entry.tc.preview = data.preview;
       entry.tc.duration_ms = data.duration_ms;
+      if (data.ui && data.ui.resourceUri) entry.tc.ui_resource_uri = data.ui.resourceUri;
       const fresh = renderToolCard(entry.tc, assistantMsg.id);
       entry.card.replaceWith(fresh);
       entry.card = fresh;
+      // After the swap: the panel is a sibling of the card, so replacing
+      // the card would otherwise tear down a freshly mounted iframe.
+      if (data.ui) attachPanel(fresh, entry.tc, data.ui);
       break;
     }
     case "session_expired": {

@@ -18,15 +18,19 @@ from .db import Database
 
 
 VALID_EFFORTS = ("minimal", "low", "medium", "high")
-# Stable Gemini 2.5 ship first (wider access), then Gemini 3 preview
-# variants for users on the allowlist.
+# GA models first (available on every AI Studio key), then the preview
+# variant, which needs Google allowlist access.
+#
+# Retired here but still priced in ``usage.py``: gemini-2.5-flash,
+# gemini-2.5-pro and gemini-3-flash-preview. Conversations sitting on one
+# of those are moved forward by the schema-6 migration in ``db.py``;
+# ``messages.model`` keeps naming whichever model actually wrote the reply.
 VALID_MODELS = (
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "gemini-3-flash-preview",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
     "gemini-3.1-pro-preview",
 )
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.6-flash"
 DEFAULT_EFFORT = "low"
 
 
@@ -52,6 +56,10 @@ class ToolCall:
     status: str = "pending"  # pending | ok | error
     preview: str | None = None
     duration_ms: int | None = None
+    # ``ui://`` panel this tool declared, when it ships one (MCP Apps).
+    # Enough to re-open the frame from history; the snapshot behind it is
+    # deliberately not stored -- see assemble_assistant_message.
+    ui_resource_uri: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -110,6 +118,7 @@ def _decode_tool_calls(raw: str | None) -> list[ToolCall]:
                 status=item.get("status", "ok"),
                 preview=item.get("preview"),
                 duration_ms=item.get("duration_ms"),
+                ui_resource_uri=item.get("ui_resource_uri"),
             )
         )
     return out

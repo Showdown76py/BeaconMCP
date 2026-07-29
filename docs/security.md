@@ -21,13 +21,21 @@ stop` was meant.
 The integrated chat at `/app/chat` forces a human confirmation for every code-execution tool
 (`ssh_run`, `proxmox_run`, `proxmox_write_file` and the transfer tools) and every destructive one
 (`vm_bulk_action`, `proxmox_vm_stop`, snapshot rollback/delete, backup restore, `bmc_power_off`,
-`bmc_power_reset`). Writing a guest file counts as code execution: `~/.ssh/authorized_keys` and
+`bmc_power_reset`, and `beaconmcp_self_update` with `confirm=True`). Writing a guest file counts as code execution: `~/.ssh/authorized_keys` and
 `/etc/cron.d/` are one hop from a shell. Skipping the modal is reserved for calls that cannot
 change anything — polling by `exec_id` alone, `dry_run=True` on the snapshot tools that implement
 it, and the read shape of `proxmox_vm_config`. The full list is in
 [dashboard.md](dashboard.md#mandatory-confirmation-for-dangerous-tools). Read the arguments on the
 confirmation card even when you're clicking through fast. No answer within 5 minutes counts as a
 refusal.
+
+The interactive panels are the one place a gated tool runs without that modal, and only for a
+closed list: starting, stopping and restarting a single guest, and resizing its CPU or memory.
+That is a different question from the one the modal answers — the modal exists because the model's
+input is untrusted, and a panel button is a human click on a labelled control. Everything else a
+panel asks for is refused outright, including any `proxmox_vm_config` key that is not sizing. The
+boundary is enforced server-side, not in the frame:
+[dashboard.md](dashboard.md#interactive-panels-mcp-apps).
 
 ## Tokens
 

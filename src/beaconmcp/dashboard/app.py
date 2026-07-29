@@ -1401,6 +1401,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         user_text = str(body.get("content") or "").strip()
         override_model = body.get("model")
         override_effort = body.get("effort")
+        app_context = _sanitize_app_context(body.get("app_context"))
         if not conv_id or not user_text:
             return _json({"error": "invalid_request"}, status=400)
 
@@ -1474,6 +1475,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                 mcp_url=_resolve_mcp_url(request, deps),
                 mcp_mode=deps.mcp_mode,
                 confirm_tool=_confirm,
+                app_context=app_context,
             )
 
             try:
@@ -1495,6 +1497,11 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                         yield _sse("tool_result", {
                             "id": event.id, "status": event.status,
                             "preview": event.preview, "duration_ms": event.duration_ms,
+                            # Present only for tools that ship an MCP Apps
+                            # panel: {resourceUri, result}. The browser
+                            # mounts the iframe and pushes ``result`` into
+                            # it as ui/notifications/tool-result.
+                            "ui": event.ui,
                         })
                     elif isinstance(event, UsageAccumulated):
                         # Engine-internal event: keep the last one the
@@ -1582,6 +1589,144 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         _apply_security_headers(response)
         return response
 
+    # ----- MCP Apps host ---------------------------------------------------
+    #
+    # The chat page is an MCP Apps host: a tool that carries
+    # ``_meta.ui.resourceUri`` gets its ``ui://`` document rendered in a
+    # sandboxed iframe instead of showing raw JSON. Two routes serve that
+    # frame -- one hands it the document, one relays the tool calls its
+    # buttons make. Both are same-origin and session-authenticated, which
+    # the frame itself is not: it runs under ``sandbox="allow-scripts"``
+    # with no ``allow-same-origin``, so its origin is opaque, it carries no
+    # cookies, and it cannot read the CSRF token. postMessage to its parent
+    # is the only way out, which is what makes the parent page the place
+    # where policy is decided.
+
+    async def api_mcp_panel(request: Request) -> Response:
+        """Serve a ``ui://`` document for framing, under its own CSP."""
+        session = _require_active_session(request, deps)
+        if isinstance(session, Response):
+            return session
+        uri = (request.query_params.get("uri") or "").strip()
+        if not uri.startswith("ui://"):
+            return _json({"error": "invalid_uri"}, status=400)
+
+        from . import mcp_bridge  # local: keeps the mcp import off test paths
+
+        mcp_url = _resolve_mcp_url(request, deps)
+        html = mcp_bridge.cache_get(mcp_url, uri)
+        if html is None:
+            try:
+                async with mcp_bridge.open_session(
+                    mcp_url, session.mcp_bearer or "",
+                ) as mcp_session:
+                    html = await mcp_bridge.read_ui_resource(mcp_session, uri)
+            except mcp_bridge.UiResourceError as exc:
+                return _json(
+                    {"error": "resource_unavailable", "message": str(exc)},
+                    status=502,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return _json(
+                    {"error": "mcp_unavailable", "message": str(exc)},
+                    status=502,
+                )
+            mcp_bridge.cache_put(mcp_url, uri, html)
+
+        response = HTMLResponse(html)
+        # Deliberately NOT _apply_security_headers: that sets
+        # X-Frame-Options: DENY and a CSP whose script-src 'self' would
+        # kill the panel's inline bridge. This document needs the opposite
+        # of both -- framable by us, inline script allowed, and nothing
+        # else. connect-src 'none' is the important line: a panel talks to
+        # the cluster through its parent, never directly.
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; "
+            "script-src 'unsafe-inline'; "
+            "style-src 'unsafe-inline'; "
+            "img-src data:; "
+            "font-src data:; "
+            "connect-src 'none'; "
+            "form-action 'none'; "
+            "base-uri 'none'; "
+            "frame-src 'none'; "
+            "object-src 'none'; "
+            "frame-ancestors 'self'"
+        )
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
+
+    async def api_mcp_call(request: Request) -> Response:
+        """Relay a panel's ``tools/call`` to the MCP server."""
+        session = _require_active_session(request, deps)
+        if isinstance(session, Response):
+            return session
+        if not await csrf.verify(request):
+            return _json({"error": "csrf"}, status=403)
+
+        body = await _read_json(request)
+        name = str(body.get("name") or "").strip()
+        args = body.get("arguments")
+        if not name or (args is not None and not isinstance(args, dict)):
+            return _json({"error": "invalid_request"}, status=400)
+        args = args or {}
+
+        from .chat import panel_call_allowed
+
+        if not panel_call_allowed(name, args):
+            # Not a modal, because there is no turn in flight to hang one
+            # on. The panel's way through is ui/message: hand the request
+            # to the model and let it meet the approval gate there.
+            audit.emit(
+                "dashboard.panel_call_refused",
+                tool=name,
+                client_id=session.client_id,
+                args=audit.compact_args(args),
+            )
+            return _json(
+                {
+                    "error": "confirmation_required",
+                    "message": (
+                        f"{name} needs explicit approval and cannot be called "
+                        "straight from a panel. Ask the assistant to run it."
+                    ),
+                },
+                status=403,
+            )
+
+        from . import mcp_bridge
+
+        start = time.monotonic()
+        try:
+            async with mcp_bridge.open_session(
+                _resolve_mcp_url(request, deps), session.mcp_bearer or "",
+            ) as mcp_session:
+                result = await mcp_session.call_tool(name, args)
+        except Exception as exc:  # noqa: BLE001
+            audit.emit(
+                "dashboard.panel_call",
+                tool=name, status="error",
+                client_id=session.client_id,
+                args=audit.compact_args(args),
+            )
+            return _json(
+                {"error": "tool_failed", "message": str(exc)}, status=502,
+            )
+
+        wire = mcp_bridge.call_result_to_wire(result)
+        audit.emit(
+            "dashboard.panel_call",
+            tool=name,
+            status="error" if wire.get("isError") else "ok",
+            duration_ms=round((time.monotonic() - start) * 1000, 1),
+            client_id=session.client_id,
+            args=audit.compact_args(args),
+        )
+        return _json({"result": wire})
+
     return [
         Route("/app/login", login_get, methods=["GET"]),
         Route("/app/login", login_post, methods=["POST"]),
@@ -1605,6 +1750,8 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         Route("/app/api/conversations/{conv_id}", api_conv_delete, methods=["DELETE"]),
         Route("/app/api/chat/stream", api_chat_stream, methods=["POST"]),
         Route("/app/api/chat/confirm", api_chat_confirm, methods=["POST"]),
+        Route("/app/api/mcp/panel", api_mcp_panel, methods=["GET"]),
+        Route("/app/api/mcp/call", api_mcp_call, methods=["POST"]),
         Route("/app/api/usage", api_usage, methods=["GET"]),
         Route("/app/api/passkeys", api_passkeys_list, methods=["GET"]),
         Route(
@@ -1789,6 +1936,39 @@ def _resolve_mcp_url(request: Request, deps: DashboardDeps) -> str:
     import os as _os
     port = _os.environ.get("BEACONMCP_PORT", "8420")
     return f"http://127.0.0.1:{port}/mcp"
+
+
+_MAX_APP_CONTEXT_ENTRIES = 8
+
+
+def _sanitize_app_context(raw: Any) -> list[dict[str, Any]]:
+    """Normalise the ``app_context`` a chat page sends with a turn.
+
+    These are ``ui/update-model-context`` payloads the panels pushed, held
+    in the page and replayed with the next message. The page is trusted no
+    more than any other client input here: we keep the shape, drop the
+    rest, and cap how many rides along so an open dashboard cannot grow the
+    prompt without bound.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw[:_MAX_APP_CONTEXT_ENTRIES]:
+        if not isinstance(item, dict):
+            continue
+        tool = str(item.get("tool") or "").strip()[:64]
+        text = item.get("text")
+        structured = item.get("structured")
+        if not isinstance(text, str):
+            text = None
+        if text is None and structured is None:
+            continue
+        out.append({
+            "tool": tool or "panel",
+            "text": text,
+            "structured": structured,
+        })
+    return out
 
 
 def _sse(event: str, data: Any) -> bytes:

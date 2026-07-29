@@ -1,0 +1,194 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log viewer</title>
+<!--mcp-runtime-->
+<style>
+  #lines {
+    margin-top: 12px; border: 1px solid var(--line); border-radius: 8px;
+    max-height: 420px; overflow: auto; font-size: 12px;
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  }
+  .line { padding: 3px 10px; border-bottom: 1px solid var(--line); white-space: pre-wrap; word-break: break-word; }
+  .line:last-child { border-bottom: 0; }
+  .line[data-level="error"] { color: var(--danger); }
+  .line[data-level="warn"] { color: var(--warn); }
+  #lines table { font-family: var(--font-sans, system-ui, sans-serif); }
+  tr[data-level="error"] td { color: var(--danger); }
+  .count { color: var(--muted); font-size: 12px; }
+</style>
+
+<div id="loading" class="sub">Loading…</div>
+
+<main id="panel" hidden>
+  <header>
+    <div>
+      <h1 id="title"></h1>
+      <div class="sub" id="count"></div>
+    </div>
+    <button id="expand">Expand</button>
+  </header>
+
+  <div class="row" style="margin-top:12px">
+    <div>
+      <label for="source">Source</label>
+      <select id="source">
+        <option value="syslog">System log</option>
+        <option value="tasks">Tasks</option>
+      </select>
+    </div>
+    <div>
+      <label for="level">Level</label>
+      <select id="level">
+        <option value="">All</option>
+        <option value="error">Errors</option>
+        <option value="warn">Warnings and errors</option>
+      </select>
+    </div>
+    <div style="flex:1;min-width:150px">
+      <label for="filter">Filter</label>
+      <input id="filter" type="search" placeholder="substring…" style="width:100%">
+    </div>
+    <div>
+      <label for="limit">Lines</label>
+      <input id="limit" type="number" min="20" max="500" step="20" value="200" style="width:80px">
+    </div>
+    <button id="refresh">Refresh</button>
+  </div>
+
+  <div id="lines"></div>
+  <div class="note" id="note" hidden></div>
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  let state = null;
+  const $ = (id) => document.getElementById(id);
+
+  function fail(err) {
+    const loading = $("loading");
+    loading.hidden = false;
+    loading.textContent = err.message || String(err);
+    loading.dataset.kind = "error";
+    MCPApp.reportSize();
+  }
+
+  function setNote(text, kind) {
+    const note = $("note");
+    note.textContent = text || "";
+    note.hidden = !text;
+    if (text) note.dataset.kind = kind;
+  }
+
+  function stamp(seconds) {
+    return seconds ? new Date(seconds * 1000).toISOString().replace("T", " ").slice(0, 19) : "—";
+  }
+
+  function visible() {
+    const needle = $("filter").value.trim().toLowerCase();
+    const wanted = $("level").value;
+    return state.entries.filter((e) => {
+      if (wanted === "error" && e.level !== "error") return false;
+      if (wanted === "warn" && e.level === "info") return false;
+      if (!needle) return true;
+      const hay = state.source === "tasks"
+        ? `${e.type} ${e.status} ${e.user} ${e.upid}`
+        : e.text;
+      return (hay || "").toLowerCase().includes(needle);
+    });
+  }
+
+  function draw() {
+    const rows = visible();
+    $("count").textContent =
+      `${rows.length} of ${state.entries.length} ${state.source === "tasks" ? "tasks" : "lines"}`;
+
+    if (!rows.length) {
+      $("lines").innerHTML = '<div class="line">Nothing matches.</div>';
+      MCPApp.reportSize();
+      return;
+    }
+
+    const box = $("lines");
+    box.textContent = "";
+
+    if (state.source === "tasks") {
+      const table = document.createElement("table");
+      table.innerHTML =
+        "<thead><tr><th>Started</th><th>Type</th><th>User</th><th>Status</th></tr></thead>";
+      const body = document.createElement("tbody");
+      for (const t of rows) {
+        const tr = document.createElement("tr");
+        tr.dataset.level = t.level;
+        for (const cell of [stamp(t.starttime), t.type || "—", t.user || "—", t.status || "running"]) {
+          const td = document.createElement("td");
+          td.textContent = cell;
+          tr.appendChild(td);
+        }
+        body.appendChild(tr);
+      }
+      table.appendChild(body);
+      box.appendChild(table);
+    } else {
+      for (const line of rows) {
+        const div = document.createElement("div");
+        div.className = "line";
+        div.dataset.level = line.level;
+        div.textContent = line.text;
+        box.appendChild(div);
+      }
+      // Newest journald output is at the bottom, which is where the interesting
+      // part of a log almost always is.
+      box.scrollTop = box.scrollHeight;
+    }
+
+    MCPApp.reportSize();
+  }
+
+  function render(data) {
+    state = data;
+    $("loading").hidden = true;
+    $("panel").hidden = false;
+    $("title").textContent = `${data.node} — ${data.source === "tasks" ? "tasks" : "system log"}`;
+    $("source").value = data.source;
+    draw();
+  }
+
+  async function load() {
+    setNote("Loading…", "ok");
+    try {
+      const data = await MCPApp.callTool("proxmox_logs_panel", {
+        node: state.node,
+        source: $("source").value,
+        limit: parseInt($("limit").value, 10) || 200,
+      });
+      if (data) render(data);
+      setNote("", "ok");
+    } catch (err) {
+      setNote(err.message || String(err), "error");
+    }
+  }
+
+  $("refresh").onclick = load;
+  $("source").onchange = load;
+  $("limit").onchange = load;
+  $("filter").oninput = () => draw();
+  $("level").onchange = () => draw();
+
+  $("expand").onclick = async () => {
+    const mode = await MCPApp.requestDisplayMode("fullscreen");
+    if (mode === "fullscreen") $("expand").hidden = true;
+  };
+
+  MCPApp.connect({
+    name: "beaconmcp-logs-panel",
+    onResult: (data) => {
+      if (data && data.error) fail(new Error(data.error));
+      else if (data) render(data);
+    },
+    onFail: fail,
+  });
+})();
+</script>

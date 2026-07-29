@@ -19,7 +19,7 @@ def db_path() -> Path:
     return Path(override) if override else DEFAULT_DB_PATH
 
 
-_LATEST_VERSION = 5
+_LATEST_VERSION = 6
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -49,7 +49,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
               id              TEXT PRIMARY KEY,
               client_id       TEXT NOT NULL,
               title           TEXT,
-              model           TEXT NOT NULL DEFAULT 'gemini-3-flash-preview',
+              model           TEXT NOT NULL DEFAULT 'gemini-3.6-flash',
               thinking_effort TEXT NOT NULL DEFAULT 'low',
               created_at      REAL NOT NULL,
               updated_at      REAL NOT NULL
@@ -170,6 +170,27 @@ def _migrate(conn: sqlite3.Connection) -> None:
               ON passkeys(client_id, created_at DESC);
             """
         )
+
+    if version < 6:
+        # Gemini 2.5 and gemini-3-flash-preview left the model picker when
+        # 3.6 Flash and 3.5 Flash-Lite went GA. ``conversations.model`` is
+        # the model the *next* turn will use, so a conversation left on a
+        # retired id would fail validation and silently fall back; move it
+        # to the closest current model instead.
+        #
+        # ``messages.model`` is deliberately NOT rewritten: it records
+        # which model actually produced a reply, and that is history, not
+        # configuration. Migration 2 rewrote it because those were renames
+        # of the same model; these are substitutions.
+        for old, new in (
+            ("gemini-2.5-flash", "gemini-3.6-flash"),
+            ("gemini-3-flash-preview", "gemini-3.6-flash"),
+            ("gemini-2.5-pro", "gemini-3.1-pro-preview"),
+        ):
+            conn.execute(
+                "UPDATE conversations SET model = ? WHERE model = ?",
+                (new, old),
+            )
 
     conn.execute(f"PRAGMA user_version = {_LATEST_VERSION}")
     conn.commit()
