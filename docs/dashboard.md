@@ -79,7 +79,7 @@ The model's input is untrusted: a log line, a config file, or a web-search resul
 Three call shapes are let through without a modal, because they don't change anything:
 
 - `ssh_run` / `proxmox_run` carrying only `exec_id=` — that's read-only polling of an already-approved session.
-- Any gated tool called with `dry_run=True` — it only reports what it *would* do.
+- `proxmox_snapshot_create` / `_rollback` / `_delete` called with `dry_run=True` — they only report what they *would* do. The exemption is limited to those three by name, never inferred from the argument: an undeclared `dry_run` is silently dropped during argument validation, so trusting it would let `ssh_run(command=..., dry_run=True)` past the modal and then run for real.
 - `proxmox_vm_config` without `updates` — the read shape of a read-or-write tool.
 
 When Gemini fires a gated call:
