@@ -21,7 +21,7 @@ stop` was meant.
 The integrated chat at `/app/chat` forces a human confirmation for every code-execution tool
 (`ssh_run`, `proxmox_run`, `proxmox_write_file` and the transfer tools) and every destructive one
 (`vm_bulk_action`, `proxmox_vm_stop`, snapshot rollback/delete, backup restore, `bmc_power_off`,
-`bmc_power_reset`). Writing a guest file counts as code execution: `~/.ssh/authorized_keys` and
+`bmc_power_reset`, and `beaconmcp_self_update` with `confirm=True`). Writing a guest file counts as code execution: `~/.ssh/authorized_keys` and
 `/etc/cron.d/` are one hop from a shell. Skipping the modal is reserved for calls that cannot
 change anything — polling by `exec_id` alone, `dry_run=True` on the snapshot tools that implement
 it, and the read shape of `proxmox_vm_config`. The full list is in

@@ -1395,7 +1395,14 @@ async function submit() {
   if (!text) return;
   el.composer.value = "";
   autogrow();
-  await sendUserText(text);
+  try {
+    await sendUserText(text);
+  } catch (err) {
+    // Creating the conversation can fail before the message is ever shown.
+    // Put what they typed back rather than swallowing it.
+    if (!el.composer.value) { el.composer.value = text; autogrow(); }
+    throw err;
+  }
 }
 
 // Also the entry point for ui/message: a panel that asks the model to look

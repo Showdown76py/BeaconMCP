@@ -900,3 +900,70 @@ def test_needs_confirmation_includes_run_tools():
     assert "ssh_exec_get_result" not in _NEEDS_CONFIRMATION
     assert not _tool_call_requires_confirmation("proxmox_list_nodes", {})
     assert not _tool_call_requires_confirmation("cluster_overview", {})
+
+
+def test_self_update_needs_confirmation_when_applied():
+    """Applying an update is the most consequential call this server has.
+
+    ``beaconmcp_self_update(confirm=True)`` pulls new code, reinstalls
+    dependencies and restarts the service. Nothing stops an injected
+    instruction from asking for it, so it must reach the modal -- while the
+    ``confirm=False`` preview shape stays a plain read.
+    """
+    from beaconmcp.dashboard.chat import _tool_call_requires_confirmation
+
+    assert _tool_call_requires_confirmation("beaconmcp_self_update", {"confirm": True})
+    assert not _tool_call_requires_confirmation("beaconmcp_self_update", {"confirm": False})
+    assert not _tool_call_requires_confirmation("beaconmcp_self_update", {})
+    # Checking is read-only and must not raise a modal.
+    assert not _tool_call_requires_confirmation("beaconmcp_check_update", {})
+
+
+def test_every_registered_tool_is_gated_or_deliberately_not():
+    """Guard against a new tool quietly landing outside the gate.
+
+    The list below is the reviewed set of tools that may run unattended:
+    reads, and calls that only add (create/clone/start/backup). A new tool
+    name showing up here means someone must decide which side it is on --
+    which is exactly how ``beaconmcp_self_update`` slipped through when the
+    self-update tools were added.
+    """
+    import pathlib
+    import re
+
+    from beaconmcp.dashboard.chat import (
+        _CONFIRM_WHEN_ARG_PRESENT,
+        _NEEDS_CONFIRMATION,
+    )
+
+    src_root = pathlib.Path(__file__).parent.parent / "src" / "beaconmcp"
+    registered: set[str] = set()
+    for path in src_root.rglob("*.py"):
+        registered.update(
+            re.findall(
+                r"@mcp\.tool\((?:[^)]*|\s*\n(?:.*\n)*?\s*)\)\s*\n\s*(?:async )?def (\w+)",
+                path.read_text(),
+            )
+        )
+    assert "ssh_run" in registered, "tool discovery regex stopped matching"
+
+    ungated_by_design = {
+        "beaconmcp_check_update",
+        "bmc_get_event_log", "bmc_health_status", "bmc_list_devices",
+        "bmc_power_on", "bmc_power_status", "bmc_server_info",
+        "cluster_health", "cluster_overview", "cluster_overview_interactive",
+        "proxmox_backup_create", "proxmox_backup_list",
+        "proxmox_get_logs", "proxmox_get_tasks",
+        "proxmox_list_nodes", "proxmox_list_transfers", "proxmox_list_vms",
+        "proxmox_logs_panel", "proxmox_network_config", "proxmox_node_status",
+        "proxmox_read_file", "proxmox_snapshot_create", "proxmox_snapshot_list",
+        "proxmox_storage_status", "proxmox_vm_clone", "proxmox_vm_create",
+        "proxmox_vm_panel", "proxmox_vm_start", "proxmox_vm_status",
+        "security_end_session", "ssh_list_sessions", "vm_find",
+    }
+    gated = set(_NEEDS_CONFIRMATION) | set(_CONFIRM_WHEN_ARG_PRESENT)
+    unclassified = registered - gated - ungated_by_design
+    assert not unclassified, (
+        "new tool(s) outside the confirmation gate; decide and list them: "
+        f"{sorted(unclassified)}"
+    )

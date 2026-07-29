@@ -192,8 +192,20 @@ _NEEDS_CONFIRMATION: frozenset[str] = frozenset({
 # ``proxmox_vm_config`` returns the config without ``updates`` and rewrites
 # it with them, so gating the whole tool would put a modal in front of
 # every read. Map: tool name -> arg whose presence makes the call mutate.
+#
+# ``beaconmcp_self_update`` belongs here for the same reason and is the
+# sharper case: with ``confirm=False`` it only previews, but with
+# ``confirm=True`` it pulls new code, reinstalls dependencies and restarts
+# the service. That is the single most consequential call this server
+# exposes, and nothing stops an injected instruction from asking for it.
+#
+# Reading the argument is sound here, unlike the ``dry_run`` case below:
+# ``confirm`` is a parameter the tool actually declares, so what we read is
+# what the tool will act on. The trap that note describes is an argument the
+# tool does *not* declare, which pydantic drops during validation.
 _CONFIRM_WHEN_ARG_PRESENT: dict[str, str] = {
     "proxmox_vm_config": "updates",
+    "beaconmcp_self_update": "confirm",
 }
 
 # Tools that actually implement a ``dry_run`` parameter and return a

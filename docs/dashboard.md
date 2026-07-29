@@ -100,13 +100,13 @@ The model's input is untrusted: a log line, a config file, or a web-search resul
 
 **Arbitrary code execution** — `ssh_run`, `proxmox_run`, and the primitives that become code execution in one hop (`proxmox_write_file`, `proxmox_upload_file`, `proxmox_download_file`, `proxmox_delete_transfer`). Writing `~/.ssh/authorized_keys` or a file under `/etc/cron.d` is exactly as good as a shell, which is why the file tools sit alongside the exec tools.
 
-**Destructive or irreversible** — `vm_bulk_action`, `proxmox_vm_stop`, `proxmox_vm_restart`, `proxmox_vm_migrate`, `proxmox_snapshot_rollback`, `proxmox_snapshot_delete`, `proxmox_backup_restore`, `bmc_power_off`, `bmc_power_reset`.
+**Destructive or irreversible** — `vm_bulk_action`, `proxmox_vm_stop`, `proxmox_vm_restart`, `proxmox_vm_migrate`, `proxmox_snapshot_rollback`, `proxmox_snapshot_delete`, `proxmox_backup_restore`, `bmc_power_off`, `bmc_power_reset`, and `beaconmcp_self_update` with `confirm=True` — which pulls new code, reinstalls dependencies and restarts the service, i.e. replaces the very process enforcing this gate.
 
 Three call shapes are let through without a modal, because they don't change anything:
 
 - `ssh_run` / `proxmox_run` carrying only `exec_id=` — that's read-only polling of an already-approved session.
 - `proxmox_snapshot_create` / `_rollback` / `_delete` called with `dry_run=True` — they only report what they *would* do. The exemption is limited to those three by name, never inferred from the argument: an undeclared `dry_run` is silently dropped during argument validation, so trusting it would let `ssh_run(command=..., dry_run=True)` past the modal and then run for real.
-- `proxmox_vm_config` without `updates` — the read shape of a read-or-write tool.
+- `proxmox_vm_config` without `updates`, and `beaconmcp_self_update` without `confirm=True` — the read shape of a read-or-write tool. Reading the argument is sound for these two because both parameters are declared by the tool, so what the gate reads is what the tool acts on; that is precisely what makes it unsound for an undeclared `dry_run`.
 
 When Gemini fires a gated call:
 

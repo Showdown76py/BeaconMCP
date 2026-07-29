@@ -210,6 +210,8 @@ def test_panel_may_drive_guest_lifecycle(name, args):
                            "updates": {"hookscript": "local:snippets/x.sh"}}),
     ("proxmox_vm_config", {"node": "pve1", "vmid": 104,
                            "updates": {"cores": 4, "args": "-device x"}}),
+    # Pulls new code, reinstalls dependencies and restarts the service.
+    ("beaconmcp_self_update", {"confirm": True}),
 ])
 def test_panel_may_not_reach_the_gated_tools(name, args):
     """The exemption is a closed list, not "iframe calls skip the gate".
