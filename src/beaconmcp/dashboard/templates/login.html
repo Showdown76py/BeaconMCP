@@ -101,6 +101,10 @@
         </button>
         <p class="hint" id="passkey-login-hint">Skip the 6-digit code with a passkey registered on this device.</p>
       </div>
+      <p class="hint" id="passkey-unsupported" hidden>
+        This browser can't use passkeys here — they require HTTPS (or a
+        localhost address).
+      </p>
       {% endif %}
     </section>
   </form>
@@ -136,6 +140,10 @@
       </button>
       <p class="hint" id="passkey-add-hint">Register this device so next time you can skip the 2FA code.</p>
     </div>
+    <p class="hint" id="passkey-add-unsupported" hidden>
+      This browser can't register a passkey here — they require HTTPS (or a
+      localhost address).
+    </p>
 
     <button type="button" class="btn-primary" id="finish-btn">
       <span class="btn-label">Finish signing in</span>

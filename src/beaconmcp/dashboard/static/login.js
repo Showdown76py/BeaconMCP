@@ -45,6 +45,12 @@
   var busy = false;
 
   if (passkeyLoginBlock && !passkeysUsable) passkeyLoginBlock.hidden = true;
+  // Server offers passkeys but the browser won't expose the API (insecure
+  // origin): say so, rather than silently dropping the button.
+  var passkeyUnsupported = document.getElementById("passkey-unsupported");
+  if (passkeyUnsupported) {
+    passkeyUnsupported.hidden = passkeysUsable || !passkeysEnabled;
+  }
 
   // --- small helpers ----------------------------------------------------
 
@@ -243,9 +249,11 @@
     if (sessionEl) sessionEl.textContent = formatDateTime(payload.session_expires_at);
 
     if (passkeyAddBlock) {
-      var canAdd = payload.passkeys_enabled && payload.secure_context &&
-        window.BeaconPasskeys && window.BeaconPasskeys.supported();
+      var canAdd = !!(payload.passkeys_enabled && payload.secure_context &&
+        window.BeaconPasskeys && window.BeaconPasskeys.supported());
       passkeyAddBlock.hidden = !canAdd;
+      var addNote = document.getElementById("passkey-add-unsupported");
+      if (addNote) addNote.hidden = canAdd || !payload.passkeys_enabled;
       var hint = document.getElementById("passkey-add-hint");
       if (canAdd && hint && payload.passkey_count > 0) {
         hint.textContent = payload.passkey_count === 1

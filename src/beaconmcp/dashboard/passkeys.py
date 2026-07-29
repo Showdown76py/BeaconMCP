@@ -71,6 +71,11 @@ class PasskeyError(Exception):
     """User-facing passkey failure. The message is safe to render."""
 
 
+def webauthn_installed() -> bool:
+    """True when the optional ``webauthn`` dependency is importable."""
+    return _webauthn is not None
+
+
 def b64url_encode(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
@@ -384,6 +389,24 @@ class PasskeyService:
     def available(self) -> bool:
         """True when passkeys can actually be used (library + storage present)."""
         return _webauthn is not None and self._store is not None
+
+    @property
+    def unavailable_reason(self) -> str | None:
+        """Why passkeys are off, or ``None`` when they work.
+
+        The login pages hide their passkey affordances silently -- there is
+        nothing an anonymous visitor could do about it anyway -- so the
+        operator needs to be able to ask the question somewhere. This backs
+        the startup banner and ``beaconmcp doctor``.
+        """
+        if _webauthn is None:
+            return (
+                "the 'webauthn' Python package is missing "
+                "(pip install 'webauthn>=2,<4', or reinstall BeaconMCP)"
+            )
+        if self._store is None:
+            return "no writable dashboard database to store credentials in"
+        return None
 
     @property
     def store(self) -> PasskeyStore:

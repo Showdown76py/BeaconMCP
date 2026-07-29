@@ -439,8 +439,24 @@ def test_delete_is_scoped_to_owner(store, service, enrolled):
 def test_service_without_store_reports_unavailable():
     service = PasskeyService(None)
     assert service.available is False
+    assert "database" in service.unavailable_reason
     with pytest.raises(PasskeyError):
         service.authentication_options(FakeRequest(), client_id="x")
+
+
+def test_working_service_has_no_unavailable_reason(service):
+    assert service.available is True
+    assert service.unavailable_reason is None
+
+
+def test_missing_library_is_reported_with_a_fix(monkeypatch, store):
+    """The banner/doctor message must name the package and the command."""
+    import beaconmcp.dashboard.passkeys as mod
+
+    monkeypatch.setattr(mod, "_webauthn", None)
+    assert mod.webauthn_installed() is False
+    reason = PasskeyService(store).unavailable_reason
+    assert "webauthn" in reason and "pip install" in reason
 
 
 # ---------------------------------------------------------------------------

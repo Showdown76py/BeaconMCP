@@ -320,6 +320,18 @@ def _cmd_doctor(args):
     else:
         print("  - No BMC devices configured.")
 
+    # Only the library half can be checked here: credential storage depends
+    # on the running server's database, which doctor does not open.
+    print("\nPasskeys (WebAuthn):")
+    from .dashboard.passkeys import webauthn_installed
+
+    if webauthn_installed():
+        print("  ✓ 'webauthn' package importable.")
+        print("    Browsers additionally require HTTPS or a loopback host.")
+    else:
+        print("  ✗ 'webauthn' package is missing - login pages offer TOTP only.")
+        print("    Fix with: pip install 'webauthn>=2,<4'  (or reinstall BeaconMCP)")
+
     print("\nPreflight check complete.")
 
 
@@ -869,7 +881,13 @@ _AUTHORIZE_JS = """
     var ticketEl = document.getElementById("ticket-expiry");
     if (ticketEl) ticketEl.textContent = formatRelative(payload.ticket_expires_at);
     if (passkeyAddBlock) {
-      passkeyAddBlock.hidden = !(payload.passkeys_enabled && webauthnSupported());
+      var canAdd = payload.passkeys_enabled && webauthnSupported();
+      passkeyAddBlock.hidden = !canAdd;
+      // Server says passkeys are on but the browser won't expose the API:
+      // that is an insecure origin, and silently hiding the button just
+      // makes people wonder where it went.
+      var addNote = document.getElementById("passkey-add-unsupported");
+      if (addNote) addNote.hidden = canAdd || !payload.passkeys_enabled;
     }
     if (stepVerify) stepVerify.hidden = true;
     if (stepDone) stepDone.hidden = false;
@@ -920,7 +938,12 @@ _AUTHORIZE_JS = """
   }
 
   // --- passkey instead of a code ---
-  if (passkeyBlock) passkeyBlock.hidden = !(passkeysEnabled && webauthnSupported());
+  if (passkeyBlock) {
+    var canUse = passkeysEnabled && webauthnSupported();
+    passkeyBlock.hidden = !canUse;
+    var note = document.getElementById("passkey-unsupported");
+    if (note) note.hidden = canUse || !passkeysEnabled;
+  }
 
   if (passkeyBtn) {
     passkeyBtn.addEventListener("click", function() {
@@ -1429,6 +1452,10 @@ def _run_http(mcp, host: str, port: int):
       </button>
       <p class="hint">Skip the 6-digit code with a passkey registered on this device.</p>
     </div>
+    <p class="hint" id="passkey-unsupported" hidden>
+      This browser can't use passkeys here &mdash; they require HTTPS (or a
+      localhost address).
+    </p>
   </section>
 
   <section id="step-done"{'' if approved else ' hidden'}>
@@ -1459,6 +1486,10 @@ def _run_http(mcp, host: str, port: int):
       </button>
       <p class="hint" id="passkey-add-hint">Register this device so next time you can skip the 2FA code.</p>
     </div>
+    <p class="hint" id="passkey-add-unsupported" hidden>
+      This browser can't register a passkey here &mdash; they require HTTPS
+      (or a localhost address).
+    </p>
 
     <form method="POST" action="/oauth/authorize/finalize" id="finalize-form">
       <input type="hidden" name="ticket" id="ticket" value="{html.escape(ticket or '')}">
@@ -2199,6 +2230,13 @@ def _run_http(mcp, host: str, port: int):
         print(f"Dashboard: http://{host}:{port}/app/login (chat: {chat_status})")
     else:
         print("Dashboard: disabled (BEACONMCP_DASHBOARD_ENABLED=false)")
+    # The login pages hide their passkey buttons when this is off, with no
+    # visible explanation -- so say it here, where the operator can see it.
+    passkey_reason = passkey_service.unavailable_reason
+    if passkey_reason is None:
+        print("Passkeys:  enabled (also needs HTTPS, or a loopback host)")
+    else:
+        print(f"Passkeys:  disabled - {passkey_reason}")
     if n_clients == 0:
         print("\nNo clients registered. Create one with: beaconmcp auth create --name 'My Client'")
     uvicorn.run(app, host=host, port=port, log_level="info")
