@@ -1,0 +1,215 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VM control panel</title>
+<!--mcp-runtime-->
+
+<div id="loading" class="sub">Loading…</div>
+
+<main id="panel" hidden>
+  <header>
+    <div>
+      <h1 id="name"></h1>
+      <div class="sub" id="where"></div>
+    </div>
+    <span class="badge" id="status"></span>
+  </header>
+
+  <div class="metrics">
+    <div class="metric">
+      <div class="label">CPU</div>
+      <div class="value" id="cpu"></div>
+      <div class="bar"><i id="cpu-bar"></i></div>
+    </div>
+    <div class="metric">
+      <div class="label">Memory</div>
+      <div class="value" id="mem"></div>
+      <div class="bar"><i id="mem-bar"></i></div>
+    </div>
+    <div class="metric">
+      <div class="label">Disk</div>
+      <div class="value" id="disk"></div>
+      <div class="bar"><i id="disk-bar"></i></div>
+    </div>
+    <div class="metric">
+      <div class="label">Uptime</div>
+      <div class="value" id="uptime"></div>
+    </div>
+  </div>
+
+  <fieldset id="controls">
+    <div class="section-title">Power</div>
+    <div class="row">
+      <button id="start">Start</button>
+      <button id="restart">Restart</button>
+      <button id="stop" class="danger">Stop</button>
+      <button id="diagnose" hidden>Ask about this guest</button>
+      <button id="refresh" style="margin-left:auto">Refresh</button>
+    </div>
+
+    <hr>
+
+    <div class="section-title">Resources</div>
+    <div class="row">
+      <div>
+        <label for="cores">CPU cores</label>
+        <input id="cores" type="number" min="1" max="128" step="1" style="width:84px">
+      </div>
+      <div>
+        <label for="memory">Memory (MB)</label>
+        <input id="memory" type="number" min="16" max="1048576" step="16" style="width:84px">
+      </div>
+      <button id="apply">Apply</button>
+    </div>
+  </fieldset>
+
+  <div class="note" id="note" hidden></div>
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  let vm = null;
+  const $ = (id) => document.getElementById(id);
+
+  function fail(err) {
+    const loading = $("loading");
+    loading.hidden = false;
+    loading.textContent = err.message || String(err);
+    loading.dataset.kind = "error";
+    MCPApp.reportSize();
+  }
+
+  function setNote(text, kind) {
+    const note = $("note");
+    note.textContent = text || "";
+    note.hidden = !text;
+    if (text) note.dataset.kind = kind;
+    MCPApp.reportSize();
+  }
+
+  function pct(used, max) {
+    return max > 0 ? Math.min(100, (used / max) * 100) : 0;
+  }
+
+  function setBar(el, p) {
+    el.style.width = `${p}%`;
+    el.dataset.level = p >= 90 ? "high" : p >= 75 ? "warn" : "normal";
+  }
+
+  function render(data) {
+    vm = data;
+    $("loading").hidden = true;
+    $("panel").hidden = false;
+
+    $("name").textContent = data.name || `${data.type} ${data.vmid}`;
+    $("where").textContent = `${data.type.toUpperCase()} ${data.vmid} on ${data.node}`;
+    $("status").textContent = data.status;
+    $("status").dataset.status = data.status;
+
+    $("cpu").textContent = `${data.cpu_pct}%${data.cpus ? ` of ${data.cpus}` : ""}`;
+    setBar($("cpu-bar"), Math.min(100, data.cpu_pct));
+
+    $("mem").textContent = `${data.mem_used_mb} / ${data.mem_max_mb} MB`;
+    setBar($("mem-bar"), pct(data.mem_used_mb, data.mem_max_mb));
+
+    // null means the guest never reported usage (QEMU without a guest agent),
+    // which is different from "0 bytes used" and must not render as an empty bar.
+    if (data.disk_used_gb === null || data.disk_used_gb === undefined) {
+      $("disk").textContent = `${data.disk_max_gb} GB provisioned`;
+      setBar($("disk-bar"), 0);
+    } else {
+      $("disk").textContent = `${data.disk_used_gb} / ${data.disk_max_gb} GB`;
+      setBar($("disk-bar"), pct(data.disk_used_gb, data.disk_max_gb));
+    }
+
+    $("uptime").textContent = data.status === "running" ? `${data.uptime_h} h` : "—";
+
+    if (document.activeElement !== $("cores")) $("cores").value = data.cores ?? "";
+    if (document.activeElement !== $("memory")) $("memory").value = data.memory_mb ?? "";
+
+    const running = data.status === "running";
+    $("start").disabled = running;
+    $("stop").disabled = !running;
+    $("restart").disabled = !running;
+
+    MCPApp.reportSize();
+  }
+
+  // Without this the model's picture of the guest stays whatever the tool
+  // returned when the panel opened. Stop the VM from here and the next turn
+  // still believes it is running, because the button's tools/call result comes
+  // back to this iframe, not into the conversation.
+  function syncModel(action) {
+    if (!vm) return;
+    MCPApp.updateModelContext(
+      vm,
+      `${vm.name || vm.type + " " + vm.vmid} on ${vm.node} is now ${vm.status} `
+      + `(${vm.cores ?? "?"} cores, ${vm.memory_mb ?? "?"} MB) after the user ran `
+      + `"${action}" from the control panel.`,
+    );
+  }
+
+  async function run(label, action, fn) {
+    $("controls").disabled = true;
+    setNote(`${label}…`, "ok");
+    try {
+      await fn();
+      const fresh = await MCPApp.callTool("proxmox_vm_panel", { node: vm.node, vmid: vm.vmid });
+      if (fresh) render(fresh);
+      setNote(`${label} done.`, "ok");
+      syncModel(action);
+    } catch (err) {
+      setNote(err.message || String(err), "error");
+    } finally {
+      $("controls").disabled = false;
+    }
+  }
+
+  $("start").onclick = () => run("Starting", "start", () =>
+    MCPApp.callTool("proxmox_vm_start", { node: vm.node, vmid: vm.vmid }));
+
+  $("stop").onclick = () => run("Stopping", "stop", () =>
+    MCPApp.callTool("proxmox_vm_stop", { node: vm.node, vmid: vm.vmid }));
+
+  $("restart").onclick = () => run("Restarting", "restart", () =>
+    MCPApp.callTool("proxmox_vm_restart", { node: vm.node, vmid: vm.vmid }));
+
+  $("refresh").onclick = () => run("Refreshing", "refresh", async () => {});
+
+  $("diagnose").onclick = () => {
+    MCPApp.sendMessage(
+      `Look into ${vm.name || vm.type + " " + vm.vmid} (VMID ${vm.vmid}) on ${vm.node}: `
+      + `it is ${vm.status}, using ${vm.cpu_pct}% CPU and ${vm.mem_used_mb} of `
+      + `${vm.mem_max_mb} MB. Check its recent logs and tasks and tell me if `
+      + `anything looks wrong.`,
+    );
+  };
+
+  $("apply").onclick = () => {
+    const updates = {};
+    const cores = parseInt($("cores").value, 10);
+    const memory = parseInt($("memory").value, 10);
+    if (cores && cores !== vm.cores) updates.cores = cores;
+    if (memory && memory !== vm.memory_mb) updates.memory = memory;
+    if (!Object.keys(updates).length) {
+      setNote("Nothing changed.", "ok");
+      return;
+    }
+    run("Applying", "resource change", () =>
+      MCPApp.callTool("proxmox_vm_config", { node: vm.node, vmid: vm.vmid, updates }));
+  };
+
+  MCPApp.connect({
+    name: "beaconmcp-vm-panel",
+    onResult: (data) => {
+      if (data && data.error) fail(new Error(data.error));
+      else if (data) render(data);
+    },
+    onFail: fail,
+  }).then(() => {
+    $("diagnose").hidden = !MCPApp.hostSupports("message");
+  }, () => {});
+})();
+</script>
