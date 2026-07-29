@@ -36,12 +36,10 @@ dev = ["pytest", "pytest-asyncio", "ruff"]
 beaconmcp = "beaconmcp.__main__:main"
 
 [tool.hatch.build.targets.wheel]
+# Templates, static assets and the logo already ship with the package
+# directory; re-declaring them under force-include aborted the build on a
+# duplicate archive entry.
 packages = ["src/beaconmcp"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"src/beaconmcp/assets/logo.webp" = "beaconmcp/assets/logo.webp"
-"src/beaconmcp/dashboard/templates" = "beaconmcp/dashboard/templates"
-"src/beaconmcp/dashboard/static" = "beaconmcp/dashboard/static"
 
 [tool.ruff]
 target-version = "py311"
