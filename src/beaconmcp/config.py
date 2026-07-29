@@ -169,9 +169,25 @@ class DashboardConfig:
 
 
 @dataclass
+class UpdatesConfig:
+    """Update checking and self-update.
+
+    ``enabled`` is the network-egress switch: turning it off means the
+    server never contacts the git remote, which is what an air-gapped or
+    change-controlled deployment wants. ``allow_self_update`` keeps the
+    check but removes the ability to apply one from the dashboard or over
+    MCP -- appropriate when updates go through a deployment pipeline.
+    """
+
+    enabled: bool = True
+    allow_self_update: bool = True
+
+
+@dataclass
 class FeaturesConfig:
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     ssh_enabled: bool = True
+    updates: UpdatesConfig = field(default_factory=UpdatesConfig)
 
 
 @dataclass
@@ -183,6 +199,10 @@ class Config:
     features: FeaturesConfig
     verify_ssl: bool
     infrastructure: dict
+    #: YAML file this config was loaded from, or ``None`` on the legacy
+    #: env-var path. The self-update flow needs it to re-validate the
+    #: operator's *actual* config against newly pulled code.
+    source_path: Path | None = None
 
     # --- Loading ----------------------------------------------------------
 
@@ -255,7 +275,7 @@ class Config:
         if not isinstance(raw, dict):
             raise ConfigError(f"{path}: top-level YAML must be a mapping.")
         resolved = _resolve_env_refs(raw, path=path)
-        return cls._build(resolved)
+        return cls._build(resolved, source_path=path)
 
     @classmethod
     def _from_legacy_env(cls) -> Config:
@@ -328,7 +348,7 @@ class Config:
         return cls._build(raw)
 
     @classmethod
-    def _build(cls, raw: dict) -> Config:
+    def _build(cls, raw: dict, *, source_path: Path | None = None) -> Config:
         proxmox_raw = raw.get("proxmox") or {}
         nodes_raw = proxmox_raw.get("nodes") or []
 
@@ -554,9 +574,14 @@ class Config:
             public_url=dash_raw.get("public_url"),
             mcp_mode=(dash_raw.get("mcp_mode") or "local").strip().lower(),
         )
+        updates_raw = feat_raw.get("updates") or {}
         features = FeaturesConfig(
             dashboard=dashboard,
             ssh_enabled=_bool((feat_raw.get("ssh") or {}).get("enabled", True)),
+            updates=UpdatesConfig(
+                enabled=_bool(updates_raw.get("enabled", True)),
+                allow_self_update=_bool(updates_raw.get("allow_self_update", True)),
+            ),
         )
 
         # Cross-capability validation ----------------------------------------
@@ -597,6 +622,7 @@ class Config:
             features=features,
             verify_ssl=_bool(proxmox_raw.get("verify_ssl", False)),
             infrastructure=raw.get("infrastructure") or {},
+            source_path=source_path,
         )
 
     # --- Accessors --------------------------------------------------------
@@ -748,6 +774,10 @@ class Config:
                     "mcp_mode": self.features.dashboard.mcp_mode,
                 },
                 "ssh_enabled": self.features.ssh_enabled,
+                "updates": {
+                    "enabled": self.features.updates.enabled,
+                    "allow_self_update": self.features.updates.allow_self_update,
+                },
             },
             "infrastructure": self.infrastructure,
         }

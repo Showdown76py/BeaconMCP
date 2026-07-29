@@ -1,8 +1,9 @@
 # MCP tools
 
-44 tools across six modules. The infrastructure modules are only registered when the matching
+46 tools across seven modules. The infrastructure modules are only registered when the matching
 capability is configured, so an SSH-only deployment exposes the 2 SSH tools and nothing else from
-Proxmox or BMC. `security_end_session` is always registered, whatever the topology.
+Proxmox or BMC. `security_end_session` and the two maintenance tools are always registered,
+whatever the topology.
 
 Long-running commands (`proxmox_run`, `ssh_run`) are synchronous by default. Pass `wait=False` to
 start one in the background and get an `exec_id` back, then call the same tool with `exec_id=` to
@@ -92,3 +93,16 @@ to that device.
 | Tool | Description |
 |------|-------------|
 | `security_end_session` | Revoke the bearer token used for the current request, ~8 s after responding. Call it as the last step of a task to shrink the window in which a stolen token can be replayed — never mid-task, or the next call gets a 401. |
+
+## Maintenance (2)
+
+Registered on every deployment shape, unless `features.updates.enabled` is `false`.
+
+| Tool | Description |
+|------|-------------|
+| `beaconmcp_check_update` | Read-only. Reports the running version, how many commits this install is behind upstream, the changelog, any `.env` / `beaconmcp.yaml` settings the new revision knows about that this install has not set, and the exact commands that would update *this* install (git checkout, pip install and container each get different ones). Cached for a few hours. |
+| `beaconmcp_self_update` | Applies the update: `git pull --ff-only` → reinstall the package and its dependencies → **validate the config against the new code** → schedule a restart. Requires `confirm=True`. Refuses on a dirty checkout or a non-git install. If the new revision cannot load the current config, everything is rolled back and nothing restarts. Hidden when `features.updates.allow_self_update` is `false`. |
+
+The restart is deferred a few seconds so the tool result reaches the caller before the process dies.
+Show the user `beaconmcp_check_update` output — especially any new configuration — and get an
+explicit go-ahead before calling `beaconmcp_self_update`.

@@ -103,6 +103,13 @@ class DashboardDeps:
     # unset (or reporting ``available is False``), the login page hides
     # every passkey affordance and the TOTP path is the only way in.
     passkeys: PasskeyService | None = None
+    # Update notifications. ``updates_enabled`` gates the check (and with
+    # it any network egress); ``allow_self_update`` gates the "Update now"
+    # button. ``config_path`` is the YAML the update flow re-validates
+    # against freshly pulled code.
+    updates_enabled: bool = True
+    allow_self_update: bool = True
+    config_path: Path | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1096,6 +1103,89 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         )
         return response
 
+    # --- Update notifications --------------------------------------------
+
+    async def api_update_status(request: Request) -> Response:
+        """Update status for the signed-in operator.
+
+        Deliberately session-gated: an anonymous visitor learning the exact
+        revision a server runs is free reconnaissance, and the banner is
+        only ever rendered to someone already signed in.
+        """
+        session = _require_active_session(request, deps)
+        if isinstance(session, Response):
+            return session
+        if not deps.updates_enabled:
+            return _json({"enabled": False, "available": False})
+
+        from .. import updates as updates_mod
+
+        force = request.query_params.get("force") == "1"
+        # The check shells out to git (network); keep it off the event loop.
+        info = await asyncio.to_thread(
+            updates_mod.check_for_update, force=force, config_path=deps.config_path,
+        )
+        payload = info.to_json()
+        payload["enabled"] = True
+        payload["self_update_allowed"] = deps.allow_self_update
+        if not deps.allow_self_update:
+            payload["can_self_update"] = False
+        return _json(payload)
+
+    async def api_update_apply(request: Request) -> Response:
+        """Apply an update from the dashboard, behind a fresh 2FA code.
+
+        Pulling code and restarting the process is the most privileged
+        thing this panel can do, so it is gated exactly like minting a
+        token: a session is not enough, the operator re-proves the second
+        factor at the moment of the action.
+        """
+        session = _require_active_session(request, deps)
+        if isinstance(session, Response):
+            return session
+        if not await csrf.verify(request):
+            return _json({"error": "csrf"}, status=403)
+        if not (deps.updates_enabled and deps.allow_self_update):
+            return _json(
+                {
+                    "ok": False,
+                    "error": "Self-update is disabled on this server "
+                             "(features.updates.allow_self_update).",
+                },
+                status=403,
+            )
+
+        body = await _read_json(request)
+        totp = str(body.get("totp") or "").strip()
+        if not totp:
+            return _json({"ok": False, "error": "2FA code is required."}, status=400)
+        if deps.totp_locked(session.client_id):
+            return _json(
+                {"ok": False, "error": "Too many 2FA attempts; try again in 5 minutes."},
+                status=429,
+            )
+        totp_result = _check_totp(deps, session.client_id, totp)
+        if totp_result is not TotpResult.OK:
+            return _json(
+                {"ok": False, "error": _totp_error(totp_result, "Invalid 2FA code.")},
+                status=401,
+            )
+        deps.totp_record_success(session.client_id)
+
+        from .. import updates as updates_mod
+
+        audit.emit("dashboard.update.start", client_id=session.client_id)
+        result = await asyncio.to_thread(
+            updates_mod.apply_update, config_path=deps.config_path,
+        )
+        audit.emit(
+            "dashboard.update.finish", client_id=session.client_id,
+            ok=result.ok, from_ref=result.from_ref, to_ref=result.to_ref,
+            rolled_back=result.rolled_back,
+        )
+        updates_mod.invalidate_cache()
+        return _json(result.to_json(), status=200 if result.ok else 500)
+
     async def chat_get(request: Request) -> Response:
         session = _load_session(request, deps)
         if not session:
@@ -1467,6 +1557,8 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         ),
         Route("/app/api/passkeys/delete", api_passkeys_delete, methods=["POST"]),
         Route("/app/passkeys/remove", passkeys_remove, methods=["POST"]),
+        Route("/app/api/update", api_update_status, methods=["GET"]),
+        Route("/app/api/update/apply", api_update_apply, methods=["POST"]),
         Route(
             "/app/api/passkeys/auth/options",
             api_passkeys_auth_options, methods=["POST"],
