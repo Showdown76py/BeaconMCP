@@ -70,7 +70,7 @@
     margin-top: 12px; padding: 8px 10px; border-radius: 6px; font-size: 12px;
     border: 1px solid var(--line);
   }
-  .note[data-kind="error"] { color: var(--danger); border-color: currentColor; }
+  .note[data-kind="error"], #loading[data-kind="error"] { color: var(--danger); border-color: currentColor; }
   .note[data-kind="ok"] { color: var(--ok); border-color: currentColor; }
   [hidden] { display: none !important; }
 </style>
@@ -180,6 +180,14 @@
         document.documentElement.style.setProperty(key, value);
       }
     }
+  }
+
+  function fail(err) {
+    const loading = $("loading");
+    loading.hidden = false;
+    loading.textContent = err.message || String(err);
+    loading.dataset.kind = "error";
+    reportSize();
   }
 
   function setNote(text, kind) {
@@ -322,14 +330,26 @@
     }
   });
 
+  // Params are flat: appInfo / appCapabilities / protocolVersion. Nesting the
+  // capabilities or sending clientInfo instead of appInfo fails the host's
+  // schema check, and a rejected handshake is silent -- the host simply never
+  // answers, so the app never sends `initialized` and the host never delivers
+  // the tool result. See @modelcontextprotocol/ext-apps App.connect().
   request("ui/initialize", {
+    appInfo: { name: "beaconmcp-vm-panel", version: "1.0.0" },
+    appCapabilities: { availableDisplayModes: ["inline"] },
     protocolVersion: PROTOCOL_VERSION,
-    capabilities: { appCapabilities: { availableDisplayModes: ["inline"] } },
-    clientInfo: { name: "beaconmcp-vm-panel", version: "1.0.0" },
   }).then((result) => {
     applyHostContext(result && result.hostContext);
     notify("ui/notifications/initialized", {});
     reportSize();
-  });
+  }).catch(fail);
+
+  // Without this, a handshake the host declines to answer leaves the panel on
+  // "Loading…" forever, which reads as "the server is slow" rather than "this
+  // app is broken".
+  setTimeout(() => {
+    if (!vm) fail(new Error("The host did not complete the ui/initialize handshake."));
+  }, 5000);
 })();
 </script>

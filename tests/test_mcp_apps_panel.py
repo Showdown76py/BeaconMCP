@@ -82,6 +82,26 @@ async def test_advertised_resource_uri_actually_resolves() -> None:
     assert "ui/initialize" in contents[0].content, "panel HTML is missing the host handshake"
 
 
+async def test_handshake_params_are_flat() -> None:
+    """ui/initialize takes appInfo / appCapabilities / protocolVersion, flat.
+
+    Nesting them under `capabilities`, or sending `clientInfo` instead of
+    `appInfo`, fails the host's schema check -- and a rejected handshake is
+    silent: the host just never replies, so the app never sends `initialized`
+    and never receives the tool result. The panel then sits on "Loading..."
+    with nothing in the console to explain it.
+    """
+    mcp = _server(_Client({}))
+    html = list(await mcp.read_resource(PANEL_URI))[0].content
+    params = html.split('request("ui/initialize", {', 1)[1].split("})", 1)[0]
+
+    assert "appInfo:" in params
+    assert "appCapabilities:" in params
+    assert "protocolVersion:" in params
+    assert "clientInfo" not in params
+    assert "capabilities: {" not in params
+
+
 # --- snapshot mapping -------------------------------------------------------
 
 
