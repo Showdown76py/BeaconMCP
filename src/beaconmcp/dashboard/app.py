@@ -51,6 +51,7 @@ from .conversations import (
 )
 from .db import Database
 from .dyn_reg import DynamicSlugStore, SLUG_TTL_SECONDS
+from .passkeys import PasskeyError, PasskeyService, is_secure_context
 from .session import SESSION_TTL_SECONDS, Session, SessionStore
 from .usage import UsageMeter, UsageStore
 
@@ -98,6 +99,10 @@ class DashboardDeps:
     # tests/embedding paths can skip the limiter entirely.
     login_limiter: object | None = None
     trusted_proxies: tuple[str, ...] = ()
+    # WebAuthn ceremonies for the passkey login/registration flow. When
+    # unset (or reporting ``available is False``), the login page hides
+    # every passkey affordance and the TOTP path is the only way in.
+    passkeys: PasskeyService | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -121,8 +126,17 @@ def _set_session_cookie(response: Response, session_id: str, secure: bool) -> No
     )
 
 
-def _set_csrf_cookie(response: Response, secure: bool) -> str:
-    token = csrf.issue_token()
+def _set_csrf_cookie(
+    response: Response, secure: bool, token: str | None = None,
+) -> str:
+    """Issue (or re-issue) the double-submit CSRF cookie.
+
+    ``token`` lets a caller mint the value first so it can also hand it to
+    the client out-of-band -- the JSON login does that, because rotating
+    the cookie without telling the page would leave its in-DOM token stale
+    and every follow-up fetch would 403.
+    """
+    token = token or csrf.issue_token()
     response.set_cookie(
         csrf.CSRF_COOKIE,
         token,
@@ -243,6 +257,21 @@ def _totp_error(result: TotpResult, invalid_message: str) -> str:
     return TOTP_REPLAY_MESSAGE if result is TotpResult.REPLAY else invalid_message
 
 
+def _wants_json(request: Request) -> bool:
+    """True when the caller is the login page's fetch() rather than a form POST.
+
+    The login form still works with JavaScript disabled -- it posts and gets
+    a redirect, exactly as before. The enhanced flow (shimmer, then the
+    post-2FA screen offering to enrol a passkey) needs to stay on the page,
+    so it opts in explicitly with this header.
+    """
+    return request.headers.get("x-beaconmcp-mode", "") == "json"
+
+
+def _passkeys_ready(deps: DashboardDeps) -> bool:
+    return deps.passkeys is not None and deps.passkeys.available
+
+
 # ---------------------------------------------------------------------------
 # Route factories
 # ---------------------------------------------------------------------------
@@ -278,7 +307,71 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             next=request.query_params.get("next", ""),
             banner=None,
             locked=False,
+            passkeys_enabled=_passkeys_ready(deps),
+            secure_context=is_secure_context(request),
         )
+
+    def _login_success_payload(
+        request: Request, session: Session, *, next_url: str, bearer_ttl: int,
+    ) -> dict[str, Any]:
+        """Data the post-2FA screen renders: expiry + passkey affordances."""
+        return {
+            "ok": True,
+            "next": next_url,
+            "client_id": session.client_id,
+            "client_name": (
+                deps.client_store.get_name(session.client_id)  # type: ignore[attr-defined]
+                or session.client_id
+            ),
+            # Two different clocks, and users care about both: the MCP bearer
+            # is what actually stops working (a 2FA re-prompt at /app/refresh),
+            # while the signed-in cookie is what saves them the full login.
+            "bearer_expires_at": time.time() + bearer_ttl,
+            "session_expires_at": session.expires_at,
+            "passkeys_enabled": _passkeys_ready(deps),
+            "secure_context": is_secure_context(request),
+            "passkey_count": (
+                deps.passkeys.store.count_for_client(session.client_id)
+                if _passkeys_ready(deps) else 0
+            ),
+        }
+
+    def _start_session(
+        request: Request,
+        *,
+        client_id: str,
+        client_secret: str,
+        next_url: str,
+        as_json: bool | None = None,
+    ) -> tuple[Session, int, Response]:
+        """Mint the MCP bearer + session row and attach the cookies.
+
+        Shared by the TOTP login and the passkey login so the two paths
+        cannot drift on cookie flags or bearer lifetime.
+        """
+        bearer, ttl = deps.token_store.issue(client_id)  # type: ignore[attr-defined]
+        ua = request.headers.get("user-agent", "")[:200]
+        session = deps.session_store.create(
+            client_id=client_id,
+            client_secret=client_secret,
+            mcp_bearer=bearer,
+            bearer_ttl_seconds=ttl,
+            user_agent=ua,
+        )
+        secure = _is_secure(request)
+        new_csrf = csrf.issue_token()
+        if as_json if as_json is not None else _wants_json(request):
+            payload = _login_success_payload(
+                request, session, next_url=next_url, bearer_ttl=ttl,
+            )
+            payload["csrf_token"] = new_csrf
+            response: Response = JSONResponse(payload)
+        else:
+            response = RedirectResponse(next_url, status_code=303)
+        _set_session_cookie(response, session.session_id, secure)
+        _set_csrf_cookie(response, secure, new_csrf)
+        _apply_security_headers(response)
+        return session, ttl, response
 
     async def login_post(request: Request) -> Response:
         if not await csrf.verify(request):
@@ -292,14 +385,23 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             ip = _client_ip(request, deps.trusted_proxies)
             if not limiter.check(ip):  # type: ignore[attr-defined]
                 retry = limiter.retry_after(ip)  # type: ignore[attr-defined]
+                message = (
+                    f"Too many attempts from this address. Retry in {retry}s."
+                )
+                if _wants_json(request):
+                    return _json(
+                        {"ok": False, "error": message, "locked": True}, status=429,
+                    )
                 return _render(
                     "login.html",
                     request,
                     client_id="",
                     next="",
-                    banner=f"Too many attempts from this address. Retry in {retry}s.",
+                    banner=message,
                     locked=True,
                     status_code=429,
+                    passkeys_enabled=_passkeys_ready(deps),
+                    secure_context=is_secure_context(request),
                 )
 
         form = await request.form()
@@ -316,6 +418,10 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             next_url = _default_landing()
 
         def _fail(message: str, *, status: int = 400, locked: bool = False) -> Response:
+            if _wants_json(request):
+                return _json(
+                    {"ok": False, "error": message, "locked": locked}, status=status,
+                )
             return _render(
                 "login.html",
                 request,
@@ -324,6 +430,8 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                 banner=message,
                 locked=locked,
                 status_code=status,
+                passkeys_enabled=_passkeys_ready(deps),
+                secure_context=is_secure_context(request),
             )
 
         if not client_id or not client_secret or not totp:
@@ -356,21 +464,12 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
 
         deps.totp_record_success(client_id)
         audit.emit("dashboard.login.ok", client_id=client_id)
-        bearer, ttl = deps.token_store.issue(client_id)  # type: ignore[attr-defined]
-        ua = request.headers.get("user-agent", "")[:200]
-        session = deps.session_store.create(
+        _, _, response = _start_session(
+            request,
             client_id=client_id,
             client_secret=client_secret,
-            mcp_bearer=bearer,
-            bearer_ttl_seconds=ttl,
-            user_agent=ua,
+            next_url=next_url,
         )
-
-        secure = _is_secure(request)
-        response = RedirectResponse(next_url, status_code=303)
-        _set_session_cookie(response, session.session_id, secure)
-        _set_csrf_cookie(response, secure)
-        _apply_security_headers(response)
         return response
 
     async def refresh_get(request: Request) -> Response:
@@ -772,6 +871,231 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             )
         return RedirectResponse("/app/tokens", status_code=303)
 
+    # --- Passkeys (WebAuthn) ---------------------------------------------
+
+    def _passkey_service() -> PasskeyService | Response:
+        if not _passkeys_ready(deps):
+            return _json({"error": "passkeys_unavailable"}, status=503)
+        assert deps.passkeys is not None
+        return deps.passkeys
+
+    async def api_passkeys_list(request: Request) -> Response:
+        session = _require_active_session(request, deps)
+        if isinstance(session, Response):
+            return session
+        service = _passkey_service()
+        if isinstance(service, Response):
+            return service
+        return _json({
+            "passkeys": [
+                p.to_json() for p in service.store.list_for_client(session.client_id)
+            ],
+        })
+
+    async def api_passkeys_register_options(request: Request) -> Response:
+        session = _require_active_session(request, deps)
+        if isinstance(session, Response):
+            return session
+        if not await csrf.verify(request):
+            return _json({"error": "csrf"}, status=403)
+        service = _passkey_service()
+        if isinstance(service, Response):
+            return service
+        try:
+            options, state = service.registration_options(
+                request,
+                client_id=session.client_id,
+                client_name=(
+                    deps.client_store.get_name(session.client_id)  # type: ignore[attr-defined]
+                    or session.client_id
+                ),
+                session_id=session.session_id,
+            )
+        except PasskeyError as exc:
+            return _json({"error": str(exc)}, status=400)
+        return _json({"options": options, "state": state})
+
+    async def api_passkeys_register_verify(request: Request) -> Response:
+        session = _require_active_session(request, deps)
+        if isinstance(session, Response):
+            return session
+        if not await csrf.verify(request):
+            return _json({"error": "csrf"}, status=403)
+        service = _passkey_service()
+        if isinstance(service, Response):
+            return service
+        body = await _read_json(request)
+        credential = body.get("credential")
+        state = str(body.get("state") or "")
+        if not isinstance(credential, dict) or not state:
+            return _json({"error": "invalid_request"}, status=400)
+        label_raw = body.get("label")
+        try:
+            record = service.verify_registration(
+                request,
+                state=state,
+                credential=credential,
+                label=label_raw if isinstance(label_raw, str) else None,
+                session_id=session.session_id,
+            )
+        except PasskeyError as exc:
+            audit.emit(
+                "dashboard.passkey.register.fail",
+                client_id=session.client_id, reason=str(exc),
+            )
+            return _json({"error": str(exc)}, status=400)
+        audit.emit(
+            "dashboard.passkey.register.ok",
+            client_id=session.client_id, label=record.label,
+        )
+        return _json({"ok": True, "passkey": record.to_json()}, status=201)
+
+    async def api_passkeys_delete(request: Request) -> Response:
+        session = _require_active_session(request, deps)
+        if isinstance(session, Response):
+            return session
+        if not await csrf.verify(request):
+            return _json({"error": "csrf"}, status=403)
+        service = _passkey_service()
+        if isinstance(service, Response):
+            return service
+        body = await _read_json(request)
+        credential_id = str(body.get("credential_id") or "").strip()
+        if not credential_id:
+            return _json({"error": "invalid_request"}, status=400)
+        if not service.store.delete(credential_id, session.client_id):
+            return _json({"error": "not_found"}, status=404)
+        audit.emit("dashboard.passkey.revoke", client_id=session.client_id)
+        return _json({"ok": True})
+
+    async def passkeys_remove(request: Request) -> Response:
+        """Form-POST twin of the JSON delete, for the tokens page.
+
+        The tokens page is deliberately JS-free for destructive actions, so
+        removing a passkey posts a plain form and lands back on the page.
+        """
+        session = _load_session(request, deps)
+        if not session:
+            return RedirectResponse("/app/login", status_code=302)
+        if not _bearer_live(deps, session):
+            return RedirectResponse("/app/refresh?next=/app/tokens", status_code=302)
+        if not await csrf.verify(request):
+            return JSONResponse({"error": "csrf"}, status_code=403)
+        if _passkeys_ready(deps):
+            form = await request.form()
+            raw = form.get("credential_id", "")
+            credential_id = (raw if isinstance(raw, str) else "").strip()
+            assert deps.passkeys is not None
+            if credential_id and deps.passkeys.store.delete(
+                credential_id, session.client_id,
+            ):
+                audit.emit("dashboard.passkey.revoke", client_id=session.client_id)
+        return RedirectResponse("/app/tokens", status_code=303)
+
+    def _passkey_login_rate_limited(request: Request) -> Response | None:
+        """Apply the login limiter to the unauthenticated passkey endpoints.
+
+        These take a client_id/client_secret pair, so they are just as much
+        a credential-stuffing surface as /app/login itself.
+        """
+        limiter = deps.login_limiter
+        if limiter is None:
+            return None
+        from ..ratelimit import client_ip as _client_ip  # local: avoid import cycle
+        ip = _client_ip(request, deps.trusted_proxies)
+        if limiter.check(ip):  # type: ignore[attr-defined]
+            return None
+        retry = limiter.retry_after(ip)  # type: ignore[attr-defined]
+        return _json(
+            {
+                "ok": False,
+                "error": f"Too many attempts from this address. Retry in {retry}s.",
+            },
+            status=429,
+        )
+
+    async def api_passkeys_auth_options(request: Request) -> Response:
+        """Start a passkey sign-in. Requires the client credentials first.
+
+        The passkey replaces the TOTP factor only: without a valid
+        client_id/client_secret we will not even disclose whether a client
+        has credentials registered.
+        """
+        if not await csrf.verify(request):
+            return _json({"error": "csrf"}, status=403)
+        limited = _passkey_login_rate_limited(request)
+        if limited is not None:
+            return limited
+        service = _passkey_service()
+        if isinstance(service, Response):
+            return service
+        body = await _read_json(request)
+        client_id = str(body.get("client_id") or "").strip()
+        client_secret = str(body.get("client_secret") or "")
+        if not client_id or not client_secret:
+            return _json({"ok": False, "error": "Missing credentials."}, status=400)
+        if not deps.client_store.verify(client_id, client_secret):  # type: ignore[attr-defined]
+            return _json({"ok": False, "error": "Invalid credentials."}, status=401)
+        try:
+            options, state = service.authentication_options(
+                request, client_id=client_id,
+            )
+        except PasskeyError as exc:
+            return _json({"ok": False, "error": str(exc)}, status=400)
+        return _json({"ok": True, "options": options, "state": state})
+
+    async def api_passkeys_auth_verify(request: Request) -> Response:
+        if not await csrf.verify(request):
+            return _json({"error": "csrf"}, status=403)
+        limited = _passkey_login_rate_limited(request)
+        if limited is not None:
+            return limited
+        service = _passkey_service()
+        if isinstance(service, Response):
+            return service
+        body = await _read_json(request)
+        client_id = str(body.get("client_id") or "").strip()
+        client_secret = str(body.get("client_secret") or "")
+        state = str(body.get("state") or "")
+        credential = body.get("credential")
+        if not client_id or not client_secret or not state:
+            return _json({"ok": False, "error": "Missing credentials."}, status=400)
+        if not isinstance(credential, dict):
+            return _json({"ok": False, "error": "Malformed passkey response."}, status=400)
+        # Re-verify the secret: the options call proved it once, but the
+        # state token alone must never be enough to mint a session.
+        if not deps.client_store.verify(client_id, client_secret):  # type: ignore[attr-defined]
+            return _json({"ok": False, "error": "Invalid credentials."}, status=401)
+
+        try:
+            record = service.verify_authentication(
+                request, state=state, credential=credential,
+            )
+        except PasskeyError as exc:
+            audit.emit(
+                "dashboard.login.fail", client_id=client_id,
+                reason=f"passkey:{exc}",
+            )
+            return _json({"ok": False, "error": str(exc)}, status=401)
+        if record.client_id != client_id:
+            return _json({"ok": False, "error": "Invalid credentials."}, status=401)
+
+        next_url = str(body.get("next") or "").strip()
+        if not next_url.startswith("/app/"):
+            next_url = _default_landing()
+        # A passkey sign-in is a clean second factor: clear any TOTP
+        # lockout the same way a correct code would.
+        deps.totp_record_success(client_id)
+        audit.emit("dashboard.login.ok", client_id=client_id, via="passkey")
+        _, _, response = _start_session(
+            request,
+            client_id=client_id,
+            client_secret=client_secret,
+            next_url=next_url,
+            as_json=True,
+        )
+        return response
+
     async def chat_get(request: Request) -> Response:
         session = _load_session(request, deps)
         if not session:
@@ -1132,6 +1456,25 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         Route("/app/api/chat/stream", api_chat_stream, methods=["POST"]),
         Route("/app/api/chat/confirm", api_chat_confirm, methods=["POST"]),
         Route("/app/api/usage", api_usage, methods=["GET"]),
+        Route("/app/api/passkeys", api_passkeys_list, methods=["GET"]),
+        Route(
+            "/app/api/passkeys/register/options",
+            api_passkeys_register_options, methods=["POST"],
+        ),
+        Route(
+            "/app/api/passkeys/register/verify",
+            api_passkeys_register_verify, methods=["POST"],
+        ),
+        Route("/app/api/passkeys/delete", api_passkeys_delete, methods=["POST"]),
+        Route("/app/passkeys/remove", passkeys_remove, methods=["POST"]),
+        Route(
+            "/app/api/passkeys/auth/options",
+            api_passkeys_auth_options, methods=["POST"],
+        ),
+        Route(
+            "/app/api/passkeys/auth/verify",
+            api_passkeys_auth_verify, methods=["POST"],
+        ),
         Route("/", index, methods=["GET"]),
         Mount(
             "/app/static",
@@ -1251,6 +1594,21 @@ def _render_tokens_page(
         locked=deps.totp_locked(session.client_id),
         chat_enabled=deps.engine is not None,
         dcr_enabled=deps.dyn_reg is not None,
+        passkeys_enabled=_passkeys_ready(deps),
+        passkeys=(
+            [
+                {
+                    "credential_id": p.credential_id,
+                    "label": p.label,
+                    "created_human": _human_time(p.created_at),
+                    "last_used_human": (
+                        _human_time(p.last_used_at) if p.last_used_at else None
+                    ),
+                }
+                for p in deps.passkeys.store.list_for_client(session.client_id)
+            ]
+            if _passkeys_ready(deps) else []
+        ),
     )
 
 

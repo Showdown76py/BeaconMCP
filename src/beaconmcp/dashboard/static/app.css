@@ -2168,3 +2168,150 @@ a.cta:hover { background: var(--accent-hover); }
 
 /* Shared icon sprite placement */
 .icon-sprite { position: absolute; width: 0; height: 0; }
+
+/* ===============================================================
+   PASSKEYS + POST-2FA SCREEN (login.html)
+   =============================================================== */
+
+/* Shimmer: a highlight sweeping across the button while a request is in
+   flight. Prefers a real animation over a spinner so the button keeps its
+   size and the label can carry the status text. */
+.btn-primary.is-loading,
+.btn-ghost.is-loading {
+  position: relative;
+  overflow: hidden;
+  cursor: progress;
+  opacity: 1;
+}
+.btn-primary.is-loading::after,
+.btn-ghost.is-loading::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 20%,
+    rgba(255, 255, 255, 0.38) 50%,
+    transparent 80%
+  );
+  transform: translateX(-100%);
+  animation: shimmer-sweep 1150ms var(--ease-out) infinite;
+  pointer-events: none;
+}
+.btn-ghost.is-loading::after {
+  background: linear-gradient(
+    100deg,
+    transparent 20%,
+    var(--accent-soft) 50%,
+    transparent 80%
+  );
+}
+@keyframes shimmer-sweep {
+  to { transform: translateX(100%); }
+}
+/* The trailing chevron/check is noise once the button says "Verifying…". */
+.btn-primary.is-loading .btn-icon { opacity: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .btn-primary.is-loading::after,
+  .btn-ghost.is-loading::after { animation: none; opacity: 0.25; }
+}
+
+.btn-ghost {
+  width: 100%;
+  padding: 11px 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--bg-soft);
+  color: var(--fg);
+  font-family: var(--font); font-weight: 550; font-size: 14px;
+  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  transition: border-color 160ms var(--ease-out), background 160ms var(--ease-out),
+              color 160ms var(--ease-out);
+}
+.btn-ghost:hover:not(:disabled) {
+  border-color: var(--accent-border);
+  background: var(--accent-softer);
+  color: var(--fg);
+}
+.btn-ghost:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn-ghost svg { flex-shrink: 0; }
+
+.alt-divider {
+  display: flex; align-items: center; gap: 12px;
+  margin: 18px 0 14px;
+  color: var(--fg-faint);
+  font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;
+}
+.alt-divider::before,
+.alt-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.auth-card .hint {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+  text-align: center;
+}
+
+.success-mark {
+  width: 42px; height: 42px;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  margin-bottom: 16px;
+  color: var(--success);
+  background: var(--success-soft);
+  border: 1px solid color-mix(in oklab, var(--success) 35%, var(--border));
+  animation: pop-in 320ms var(--ease-out) both;
+}
+@keyframes pop-in {
+  from { opacity: 0; transform: scale(0.82); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.expiry-card {
+  margin: 4px 0 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-soft);
+}
+.expiry-row {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+}
+.expiry-row + .expiry-row { border-top: 1px solid var(--border-subtle); }
+.expiry-row dt {
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+.expiry-row dd {
+  margin: 0;
+  font-size: 13px; font-weight: 550;
+  color: var(--fg);
+  text-align: right;
+}
+
+#passkey-add-block { margin-top: 18px; }
+#step-3 .btn-primary { margin-top: 20px; }
+#step-3 .banner { margin-bottom: 14px; }
+
+/* Registered passkeys list (dashboard "API tokens" page) */
+.passkey-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+}
+.passkey-row + .passkey-row { border-top: 1px solid var(--border-subtle); }
+.passkey-row .passkey-meta { min-width: 0; }
+.passkey-row .passkey-name {
+  font-size: 13.5px; font-weight: 550;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.passkey-row .passkey-sub { font-size: 12px; color: var(--fg-muted); }
