@@ -1,6 +1,6 @@
 # MCP tools
 
-45 tools across six modules. The infrastructure modules are only registered when the matching
+47 tools across six modules. The infrastructure modules are only registered when the matching
 capability is configured, so an SSH-only deployment exposes the 2 SSH tools and nothing else from
 Proxmox or BMC. `security_end_session` is always registered, whatever the topology.
 
@@ -50,25 +50,38 @@ tools below exist for when you already know what you're looking at.
 | `proxmox_backup_list` | List vzdump archives on a storage pool. |
 | `proxmox_backup_restore` | Restore from an archive. |
 
-## Proxmox — interactive panel (1)
+## Proxmox — interactive panels (3)
 
 | Tool | Description |
 |------|-------------|
 | `proxmox_vm_panel` | Control panel for one guest: live CPU/RAM/disk, power buttons, CPU and memory fields. |
+| `proxmox_logs_panel` | Scrollable syslog and task viewer for one node, with level and substring filters. |
+| `cluster_overview_interactive` | Cluster dashboard: node pressure, searchable guest table with inline start/stop, storage bars. |
 
-This one ships a UI. It uses the [MCP Apps extension](https://modelcontextprotocol.io/extensions/apps/overview)
-(`io.modelcontextprotocol/ui`): the tool carries `_meta.ui.resourceUri` pointing at
-`ui://beaconmcp/vm-panel.html`, a self-contained HTML document served as
-`text/html;profile=mcp-app` that the client renders in a sandboxed iframe and talks to over
-JSON-RPC on `postMessage`.
+These three ship a UI. They use the [MCP Apps extension](https://modelcontextprotocol.io/extensions/apps/overview)
+(`io.modelcontextprotocol/ui`): the tool carries `_meta.ui.resourceUri` pointing at a `ui://`
+resource, a self-contained HTML document served as `text/html;profile=mcp-app` that the client
+renders in a sandboxed iframe and talks to over JSON-RPC on `postMessage`.
 
-The panel does not reach the cluster itself. Its buttons call the ordinary tools
-(`proxmox_vm_start` / `_stop` / `_restart` / `_config`), so whatever approval your client applies
-to a tool call applies here too — the panel is a nicer way to issue the call, not a way around
-the prompt.
+The panels live in `src/beaconmcp/proxmox/apps/`. They share `bridge.js` (the JSON-RPC client)
+and `panel.css` (the look), spliced in at the `<!--mcp-runtime-->` marker when the resource is
+read, so each one still ships as a single document.
+
+**They hold no cluster access of their own.** Every button issues an ordinary `tools/call` for
+the tools listed elsewhere in this document — `proxmox_vm_start`, `_stop`, `_restart`, `_config`
+— so whatever approval your client puts in front of a tool call applies here too. A panel is a
+nicer way to issue the call, not a way around the prompt.
+
+After an action, a panel pushes the fresh state back into the conversation with
+`ui/update-model-context`. Without it the model keeps whatever the tool returned when the panel
+opened: stop a VM from the panel and the next turn still thinks it is running, because the
+button's result goes to the iframe, not to the model. Where the host supports `ui/message`, the
+VM panel also offers a button that asks the model to investigate the guest, and the cluster
+dashboard one that asks it to open a specific VM's panel. Both features are gated on the host
+advertising the capability and are simply hidden when it does not.
 
 Clients that did not negotiate the extension ignore `_meta.ui` and show the tool's return value,
-which is the same VM snapshot as data. Nothing breaks; you just don't get the frame.
+which is the same snapshot as data. Nothing breaks; you just don't get the frame.
 
 ## Proxmox — system and files (9)
 

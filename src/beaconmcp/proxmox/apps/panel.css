@@ -1,0 +1,93 @@
+/* Shared look for the ui:// panels. Injected alongside bridge.js by panel.py.
+
+   Colours are defaults only: the host overrides them through
+   hostContext.styles.variables, so the panels sit inside the client's own
+   theme rather than next to it. */
+
+:root {
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --accent: #2563eb;
+  --danger: #dc2626;
+  --ok: #16a34a;
+  --warn: #d97706;
+  --track: #f3f4f6;
+}
+:root[data-theme="dark"] {
+  --bg: #1c1c1c;
+  --fg: #ededed;
+  --muted: #9ca3af;
+  --line: #333333;
+  --accent: #60a5fa;
+  --danger: #f87171;
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --track: #2a2a2a;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 14px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.45 var(--font-sans, system-ui, -apple-system, "Segoe UI", sans-serif);
+}
+
+h1 { font-size: 15px; margin: 0; font-weight: 600; }
+.sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+
+.badge {
+  padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .04em; white-space: nowrap;
+  border: 1px solid var(--line); color: var(--muted);
+}
+.badge[data-status="running"], .badge[data-status="online"], .badge[data-status="OK"] { color: var(--ok); border-color: currentColor; }
+.badge[data-status="paused"] { color: var(--accent); border-color: currentColor; }
+.badge[data-status="unreachable"], .badge[data-status="unknown"] { color: var(--danger); border-color: currentColor; }
+
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin: 14px 0; }
+.metric { border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; }
+.metric .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.metric .value { font-size: 15px; font-weight: 600; margin-top: 3px; font-variant-numeric: tabular-nums; }
+
+.bar { height: 4px; border-radius: 2px; background: var(--track); margin-top: 7px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--accent); }
+.bar > i[data-level="warn"] { background: var(--warn); }
+.bar > i[data-level="high"] { background: var(--danger); }
+
+fieldset { border: 0; margin: 0; padding: 0; }
+fieldset[disabled] { opacity: .55; }
+.row { display: flex; flex-wrap: wrap; gap: 7px; align-items: flex-end; }
+
+button {
+  font: inherit; padding: 6px 13px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--line); background: transparent; color: var(--fg);
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { cursor: not-allowed; opacity: .45; }
+button.danger:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+
+label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+input, select {
+  font: inherit; padding: 5px 7px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--fg);
+}
+
+hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }
+.section-title { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: 8px; }
+
+.note { margin-top: 12px; padding: 8px 10px; border-radius: 6px; font-size: 12px; border: 1px solid var(--line); }
+.note[data-kind="error"], #loading[data-kind="error"] { color: var(--danger); border-color: currentColor; }
+.note[data-kind="ok"] { color: var(--ok); border-color: currentColor; }
+
+table { border-collapse: collapse; width: 100%; font-size: 12px; }
+th { text-align: left; font-weight: 600; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; padding: 5px 8px; }
+td { padding: 5px 8px; border-top: 1px solid var(--line); }
+tbody tr:hover { background: var(--track); }
+
+[hidden] { display: none !important; }

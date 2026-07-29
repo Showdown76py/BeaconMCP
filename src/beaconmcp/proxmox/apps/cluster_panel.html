@@ -1,0 +1,292 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cluster dashboard</title>
+<!--mcp-runtime-->
+<style>
+  .nodes { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin: 14px 0; }
+  .node { border: 1px solid var(--line); border-radius: 8px; padding: 10px 11px; }
+  .node h2 { font-size: 13px; margin: 0 0 6px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .node .line { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 7px; }
+  #guests { max-height: 340px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+  td.actions { text-align: right; white-space: nowrap; }
+  td.actions button { padding: 3px 9px; font-size: 11px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-right: 6px; background: var(--muted); }
+  .dot[data-status="running"] { background: var(--ok); }
+  .pools { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+</style>
+
+<div id="loading" class="sub">Loading…</div>
+
+<main id="panel" hidden>
+  <header>
+    <div>
+      <h1>Cluster</h1>
+      <div class="sub" id="summary"></div>
+    </div>
+    <button id="refresh">Refresh</button>
+  </header>
+
+  <div class="nodes" id="nodes"></div>
+
+  <div class="section-title">Guests</div>
+  <div class="row" style="margin-bottom:8px">
+    <div style="flex:1;min-width:150px">
+      <input id="filter" type="search" placeholder="Filter by name, VMID or node…" style="width:100%">
+    </div>
+    <div>
+      <select id="status">
+        <option value="">All</option>
+        <option value="running">Running</option>
+        <option value="stopped">Stopped</option>
+      </select>
+    </div>
+  </div>
+  <div id="guests"></div>
+
+  <div id="storage-section" hidden>
+    <hr>
+    <div class="section-title">Storage</div>
+    <div class="pools" id="pools"></div>
+  </div>
+
+  <div class="note" id="note" hidden></div>
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  let state = null;
+  let busy = false;
+  const $ = (id) => document.getElementById(id);
+
+  function fail(err) {
+    const loading = $("loading");
+    loading.hidden = false;
+    loading.textContent = err.message || String(err);
+    loading.dataset.kind = "error";
+    MCPApp.reportSize();
+  }
+
+  function setNote(text, kind) {
+    const note = $("note");
+    note.textContent = text || "";
+    note.hidden = !text;
+    if (text) note.dataset.kind = kind;
+    MCPApp.reportSize();
+  }
+
+  function level(p) {
+    return p >= 90 ? "high" : p >= 75 ? "warn" : "normal";
+  }
+
+  function bar(p) {
+    const wrap = document.createElement("div");
+    wrap.className = "bar";
+    const fill = document.createElement("i");
+    fill.style.width = `${Math.min(100, p)}%`;
+    fill.dataset.level = level(p);
+    wrap.appendChild(fill);
+    return wrap;
+  }
+
+  function drawNodes() {
+    const box = $("nodes");
+    box.textContent = "";
+    for (const n of state.nodes) {
+      const card = document.createElement("div");
+      card.className = "node";
+
+      const head = document.createElement("h2");
+      head.textContent = n.name;
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.dataset.status = n.status;
+      badge.textContent = n.status;
+      head.appendChild(badge);
+      card.appendChild(head);
+
+      if (n.status === "unreachable" || n.cpu === undefined) {
+        const why = document.createElement("div");
+        why.className = "sub";
+        why.textContent = n.error || "No metrics reported.";
+        card.appendChild(why);
+      } else {
+        const memPct = n.mem_total_gb > 0 ? (n.mem_used_gb / n.mem_total_gb) * 100 : 0;
+        for (const [label, text, p] of [
+          ["CPU", `${n.cpu}%`, n.cpu],
+          ["RAM", `${n.mem_used_gb} / ${n.mem_total_gb} GB`, memPct],
+        ]) {
+          const row = document.createElement("div");
+          row.className = "line";
+          const l = document.createElement("span"); l.textContent = label;
+          const v = document.createElement("span"); v.textContent = text;
+          row.append(l, v);
+          card.appendChild(row);
+          card.appendChild(bar(p));
+        }
+        const up = document.createElement("div");
+        up.className = "line";
+        up.innerHTML = "<span>Uptime</span>";
+        const upv = document.createElement("span");
+        upv.textContent = `${n.uptime_h} h`;
+        up.appendChild(upv);
+        card.appendChild(up);
+      }
+
+      box.appendChild(card);
+    }
+  }
+
+  function visibleGuests() {
+    const needle = $("filter").value.trim().toLowerCase();
+    const wanted = $("status").value;
+    return state.vms.filter((v) => {
+      if (wanted && v.status !== wanted) return false;
+      if (!needle) return true;
+      return `${v.name} ${v.vmid} ${v.node} ${v.type}`.toLowerCase().includes(needle);
+    });
+  }
+
+  function drawGuests() {
+    const rows = visibleGuests();
+    const box = $("guests");
+    box.textContent = "";
+
+    if (!rows.length) {
+      const empty = document.createElement("div");
+      empty.className = "sub";
+      empty.style.padding = "10px";
+      empty.textContent = "No guest matches.";
+      box.appendChild(empty);
+      return;
+    }
+
+    const table = document.createElement("table");
+    table.innerHTML =
+      "<thead><tr><th>Guest</th><th>Node</th><th>CPU</th><th>RAM</th><th></th></tr></thead>";
+    const body = document.createElement("tbody");
+
+    for (const v of rows) {
+      const tr = document.createElement("tr");
+
+      const nameCell = document.createElement("td");
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      dot.dataset.status = v.status;
+      nameCell.appendChild(dot);
+      nameCell.appendChild(document.createTextNode(`${v.name || v.type} (${v.vmid})`));
+      tr.appendChild(nameCell);
+
+      for (const text of [v.node, `${v.cpu_pct}%`, `${v.mem_used_mb} MB`]) {
+        const td = document.createElement("td");
+        td.textContent = text;
+        tr.appendChild(td);
+      }
+
+      const actions = document.createElement("td");
+      actions.className = "actions";
+      const running = v.status === "running";
+      const power = document.createElement("button");
+      power.textContent = running ? "Stop" : "Start";
+      if (running) power.className = "danger";
+      power.disabled = busy;
+      power.onclick = () => act(v, running ? "proxmox_vm_stop" : "proxmox_vm_start",
+                                running ? "Stopping" : "Starting");
+      actions.appendChild(power);
+
+      if (MCPApp.hostSupports("message")) {
+        const open = document.createElement("button");
+        open.textContent = "Open";
+        open.style.marginLeft = "5px";
+        open.disabled = busy;
+        open.onclick = () => MCPApp.sendMessage(
+          `Open the control panel for VM ${v.vmid} (${v.name || v.type}) on ${v.node}.`);
+        actions.appendChild(open);
+      }
+
+      tr.appendChild(actions);
+      body.appendChild(tr);
+    }
+
+    table.appendChild(body);
+    box.appendChild(table);
+  }
+
+  function drawStorage() {
+    if (!state.storage || !state.storage.length) return;
+    $("storage-section").hidden = false;
+    const box = $("pools");
+    box.textContent = "";
+    for (const s of state.storage) {
+      if (s.error) continue;
+      const card = document.createElement("div");
+      card.className = "metric";
+      const label = document.createElement("div");
+      label.className = "label";
+      label.textContent = `${s.node} / ${s.name}`;
+      const value = document.createElement("div");
+      value.className = "value";
+      value.textContent = `${s.used_gb} / ${s.total_gb} GB`;
+      card.append(label, value, bar(s.usage_pct));
+      box.appendChild(card);
+    }
+  }
+
+  function render(data) {
+    state = data;
+    $("loading").hidden = true;
+    $("panel").hidden = false;
+    const up = state.nodes.filter((n) => n.status === "online").length;
+    const running = state.vms.filter((v) => v.status === "running").length;
+    $("summary").textContent =
+      `${up}/${state.nodes.length} nodes online · ${running}/${state.total_vms} guests running`;
+    drawNodes();
+    drawGuests();
+    drawStorage();
+    MCPApp.reportSize();
+  }
+
+  async function reload() {
+    const data = await MCPApp.callTool("cluster_overview_interactive", {});
+    if (data) render(data);
+  }
+
+  async function act(vm, tool, label) {
+    busy = true;
+    drawGuests();
+    setNote(`${label} ${vm.name || vm.vmid}…`, "ok");
+    try {
+      await MCPApp.callTool(tool, { node: vm.node, vmid: vm.vmid });
+      await reload();
+      setNote(`${label.replace(/ing$/, "ed")} ${vm.name || vm.vmid}.`, "ok");
+      // Keep the conversation's picture of the cluster in step with what the
+      // user just did here; the tool result above never reaches the model.
+      MCPApp.updateModelContext(
+        { node: vm.node, vmid: vm.vmid, action: tool },
+        `The user ran ${tool} on VM ${vm.vmid} (${vm.name || vm.type}) on ${vm.node} `
+        + `from the cluster dashboard.`,
+      );
+    } catch (err) {
+      setNote(err.message || String(err), "error");
+    } finally {
+      busy = false;
+      drawGuests();
+    }
+  }
+
+  $("refresh").onclick = () => reload().catch((e) => setNote(e.message, "error"));
+  $("filter").oninput = drawGuests;
+  $("status").onchange = drawGuests;
+
+  MCPApp.connect({
+    name: "beaconmcp-cluster-panel",
+    onResult: (data) => {
+      if (data && data.error) fail(new Error(data.error));
+      else if (data) render(data);
+    },
+    onFail: fail,
+  });
+})();
+</script>
