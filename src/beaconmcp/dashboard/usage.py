@@ -37,11 +37,27 @@ from .db import Database
 # Pricing
 # ---------------------------------------------------------------------------
 
-# Rates are in USD per 1M tokens. Pulled from Google AI Studio pricing
-# page on 2026-04-17. Keys with ``_hi`` suffixes apply when the prompt
+# Rates are in USD per 1M tokens. Pulled from the Google AI Studio pricing
+# page on 2026-07-29. Keys with ``_hi`` suffixes apply when the prompt
 # token count exceeds :data:`_TIER_THRESHOLD`; only the Pro models have
 # a high tier in the public rate card.
+#
+# The retired entries at the bottom are deliberate. A model leaving
+# ``VALID_MODELS`` does not erase the turns it billed, and ``cost_usd`` is
+# called again whenever a stored turn is re-priced -- dropping the rates
+# would silently re-bill that history at the fallback model's price.
 _PRICING: dict[str, dict[str, float]] = {
+    "gemini-3.6-flash": {
+        "input": 1.50, "cached": 0.15, "output": 7.50,
+    },
+    "gemini-3.5-flash-lite": {
+        "input": 0.30, "cached": 0.03, "output": 2.50,
+    },
+    "gemini-3.1-pro-preview": {
+        "input": 2.00, "cached": 0.20, "output": 12.00,
+        "input_hi": 4.00, "cached_hi": 0.40, "output_hi": 18.00,
+    },
+    # --- no longer selectable, kept so old turns keep their real price ---
     "gemini-2.5-flash": {
         "input": 0.30, "cached": 0.03, "output": 2.50,
     },
@@ -51,10 +67,6 @@ _PRICING: dict[str, dict[str, float]] = {
     },
     "gemini-3-flash-preview": {
         "input": 0.50, "cached": 0.05, "output": 3.00,
-    },
-    "gemini-3.1-pro-preview": {
-        "input": 2.00, "cached": 0.20, "output": 12.00,
-        "input_hi": 4.00, "cached_hi": 0.40, "output_hi": 18.00,
     },
 }
 
@@ -82,7 +94,7 @@ class UsageMeter:
         cached_tokens: int,
         output_tokens: int,
     ) -> float:
-        rates = _PRICING.get(model) or _PRICING["gemini-2.5-flash"]
+        rates = _PRICING.get(model) or _PRICING["gemini-3.6-flash"]
         use_hi = prompt_tokens > _TIER_THRESHOLD and "input_hi" in rates
         in_rate = rates["input_hi"] if use_hi else rates["input"]
         out_rate = rates["output_hi"] if use_hi else rates["output"]

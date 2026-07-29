@@ -3,7 +3,7 @@
 Optional web panel served by BeaconMCP on the same origin as the MCP endpoint (`https://<your-host>/app/...`). Three pages:
 
 - **`/app/login`** — exchanges a client id + client secret + a second factor (TOTP code or passkey) for an MCP bearer, and stores it in a 90-day HttpOnly session cookie. Removes the need to issue `curl` requests from a phone.
-- **`/app/chat`** — multi-conversation chat with Gemini 2.5 Flash/Pro (stable) or Gemini 3 Flash / 3.1 Pro (preview, Google allowlist required). **Requires `GEMINI_API_KEY`.**
+- **`/app/chat`** — multi-conversation chat with Gemini 3.6 Flash / 3.5 Flash-Lite (GA) or Gemini 3.1 Pro (preview, Google allowlist required). **Requires `GEMINI_API_KEY`.**
 - **`/app/tokens`** — generates named bearers so external MCP clients (Gemini web, ChatGPT, Assistant Desktop) can be wired up without the OAuth dance. **Works without `GEMINI_API_KEY`.**
 
 ## Enabling
@@ -86,9 +86,12 @@ Constraints:
 
 ## Chat — models and thinking
 
-- **Gemini 2.5 Flash / Pro** — available on every AI Studio key. **Used by default** (`gemini-2.5-flash`).
-- **Gemini 3 Flash / 3.1 Pro (preview)** — gated by a Google allowlist. Without allowlist access, the dashboard surfaces a clear message pointing back to 2.5.
-- **Thinking effort** — dropdown with `minimal` / `low` / `medium` / `high`. `gemini-2.5-pro` cannot disable thinking, so `minimal` is clamped to the 128-token floor automatically.
+- **Gemini 3.6 Flash** — GA, available on every AI Studio key. **Used by default** (`gemini-3.6-flash`).
+- **Gemini 3.5 Flash-Lite** — GA, the cheap high-throughput option (`gemini-3.5-flash-lite`), 5× cheaper in and out than 3.6 Flash.
+- **Gemini 3.1 Pro (preview)** — gated by a Google allowlist. Without allowlist access, the dashboard surfaces a clear message pointing back to the two GA models.
+- **Thinking effort** — dropdown with `minimal` / `low` / `medium` / `high`. The Gemini 3 family takes a `thinking_level` enum; the token-budget mapping in `_BUDGET_BY_EFFORT` (and the 128-token floor `gemini-2.5-pro` needed) only applies to models outside it, and is kept for conversations that predate the switch.
+
+Gemini 2.5 Flash / Pro and `gemini-3-flash-preview` were retired from the picker when 3.6 Flash and 3.5 Flash-Lite went GA (2026-07-21). A conversation sitting on one of them is moved to the closest current model by the schema-6 migration; `messages.model` is left alone, so the transcript keeps naming whichever model actually wrote each reply, and `usage.py` keeps their rates so old turns are never re-priced.
 - **Markdown rendering** — the client parses headings (`#`–`######`), ordered and unordered lists, blockquotes, horizontal rules, code fences (with `lang-*` class), inline code, bold/italic/strikethrough, and HTTP(S) links.
 
 ## Mandatory confirmation for dangerous tools
@@ -173,14 +176,16 @@ Setting a variable to `0` disables that window. When a cap is exceeded, the next
 
 The chat footer shows a compact `5H XX% · 7D XX%` line updated after every turn via an SSE `usage_update` event. Clicking the bar opens a modal with progress bars, the 5 h reset time, a "rolling 7-day window" label, and a refresh button.
 
-Rates used (USD per 1 M tokens, aligned with the public Google AI Studio pricing on 2026-04-17):
+Rates used (USD per 1 M tokens, aligned with the public Google AI Studio pricing on 2026-07-29). The retired rows are kept because the ledger re-prices stored turns, and dropping a rate would silently re-bill that history at the fallback model's price:
 
 | Model | Input | Cached | Output |
 |-------|-------|--------|--------|
-| `gemini-2.5-flash` | $0.30 | $0.03 | $2.50 |
-| `gemini-2.5-pro` (≤200k / >200k) | $1.25 / $2.50 | $0.125 / $0.25 | $10.00 / $15.00 |
-| `gemini-3-flash-preview` | $0.50 | $0.05 | $3.00 |
+| `gemini-3.6-flash` | $1.50 | $0.15 | $7.50 |
+| `gemini-3.5-flash-lite` | $0.30 | $0.03 | $2.50 |
 | `gemini-3.1-pro-preview` (≤200k / >200k) | $2.00 / $4.00 | $0.20 / $0.40 | $12.00 / $18.00 |
+| `gemini-2.5-flash` *(retired)* | $0.30 | $0.03 | $2.50 |
+| `gemini-2.5-pro` *(retired, ≤200k / >200k)* | $1.25 / $2.50 | $0.125 / $0.25 | $10.00 / $15.00 |
+| `gemini-3-flash-preview` *(retired)* | $0.50 | $0.05 | $3.00 |
 
 Constants live in `src/beaconmcp/dashboard/usage.py` — update them when Google adjusts its prices.
 

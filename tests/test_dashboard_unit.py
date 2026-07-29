@@ -261,7 +261,8 @@ def test_classify_error_preview_model_permission_denied():
     )
     code, msg = _classify_error(err, "gemini-3-flash-preview")
     assert code == "model_access_denied"
-    assert "gemini-2.5" in msg
+    # The way out must name models the picker still offers.
+    assert "gemini-3.6-flash" in msg
     assert "gemini-3-flash-preview" in msg
 
 
@@ -693,13 +694,17 @@ def test_migration_v1_to_v2_renames_gemini_models(tmp_path):
     conn.commit()
     conn.close()
 
-    # Opening via Database() should run migration v2.
+    # Opening via Database() runs every pending migration, so c1 is first
+    # renamed to gemini-3-flash-preview by v2 and then moved forward to the
+    # current Flash by v6.
     db = Database(path)
     rows = db.conn().execute(
         "SELECT id, model FROM conversations ORDER BY id"
     ).fetchall()
-    assert dict(rows[0]) == {"id": "c1", "model": "gemini-3-flash-preview"}
+    assert dict(rows[0]) == {"id": "c1", "model": "gemini-3.6-flash"}
     assert dict(rows[1]) == {"id": "c2", "model": "gemini-3.1-pro-preview"}
+    # v2 renamed the same model; v6 substitutes a different one, so the
+    # message keeps naming whichever model actually wrote the reply.
     msg = db.conn().execute("SELECT model FROM messages WHERE id='m1'").fetchone()
     assert msg["model"] == "gemini-3-flash-preview"
 
@@ -708,6 +713,64 @@ def test_migration_v1_to_v2_renames_gemini_models(tmp_path):
 
     ver = db.conn().execute("PRAGMA user_version").fetchone()[0]
     assert ver == _LATEST_VERSION
+
+
+def test_migration_v6_moves_retired_models_forward(tmp_path):
+    """A conversation left on a retired model must still be usable.
+
+    ``conversations.model`` is what the next turn runs on. Leaving a
+    retired id there would fail ``VALID_MODELS`` and silently fall back,
+    which reads as the picker forgetting the operator's choice.
+    """
+    from beaconmcp.dashboard.conversations import VALID_MODELS
+
+    db = Database(tmp_path / "d.db")
+    conn = db.conn()
+    for cid, model in (
+        ("c1", "gemini-2.5-flash"),
+        ("c2", "gemini-2.5-pro"),
+        ("c3", "gemini-3-flash-preview"),
+        ("c4", "gemini-3.1-pro-preview"),
+    ):
+        conn.execute(
+            "INSERT INTO conversations (id, client_id, title, model, "
+            "thinking_effort, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+            (cid, "cli", None, model, "low", 0, 0),
+        )
+    conn.execute("PRAGMA user_version = 5")
+    conn.commit()
+
+    from beaconmcp.dashboard.db import _migrate
+
+    _migrate(conn)
+    rows = conn.execute(
+        "SELECT id, model FROM conversations ORDER BY id"
+    ).fetchall()
+    assert [r["model"] for r in rows] == [
+        "gemini-3.6-flash",
+        "gemini-3.1-pro-preview",
+        "gemini-3.6-flash",
+        "gemini-3.1-pro-preview",
+    ]
+    assert all(r["model"] in VALID_MODELS for r in rows)
+
+
+def test_every_offered_model_has_a_price():
+    """A model in the picker with no rate would bill at the fallback's."""
+    from beaconmcp.dashboard.conversations import DEFAULT_MODEL, VALID_MODELS
+    from beaconmcp.dashboard.usage import _PRICING
+
+    assert DEFAULT_MODEL in VALID_MODELS
+    for model in VALID_MODELS:
+        assert model in _PRICING, model
+
+
+def test_retired_models_keep_their_rates():
+    """Old turns must not be re-priced at the current model's rate."""
+    from beaconmcp.dashboard.usage import _PRICING
+
+    for model in ("gemini-2.5-flash", "gemini-2.5-pro", "gemini-3-flash-preview"):
+        assert model in _PRICING, model
 
 
 def test_short_ciphertext_decryption_returns_none(store):

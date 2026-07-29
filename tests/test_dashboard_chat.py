@@ -175,11 +175,11 @@ def test_conv_create_and_list(app_and_client):
     r = client.post(
         "/app/api/conversations",
         headers={"X-CSRF-Token": csrf, "Content-Type": "application/json"},
-        content=json.dumps({"model": "gemini-3-flash-preview", "effort": "medium"}),
+        content=json.dumps({"model": "gemini-3.5-flash-lite", "effort": "medium"}),
     )
     assert r.status_code == 201
     conv = r.json()["conversation"]
-    assert conv["model"] == "gemini-3-flash-preview"
+    assert conv["model"] == "gemini-3.5-flash-lite"
     assert conv["thinking_effort"] == "medium"
 
     r = client.get("/app/api/conversations")
@@ -848,7 +848,8 @@ def test_chat_page_renders_after_login(app_and_client):
     r = client.get("/app/chat")
     assert r.status_code == 200
     assert "chat-root" in r.text
-    assert "gemini-3-flash-preview" in r.text
+    assert "gemini-3.6-flash" in r.text
+    assert "gemini-3.5-flash-lite" in r.text
     assert "gemini-3.1-pro-preview" in r.text
 
 

@@ -1306,9 +1306,9 @@ def _classify_error(exc: BaseException, model: str) -> tuple[str, str]:
                 (
                     f"Your Gemini key does not have access to {model} "
                     "(Google allowlist required for preview models). Switch "
-                    "to gemini-2.5-flash or gemini-2.5-pro via the dropdown "
-                    "in the bottom-left — those are available on every AI "
-                    "Studio key."
+                    "to gemini-3.6-flash or gemini-3.5-flash-lite via the "
+                    "dropdown in the bottom-left — those are GA and "
+                    "available on every AI Studio key."
                 ),
             )
         return (

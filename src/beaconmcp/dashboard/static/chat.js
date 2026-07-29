@@ -14,17 +14,25 @@ const VALID_EFFORTS = JSON.parse(root.dataset.validEfforts || "[]");
 
 // --- Model catalog (mirrors src/beaconmcp/dashboard/conversations.py) ---
 const MODEL_CATALOG = {
-  "gemini-2.5-flash": {
-    shortName: "2.5 Flash", name: "Gemini 2.5 Flash", group: "Gemini 2", preview: false,
+  "gemini-3.6-flash": {
+    shortName: "3.6 Flash", name: "Gemini 3.6 Flash", group: "Flash", preview: false,
   },
-  "gemini-2.5-pro": {
-    shortName: "2.5 Pro", name: "Gemini 2.5 Pro", group: "Gemini 2", preview: false,
-  },
-  "gemini-3-flash-preview": {
-    shortName: "3 Flash", name: "Gemini 3 Flash", group: "Gemini 3", preview: true,
+  "gemini-3.5-flash-lite": {
+    shortName: "3.5 Lite", name: "Gemini 3.5 Flash-Lite", group: "Flash", preview: false,
   },
   "gemini-3.1-pro-preview": {
-    shortName: "3.1 Pro", name: "Gemini 3.1 Pro", group: "Gemini 3", preview: true,
+    shortName: "3.1 Pro", name: "Gemini 3.1 Pro", group: "Pro", preview: true,
+  },
+  // Retired from the picker but still rendered on stored messages, which
+  // record whichever model actually wrote the reply.
+  "gemini-2.5-flash": {
+    shortName: "2.5 Flash", name: "Gemini 2.5 Flash", group: "Legacy", preview: false,
+  },
+  "gemini-2.5-pro": {
+    shortName: "2.5 Pro", name: "Gemini 2.5 Pro", group: "Legacy", preview: false,
+  },
+  "gemini-3-flash-preview": {
+    shortName: "3 Flash", name: "Gemini 3 Flash", group: "Legacy", preview: true,
   },
 };
 

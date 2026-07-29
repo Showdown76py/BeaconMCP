@@ -113,8 +113,28 @@ def test_cost_unknown_model_falls_back_to_flash():
         "gemini-unknown-9",
         prompt_tokens=1_000_000, cached_tokens=0, output_tokens=0,
     )
-    # Same rate as gemini-2.5-flash input.
+    # Same rate as gemini-3.6-flash input, the current default.
+    assert cost == pytest.approx(1.50)
+
+
+def test_cost_retired_model_keeps_its_own_rate():
+    """A turn billed on 2.5 Flash must not be re-priced at 3.6 Flash."""
+    cost = UsageMeter.cost_usd(
+        "gemini-2.5-flash",
+        prompt_tokens=1_000_000, cached_tokens=0, output_tokens=0,
+    )
     assert cost == pytest.approx(0.30)
+
+
+def test_cost_new_flash_models():
+    assert UsageMeter.cost_usd(
+        "gemini-3.6-flash",
+        prompt_tokens=1_000_000, cached_tokens=0, output_tokens=1_000_000,
+    ) == pytest.approx(1.50 + 7.50)
+    assert UsageMeter.cost_usd(
+        "gemini-3.5-flash-lite",
+        prompt_tokens=1_000_000, cached_tokens=0, output_tokens=1_000_000,
+    ) == pytest.approx(0.30 + 2.50)
 
 
 def test_cost_cached_over_prompt_is_clamped():
