@@ -1,6 +1,6 @@
 # MCP tools
 
-44 tools across six modules. The infrastructure modules are only registered when the matching
+45 tools across six modules. The infrastructure modules are only registered when the matching
 capability is configured, so an SSH-only deployment exposes the 2 SSH tools and nothing else from
 Proxmox or BMC. `security_end_session` is always registered, whatever the topology.
 
@@ -49,6 +49,26 @@ tools below exist for when you already know what you're looking at.
 | `proxmox_backup_create` | Trigger a backup. |
 | `proxmox_backup_list` | List vzdump archives on a storage pool. |
 | `proxmox_backup_restore` | Restore from an archive. |
+
+## Proxmox — interactive panel (1)
+
+| Tool | Description |
+|------|-------------|
+| `proxmox_vm_panel` | Control panel for one guest: live CPU/RAM/disk, power buttons, CPU and memory fields. |
+
+This one ships a UI. It uses the [MCP Apps extension](https://modelcontextprotocol.io/extensions/apps/overview)
+(`io.modelcontextprotocol/ui`): the tool carries `_meta.ui.resourceUri` pointing at
+`ui://beaconmcp/vm-panel.html`, a self-contained HTML document served as
+`text/html;profile=mcp-app` that the client renders in a sandboxed iframe and talks to over
+JSON-RPC on `postMessage`.
+
+The panel does not reach the cluster itself. Its buttons call the ordinary tools
+(`proxmox_vm_start` / `_stop` / `_restart` / `_config`), so whatever approval your client applies
+to a tool call applies here too — the panel is a nicer way to issue the call, not a way around
+the prompt.
+
+Clients that did not negotiate the extension ignore `_meta.ui` and show the tool's return value,
+which is the same VM snapshot as data. Nothing breaks; you just don't get the frame.
 
 ## Proxmox — system and files (9)
 

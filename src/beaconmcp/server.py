@@ -15,6 +15,7 @@ from .config import Config
 from .proxmox.aggregators import register_aggregator_tools
 from .proxmox.client import ProxmoxClient
 from .proxmox.monitoring import register_monitoring_tools
+from .proxmox.panel import register_panel_tools
 from .proxmox.system import register_system_tools
 from .proxmox.vms import register_vm_tools
 from .security.tools import register_security_tools
@@ -281,6 +282,7 @@ Diagnostic workflow:
 if config.pve_nodes:
     register_monitoring_tools(mcp, proxmox_client)
     register_vm_tools(mcp, proxmox_client)
+    register_panel_tools(mcp, proxmox_client)
     register_system_tools(mcp, proxmox_client, ssh_client if config.ssh and config.ssh.hosts else None)
     # Aggregators ride on top of the Proxmox client and opportunistically
     # pull BMC facts when the registry is non-empty.
