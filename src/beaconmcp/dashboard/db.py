@@ -166,6 +166,30 @@ class Database:
         # Run migrations once, on the init thread.
         with self._connect() as conn:
             _migrate(conn)
+        self._restrict_permissions()
+
+    def _restrict_permissions(self) -> None:
+        """Make the database owner-only (0600), like clients.json / tokens.db.
+
+        This file holds live dashboard session rows: the AES-encrypted
+        client_secret *and* the MCP bearer token in plaintext. sqlite3
+        creates it with the process umask (0644 on a default Debian box),
+        so any local user could read a bearer straight out of it and drive
+        the MCP API. WAL mode also produces ``-wal`` / ``-shm`` sidecars
+        that hold recently-written pages; they get the same treatment.
+        Best-effort: a chmod failure (e.g. a network filesystem) must not
+        stop the server from booting.
+        """
+        for candidate in (
+            self._path,
+            self._path.with_name(self._path.name + "-wal"),
+            self._path.with_name(self._path.name + "-shm"),
+        ):
+            try:
+                if candidate.exists():
+                    os.chmod(candidate, 0o600)
+            except OSError:
+                pass
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(
@@ -177,6 +201,11 @@ class Database:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")
         conn.execute("PRAGMA foreign_keys = ON")
+        # Re-assert 0600 here too: enabling WAL (re-)creates the -wal/-shm
+        # sidecars with the process umask on every fresh connection, so a
+        # one-shot chmod in __init__ would miss the ones a later worker
+        # thread creates.
+        self._restrict_permissions()
         return conn
 
     def conn(self) -> sqlite3.Connection:

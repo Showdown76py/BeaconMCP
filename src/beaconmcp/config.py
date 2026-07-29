@@ -358,6 +358,11 @@ class Config:
                     user=_required(d, "user", f"bmc.devices[{device_id}]"),
                     password=_required(d, "password", f"bmc.devices[{device_id}]"),
                     jump_host=d.get("jump_host"),
+                    # Was declared on the dataclass but never read from the
+                    # YAML, so `verify_tls: true` silently did nothing and
+                    # every Redfish call went out with certificate
+                    # verification disabled. Parse it for real.
+                    verify_tls=_bool(d.get("verify_tls", False)),
                 )
             )
 
@@ -708,6 +713,7 @@ class Config:
                         "user": d.user,
                         "password": mask(d.password),
                         "jump_host": d.jump_host,
+                        "verify_tls": d.verify_tls,
                     }
                     for d in self.bmc_devices
                 ],

@@ -68,16 +68,28 @@ Constraints:
 - **Thinking effort** — dropdown with `minimal` / `low` / `medium` / `high`. `gemini-2.5-pro` cannot disable thinking, so `minimal` is clamped to the 128-token floor automatically.
 - **Markdown rendering** — the client parses headings (`#`–`######`), ordered and unordered lists, blockquotes, horizontal rules, code fences (with `lang-*` class), inline code, bold/italic/strikethrough, and HTTP(S) links.
 
-## Mandatory confirmation for shell-capable tools
+## Mandatory confirmation for dangerous tools
 
-`ssh_run` and `proxmox_run` **never** run a command without manual approval from the chat UI. A call carrying only `exec_id=` is treated as read-only polling and skips the modal; any call that carries a `command` triggers the gate. When Gemini fires a gated call:
+The model's input is untrusted: a log line, a config file, or a web-search result can carry an injected instruction. So two classes of tool **never** run without manual approval from the chat UI.
+
+**Arbitrary code execution** — `ssh_run`, `proxmox_run`, and the primitives that become code execution in one hop (`proxmox_write_file`, `proxmox_upload_file`, `proxmox_download_file`, `proxmox_delete_transfer`). Writing `~/.ssh/authorized_keys` or a file under `/etc/cron.d` is exactly as good as a shell, which is why the file tools sit alongside the exec tools.
+
+**Destructive or irreversible** — `vm_bulk_action`, `proxmox_vm_stop`, `proxmox_vm_restart`, `proxmox_vm_migrate`, `proxmox_snapshot_rollback`, `proxmox_snapshot_delete`, `proxmox_backup_restore`, `bmc_power_off`, `bmc_power_reset`.
+
+Three call shapes are let through without a modal, because they don't change anything:
+
+- `ssh_run` / `proxmox_run` carrying only `exec_id=` — that's read-only polling of an already-approved session.
+- `proxmox_snapshot_create` / `_rollback` / `_delete` called with `dry_run=True` — they only report what they *would* do. The exemption is limited to those three by name, never inferred from the argument: an undeclared `dry_run` is silently dropped during argument validation, so trusting it would let `ssh_run(command=..., dry_run=True)` past the modal and then run for real.
+- `proxmox_vm_config` without `updates` — the read shape of a read-or-write tool.
+
+When Gemini fires a gated call:
 
 1. The tool card switches to an "approval required" state (orange badge, auto-expanded so arguments are visible).
 2. Two buttons: **Approve** / **Reject**.
 3. The Gemini turn blocks server-side until the decision is made (5-minute timeout).
 4. On rejection, Gemini receives a `FunctionResponse {"error": "user_rejected"}` and can revise its reply.
 
-The allow-list is hard-coded in `src/beaconmcp/dashboard/chat.py` (`_NEEDS_CONFIRMATION` + `_tool_call_requires_confirmation`). Only the integrated chat enforces this gate; external MCP clients (Assistant Desktop, Gemini CLI, ChatGPT MCP) must enable their own per-call approval mode (see the **Security** section of the root README).
+The allow-list is hard-coded in `src/beaconmcp/dashboard/chat.py` (`_NEEDS_CONFIRMATION`, `_CONFIRM_WHEN_ARG_PRESENT`, `_tool_call_requires_confirmation`). Only the integrated chat enforces this gate; external MCP clients (Assistant Desktop, Gemini CLI, ChatGPT MCP) must enable their own per-call approval mode (see the **Security** section of the root README).
 
 ## Stored data
 

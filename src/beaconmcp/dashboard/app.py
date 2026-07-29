@@ -485,12 +485,12 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         if not _bearer_live(deps, session):
             return RedirectResponse("/app/refresh?next=/app/overview", status_code=302)
         return _render(
-            request,
             "overview.html",
-            {
-                "client_name": deps.client_store.get_name(session.client_id)
-                or "Unknown",
-            },
+            request,
+            client_name=(
+                deps.client_store.get_name(session.client_id)  # type: ignore[attr-defined]
+                or "Unknown"
+            ),
         )
 
     async def usage_get(request: Request) -> Response:
@@ -500,12 +500,12 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         if not _bearer_live(deps, session):
             return RedirectResponse("/app/refresh?next=/app/usage", status_code=302)
         return _render(
-            request,
             "usage_cost.html",
-            {
-                "client_name": deps.client_store.get_name(session.client_id)
-                or "Unknown",
-            },
+            request,
+            client_name=(
+                deps.client_store.get_name(session.client_id)  # type: ignore[attr-defined]
+                or "Unknown"
+            ),
         )
 
     async def tokens_get(request: Request) -> Response:

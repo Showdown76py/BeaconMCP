@@ -18,10 +18,16 @@ stop` was meant.
   `*_status`, `proxmox_get_logs`). They cannot break anything and are never gated behind a
   confirmation.
 
-The integrated chat at `/app/chat` already forces a human confirmation for every `ssh_run` /
-`proxmox_run` call that carries a `command`; polling-only calls that pass just an `exec_id` are
-read-only and skip the modal. Read the arguments on the confirmation card even when you're clicking
-through fast. No answer within 5 minutes counts as a refusal.
+The integrated chat at `/app/chat` forces a human confirmation for every code-execution tool
+(`ssh_run`, `proxmox_run`, `proxmox_write_file` and the transfer tools) and every destructive one
+(`vm_bulk_action`, `proxmox_vm_stop`, snapshot rollback/delete, backup restore, `bmc_power_off`,
+`bmc_power_reset`). Writing a guest file counts as code execution: `~/.ssh/authorized_keys` and
+`/etc/cron.d/` are one hop from a shell. Skipping the modal is reserved for calls that cannot
+change anything — polling by `exec_id` alone, `dry_run=True` on the snapshot tools that implement
+it, and the read shape of `proxmox_vm_config`. The full list is in
+[dashboard.md](dashboard.md#mandatory-confirmation-for-dangerous-tools). Read the arguments on the
+confirmation card even when you're clicking through fast. No answer within 5 minutes counts as a
+refusal.
 
 ## Tokens
 

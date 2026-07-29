@@ -1565,6 +1565,14 @@ def _merge_env_placeholders(env_path: Path, names: list[str]) -> None:
         f.write("\n# Added by `beaconmcp init` — fill these in.\n")
         for name in to_add:
             f.write(f"{name}=\n")
+    # This file is where every BMC password, SSH password and Proxmox API
+    # token ends up. `open("a")` creates it with the process umask (0644 on
+    # a stock Debian box), so lock it down explicitly -- same treatment as
+    # clients.json / tokens.db. Best-effort: never block a save on chmod.
+    try:
+        os.chmod(env_path, 0o600)
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------
