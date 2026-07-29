@@ -65,6 +65,7 @@ jobs:
           PVE2_TOKEN_SECRET: ci-dummy
           RACK1_ILO_PASSWORD: ci-dummy
           RACK2_IPMI_PASSWORD: ci-dummy
+          RACK3_IDRAC_PASSWORD: ci-dummy
           VPS2_PW: ci-dummy
         run: beaconmcp validate-config --config beaconmcp.yaml.example
 
