@@ -8,8 +8,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/app/static/app.css">
-  <script src="/app/static/theme.js"></script>
+  <link rel="stylesheet" href="/app/static/app.css?v={{ asset_v }}">
+  <script src="/app/static/theme.js?v={{ asset_v }}"></script>
   {% block head %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">
@@ -20,6 +20,6 @@
      viewport rather than the flow: /app/chat is a full-height grid and a
      banner in the document flow would push its layout around. #}
   <aside id="update-toast" class="update-toast" hidden aria-live="polite"></aside>
-  <script src="/app/static/update_banner.js"></script>
+  <script src="/app/static/update_banner.js?v={{ asset_v }}"></script>
 </body>
 </html>

@@ -177,6 +177,7 @@ def _render(
     if not token:
         token = csrf.issue_token()
     context["csrf_token"] = token
+    context["asset_v"] = ASSET_VERSION
     response = _TEMPLATES.TemplateResponse(
         request, template, context, status_code=status_code
     )
@@ -198,6 +199,11 @@ def _render(
 def _apply_security_headers(response: Response) -> None:
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    # Panel pages and API replies are per-session and must not be reused --
+    # by a shared cache, or by the back button after a sign-out. It also
+    # keeps the asset fingerprints these pages embed from going stale.
+    # setdefault, so the SSE stream keeps its own directives.
+    response.headers.setdefault("Cache-Control", "no-store")
     response.headers.setdefault(
         "Referrer-Policy", "strict-origin-when-cross-origin"
     )
@@ -262,6 +268,60 @@ def _check_totp(deps: DashboardDeps, client_id: str, code: str) -> TotpResult:
 
 def _totp_error(result: TotpResult, invalid_message: str) -> str:
     return TOTP_REPLAY_MESSAGE if result is TotpResult.REPLAY else invalid_message
+
+
+def _compute_asset_version() -> str:
+    """Fingerprint the static bundle, for cache-busting query strings.
+
+    Starlette serves static files with ``ETag``/``Last-Modified`` but no
+    ``Cache-Control``, which leaves browsers on *heuristic* freshness: an
+    asset untouched for weeks is reused for a long time without ever
+    revalidating. That was survivable when upgrading meant an operator
+    running commands by hand; now that the server can update itself, the
+    next page load would happily keep executing the previous release's
+    JavaScript against a new backend.
+
+    Stamping the URLs with a fingerprint fixes it deterministically -- new
+    bytes mean a new URL, which no cache can satisfy from an old entry --
+    and lets the files themselves be cached hard (see
+    :class:`_ImmutableStaticFiles`). Newest mtime in the directory is
+    enough: a ``git pull`` rewrites the files it changes.
+    """
+    try:
+        newest = max(
+            p.stat().st_mtime
+            for p in (_DASHBOARD_DIR / "static").iterdir()
+            if p.is_file()
+        )
+    except (OSError, ValueError):
+        return "0"
+    return format(int(newest), "x")
+
+
+#: Computed once per process: a restart is exactly when the bundle can change.
+ASSET_VERSION = _compute_asset_version()
+
+
+class _ImmutableStaticFiles(StaticFiles):
+    """StaticFiles for URLs that carry a content fingerprint.
+
+    Safe to cache hard *because* the query string changes whenever the
+    bytes do. Requests without a version (a hand-typed URL, an old cached
+    page) fall back to revalidate-every-time so they can never pin stale
+    code.
+    """
+
+    def file_response(self, full_path, stat_result, scope, *args, **kwargs) -> Response:
+        response = super().file_response(
+            full_path, stat_result, scope, *args, **kwargs
+        )
+        query = scope.get("query_string") or b""
+        versioned = b"v=" in query
+        response.headers.setdefault(
+            "Cache-Control",
+            "public, max-age=31536000, immutable" if versioned else "no-cache",
+        )
+        return response
 
 
 def _wants_json(request: Request) -> bool:
@@ -1570,7 +1630,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         Route("/", index, methods=["GET"]),
         Mount(
             "/app/static",
-            app=StaticFiles(directory=_DASHBOARD_DIR / "static"),
+            app=_ImmutableStaticFiles(directory=_DASHBOARD_DIR / "static"),
             name="dashboard-static",
         ),
     ]

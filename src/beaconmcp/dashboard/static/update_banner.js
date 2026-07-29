@@ -210,12 +210,28 @@
     });
   }
 
-  fetch("/app/api/update", { credentials: "same-origin" })
-    .then(function(res) { return res.ok ? res.json() : null; })
-    .then(function(data) {
-      if (!data || !data.enabled || !data.available) return;
-      if (dismissed(data.latest_ref)) return;
-      render(data);
-    })
-    .catch(function() {});
+  // Resolves to the payload when an undismissed update exists, else null.
+  function check() {
+    return fetch("/app/api/update", { credentials: "same-origin" })
+      .then(function(res) { return res.ok ? res.json() : null; })
+      .then(function(data) {
+        if (!data || !data.enabled || !data.available) return null;
+        return data;
+      })
+      .catch(function() { return null; });
+  }
+
+  // Exposed so the login page can mention an update the moment the session
+  // exists -- its own fetch below already ran (and 401'd) before sign-in.
+  window.BeaconUpdates = { check: check, dismissed: dismissed };
+
+  // The auth pages opt out of the toast itself: they are single-purpose
+  // screens, and on a narrow viewport a bottom-anchored card this tall
+  // would sit right on top of their primary button. login.js renders a
+  // one-line mention instead, and the full card shows on the landing page.
+  if (document.body.classList.contains("auth-page")) return;
+
+  check().then(function(data) {
+    if (data && !dismissed(data.latest_ref)) render(data);
+  });
 })();

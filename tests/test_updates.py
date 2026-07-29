@@ -654,6 +654,65 @@ def test_every_page_carries_the_toast_and_its_script(tmp_path, monkeypatch):
     assert "/app/static/update_banner.js" in body
 
 
+def test_signed_in_screen_has_a_slot_for_the_update_mention(tmp_path, monkeypatch):
+    """The toast opts out of the auth pages; login.js fills this instead."""
+    client, _ = _make_client(tmp_path, monkeypatch)
+    assert 'id="update-note"' in client.get("/app/login").text
+
+
+# ---------------------------------------------------------------------------
+# Asset cache busting
+#
+# A server that updates itself must not leave browsers executing the
+# previous release's JavaScript, which is what Starlette's default
+# (ETag/Last-Modified but no Cache-Control -> heuristic freshness) allows.
+# ---------------------------------------------------------------------------
+
+def test_asset_urls_carry_a_fingerprint(tmp_path, monkeypatch):
+    client, _ = _make_client(tmp_path, monkeypatch)
+    body = client.get("/app/login").text
+    for asset in ("app.css", "theme.js", "update_banner.js", "login.js"):
+        assert f"/app/static/{asset}?v=" in body, asset
+
+
+def test_fingerprint_changes_when_an_asset_changes(tmp_path, monkeypatch):
+    from beaconmcp.dashboard import app as dashboard_app
+
+    before = dashboard_app._compute_asset_version()
+    target = dashboard_app._DASHBOARD_DIR / "static" / "app.css"
+    original = target.stat()
+    try:
+        os.utime(target, (original.st_atime, original.st_mtime + 120))
+        assert dashboard_app._compute_asset_version() != before
+    finally:
+        os.utime(target, (original.st_atime, original.st_mtime))
+    assert dashboard_app._compute_asset_version() == before
+
+
+def test_versioned_assets_are_cacheable_forever(tmp_path, monkeypatch):
+    from beaconmcp.dashboard.app import ASSET_VERSION
+
+    client, _ = _make_client(tmp_path, monkeypatch)
+    res = client.get(f"/app/static/app.css?v={ASSET_VERSION}")
+    assert res.status_code == 200
+    assert "immutable" in res.headers["cache-control"]
+
+
+def test_unversioned_assets_must_revalidate(tmp_path, monkeypatch):
+    """A hand-typed or legacy URL can never pin stale code."""
+    client, _ = _make_client(tmp_path, monkeypatch)
+    res = client.get("/app/static/app.css")
+    assert res.status_code == 200
+    assert res.headers["cache-control"] == "no-cache"
+
+
+def test_pages_and_api_are_never_cached(tmp_path, monkeypatch):
+    client, _ = _make_client(tmp_path, monkeypatch)
+    assert client.get("/app/login").headers["cache-control"] == "no-store"
+    _sign_in(client)
+    assert client.get("/app/api/update").headers["cache-control"] == "no-store"
+
+
 # ---------------------------------------------------------------------------
 # MCP tools
 # ---------------------------------------------------------------------------

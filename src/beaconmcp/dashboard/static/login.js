@@ -263,6 +263,26 @@
       }
     }
     if (finishBtn) finishBtn.focus();
+    mentionUpdate();
+  }
+
+  // The toast in base.html fetched its status before this session existed,
+  // so it came back 401 and stayed empty. Now that we're signed in, ask
+  // again -- a pending update is worth knowing about here, one click before
+  // entering the panel. Kept to a single line: this screen already has a
+  // primary action and the full card (with commands) waits on the landing
+  // page.
+  function mentionUpdate() {
+    var note = document.getElementById("update-note");
+    if (!note || !window.BeaconUpdates) return;
+    window.BeaconUpdates.check().then(function(data) {
+      if (!data) return;
+      var behind = data.behind === 1
+        ? "1 commit behind" : data.behind + " commits behind";
+      note.textContent = "An update is available — " + behind +
+        " " + (data.branch || "main") + ". Details after signing in.";
+      note.hidden = false;
+    });
   }
 
   function finish() {

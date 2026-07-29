@@ -2509,3 +2509,24 @@ a.cta:hover { background: var(--accent-hover); }
   .update-toast { animation: none; }
   .update-toast .ut-primary.is-loading::after { animation: none; opacity: 0.25; }
 }
+
+/* One-line update mention on the post-2FA screen. The full toast opts out
+   of the auth pages (see update_banner.js) so it can't sit on top of
+   "Finish signing in" on a narrow viewport. */
+.auth-card .update-note {
+  display: block;
+  margin-top: 18px;
+  padding: 9px 12px;
+  border: 1px solid var(--accent-border);
+  border-radius: 9px;
+  background: var(--accent-softer);
+  color: var(--fg-mid);
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-decoration: none;
+  transition: background 160ms var(--ease-out), color 160ms var(--ease-out);
+}
+.auth-card .update-note:hover {
+  background: var(--accent-soft);
+  color: var(--fg);
+}
