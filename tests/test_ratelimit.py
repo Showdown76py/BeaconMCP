@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from beaconmcp.ratelimit import RateLimiter, client_ip
+from beaconmcp.ratelimit import RateLimiter, client_ip, forwarded_host
 
 
 def test_allows_up_to_limit_then_blocks() -> None:
@@ -101,3 +101,67 @@ def test_client_ip_uses_rightmost_untrusted_hop() -> None:
 
     # Direct peer with no trust config -> use peer IP.
     assert client_ip(_Req(None, peer="203.0.113.10"), trusted_proxies=()) == "203.0.113.10"
+
+
+def test_forwarded_host_only_trusts_declared_proxy() -> None:
+    class _H:
+        def __init__(self, host: str | None, xfh: str | None) -> None:
+            self._host = host
+            self._xfh = xfh
+
+        def get(self, k: str) -> str | None:
+            k = k.lower()
+            if k == "host":
+                return self._host
+            if k == "x-forwarded-host":
+                return self._xfh
+            return None
+
+    class _Client:
+        host = "10.0.0.1"
+
+    class _Req:
+        def __init__(
+            self, host: str | None, xfh: str | None, *, peer: str = "10.0.0.1",
+        ) -> None:
+            self.headers = _H(host, xfh)
+            c = _Client()
+            c.host = peer
+            self.client = c
+
+    # No trusted proxies configured -> X-Forwarded-Host is ignored, even when
+    # the peer looks internal. The request's own Host header wins.
+    assert (
+        forwarded_host(_Req("real.example", "evil.attacker"), trusted_proxies=())
+        == "real.example"
+    )
+
+    # Trusted direct proxy -> the forwarded host is believed.
+    assert (
+        forwarded_host(
+            _Req("internal:8420", "public.example", peer="10.0.0.1"),
+            trusted_proxies=("10.0.0.1",),
+        )
+        == "public.example"
+    )
+
+    # A spoofed X-Forwarded-Host from an UNtrusted peer is dropped; Host wins.
+    assert (
+        forwarded_host(
+            _Req("real.example", "evil.attacker", peer="192.0.2.8"),
+            trusted_proxies=("10.0.0.0/8",),
+        )
+        == "real.example"
+    )
+
+    # Proxy chain: first (client-facing) entry is returned.
+    assert (
+        forwarded_host(
+            _Req("internal", "public.example, edge.internal", peer="10.0.0.1"),
+            trusted_proxies=("10.0.0.1",),
+        )
+        == "public.example"
+    )
+
+    # Nothing usable -> default.
+    assert forwarded_host(_Req(None, None), trusted_proxies=()) == "localhost"

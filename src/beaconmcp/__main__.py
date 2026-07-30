@@ -1088,7 +1088,7 @@ def _run_http(mcp, host: str, port: int):
         TotpResult,
         current_bearer_token,
     )
-    from .ratelimit import RateLimiter, client_ip
+    from .ratelimit import RateLimiter, client_ip, forwarded_host
     from .server import config
 
     from .metrics import REGISTRY, auth_events, http_requests
@@ -1206,8 +1206,10 @@ def _run_http(mcp, host: str, port: int):
 
     def _issuer(request: Request) -> str:
         scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
-        host_header = request.headers.get(
-            "x-forwarded-host", request.headers.get("host", "localhost")
+        # X-Forwarded-Host is only trusted from a declared proxy; otherwise the
+        # request's own Host header wins (see ratelimit.forwarded_host).
+        host_header = forwarded_host(
+            request, tuple(config.server.trusted_proxies),
         )
         return f"{scheme}://{host_header}"
 
