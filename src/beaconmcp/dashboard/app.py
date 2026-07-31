@@ -29,6 +29,7 @@ from starlette.templating import Jinja2Templates
 
 from .. import audit
 from ..auth import TOTP_REPLAY_MESSAGE, TotpResult
+from ..ratelimit import forwarded_host
 from . import csrf as csrf
 from .chat import (
     ChatEngine,
@@ -867,9 +868,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         row = store.mint(owner_client_id=session.client_id, label=label)
 
         scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
-        host_hdr = request.headers.get(
-            "x-forwarded-host", request.headers.get("host", "localhost"),
-        )
+        host_hdr = forwarded_host(request, deps.trusted_proxies)
         url = f"{scheme}://{host_hdr}/mcp/c/{row.slug}"
         return _render_connectors_page(
             request, session,
@@ -1871,9 +1870,7 @@ def _render_tokens_page(
         mcp_url = deps.mcp_public_url.rstrip("/") + "/mcp"
     else:
         scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
-        host = request.headers.get(
-            "x-forwarded-host", request.headers.get("host", "localhost"),
-        )
+        host = forwarded_host(request, deps.trusted_proxies)
         mcp_url = f"{scheme}://{host}/mcp"
 
     return _render(
@@ -1929,9 +1926,7 @@ def _resolve_mcp_url(request: Request, deps: DashboardDeps) -> str:
         if deps.mcp_public_url:
             return deps.mcp_public_url.rstrip("/") + "/mcp"
         scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
-        host = request.headers.get(
-            "x-forwarded-host", request.headers.get("host", "localhost"),
-        )
+        host = forwarded_host(request, deps.trusted_proxies)
         return f"{scheme}://{host}/mcp"
     import os as _os
     port = _os.environ.get("BEACONMCP_PORT", "8420")

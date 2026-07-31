@@ -167,3 +167,57 @@ def client_ip(request: object, trusted_proxies: tuple[str, ...] = ()) -> str:
     if direct_peer_raw:
         return direct_peer_raw
     return "unknown"
+
+
+def forwarded_host(
+    request: object,
+    trusted_proxies: tuple[str, ...] = (),
+    *,
+    default: str = "localhost",
+) -> str:
+    """Client-facing Host for a Starlette ``Request``.
+
+    Mirrors :func:`client_ip`'s trust model for the *host* dimension: the
+    ``X-Forwarded-Host`` header is attacker-controlled on a direct request, so
+    it is honored only when the direct peer is a declared trusted proxy.
+    Otherwise the request's own ``Host`` header is used (then ``default``).
+
+    Like :func:`client_ip`, this keys on ``request.client.host`` being the real
+    TCP peer, so the server must run with uvicorn ``proxy_headers=False`` (see
+    ``__main__``): the default ``ProxyHeadersMiddleware`` would rewrite the peer
+    to the ``X-Forwarded-For`` client and the trusted-proxy branch below could
+    never open.
+
+    Kept deliberately narrow -- it does NOT touch the scheme. ``X-Forwarded-
+    Proto`` is still read directly by the callers, because a TLS-terminating
+    edge (Cloudflare tunnel, nginx) legitimately needs it to report https even
+    when ``trusted_proxies`` is unset; gating it would silently downgrade the
+    Secure-cookie flag and the OAuth issuer to http.
+    """
+    headers = getattr(request, "headers", None)
+    has_get = headers is not None and hasattr(headers, "get")
+
+    def _hdr(name: str) -> str | None:
+        return headers.get(name) if has_get else None
+
+    host_header = _hdr("host") or default
+    if not trusted_proxies:
+        return host_header
+
+    client = getattr(request, "client", None)
+    direct_peer = getattr(client, "host", None) if client is not None else None
+    direct_ip = _coerce_ip(str(direct_peer)) if direct_peer is not None else None
+    if direct_ip and _is_trusted_proxy(direct_ip, trusted_proxies):
+        fwd = _hdr("x-forwarded-host")
+        if fwd:
+            # Take the last entry, not the first. A proxy that appends rather
+            # than overwrites puts its own value last, so the last entry is the
+            # one the nearest trusted proxy wrote; returning the first would
+            # hand back a client-supplied prefix. Symmetric with client_ip's
+            # right-to-left walk. Proxies that overwrite (the common case:
+            # nginx ``proxy_set_header X-Forwarded-Host $host``) leave a single
+            # entry, so first and last coincide.
+            parts = [p.strip() for p in fwd.split(",") if p.strip()]
+            if parts:
+                return parts[-1]
+    return host_header

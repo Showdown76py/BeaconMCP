@@ -203,9 +203,19 @@ _NEEDS_CONFIRMATION: frozenset[str] = frozenset({
 # ``confirm`` is a parameter the tool actually declares, so what we read is
 # what the tool will act on. The trap that note describes is an argument the
 # tool does *not* declare, which pydantic drops during validation.
+#
+# ``proxmox_vm_create`` is here for the same reason: a bare create is a
+# harmless empty shell, but a ``config`` dict can carry code-execution keys
+# -- ``hookscript`` (a script PVE runs on VM lifecycle events) or raw QEMU
+# ``args`` -- which an injected instruction could set to run code on the PVE
+# host. ``config`` is a declared parameter of the tool, so reading it is
+# sound; the gate is on a *non-empty* ``config`` (the check below is
+# ``bool(args.get(...))``), so a bare create -- no ``config`` or an empty
+# ``{}`` -- carries no code-execution keys and stays ungated.
 _CONFIRM_WHEN_ARG_PRESENT: dict[str, str] = {
     "proxmox_vm_config": "updates",
     "beaconmcp_self_update": "confirm",
+    "proxmox_vm_create": "config",
 }
 
 # Tools that actually implement a ``dry_run`` parameter and return a
