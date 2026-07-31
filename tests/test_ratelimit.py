@@ -154,10 +154,12 @@ def test_forwarded_host_only_trusts_declared_proxy() -> None:
         == "real.example"
     )
 
-    # Proxy chain: first (client-facing) entry is returned.
+    # Proxy chain: a client-supplied prefix must not win. A proxy that appends
+    # its own value puts it last, so the last entry is returned -- symmetric
+    # with client_ip's right-to-left walk.
     assert (
         forwarded_host(
-            _Req("internal", "public.example, edge.internal", peer="10.0.0.1"),
+            _Req("internal", "evil.attacker, public.example", peer="10.0.0.1"),
             trusted_proxies=("10.0.0.1",),
         )
         == "public.example"
@@ -165,3 +167,45 @@ def test_forwarded_host_only_trusts_declared_proxy() -> None:
 
     # Nothing usable -> default.
     assert forwarded_host(_Req(None, None), trusted_proxies=()) == "localhost"
+
+
+def test_forwarded_host_through_a_real_starlette_request() -> None:
+    # Guards against the hand-built _Req above drifting from runtime: build an
+    # actual Starlette Request from an ASGI scope and confirm the trusted-proxy
+    # branch opens. This is the shape the app sees once uvicorn is told not to
+    # rewrite scope["client"] (proxy_headers=False), so request.client.host is
+    # the real TCP peer -- the proxy -- not the X-Forwarded-For client.
+    from starlette.requests import Request
+
+    def _req(host: str, xfh: str | None, peer: str) -> Request:
+        headers = [(b"host", host.encode())]
+        if xfh is not None:
+            headers.append((b"x-forwarded-host", xfh.encode()))
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/",
+            "headers": headers,
+            "client": (peer, 44444),
+            "scheme": "http",
+            "server": ("app", 80),
+        }
+        return Request(scope)
+
+    # Proxy peer is trusted -> the forwarded host is believed.
+    assert (
+        forwarded_host(
+            _req("127.0.0.1:8420", "beacon.example.com", "127.0.0.1"),
+            trusted_proxies=("127.0.0.1",),
+        )
+        == "beacon.example.com"
+    )
+
+    # Direct (untrusted) peer -> forwarded host dropped, own Host wins.
+    assert (
+        forwarded_host(
+            _req("real.example", "evil.attacker", "203.0.113.5"),
+            trusted_proxies=("127.0.0.1",),
+        )
+        == "real.example"
+    )

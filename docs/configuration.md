@@ -36,7 +36,7 @@ Tailscale IP, a VPN address, a bastion.
 |-----|-------|
 | `server.allowed_hosts` | DNS-rebinding allowlist. **Must** include the public FQDN behind your reverse proxy, or requests come back `421 Misdirected Request`. |
 | `server.allowed_origins` | Web-origin allowlist, used for browser CORS preflights and for OAuth HTTPS redirect URIs. Desktop and CLI callbacks (`vscode://`, `cursor://`, loopback) are handled separately. |
-| `server.trusted_proxies` | Direct peers allowed to supply `X-Forwarded-For`, as IPs or CIDRs. The value `cloudflare` auto-expands to Cloudflare's edge ranges. |
+| `server.trusted_proxies` | Direct peers whose forwarded headers are trusted, as IPs or CIDRs. Governs `X-Forwarded-For` (the auth rate-limit client IP) **and** `X-Forwarded-Host` (the host advertised in the OAuth issuer and the token/connector MCP URLs). When empty, both fall back to the request's own peer / `Host` and forwarded values from any peer are ignored. The value `cloudflare` auto-expands to Cloudflare's edge ranges. |
 | `server.tokens_db` | SQLite file persisting *named* API tokens (the `/app/tokens` page) across restarts. Created owner-only (0600). Defaults to `tokens.db` next to `clients_file`. Env override: `BEACONMCP_TOKENS_DB`. |
 | `server.named_token_ttl` | Lifetime of named API tokens, in seconds. Default `2592000` (30 days); `0` means never expires, revoke-only. Internal OAuth and session bearers keep their fixed 24 h TTL either way. Env override: `BEACONMCP_NAMED_TOKEN_TTL`. |
 | `server.audit_log` | JSON-lines audit log covering tool calls, dashboard logins, OAuth authorize and client revokes. Created owner-only (0600). Default `/opt/beaconmcp/audit.log`; `-` keeps stderr only. Env override: `BEACONMCP_AUDIT_LOG`. |

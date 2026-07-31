@@ -124,8 +124,10 @@ server:
   # SDK rejects requests with 421 Misdirected Request (DNS-rebinding guard).
   allowed_hosts:
     - mcp.example.com
-  # Trust Cloudflare's edge so X-Forwarded-For is honoured for auth rate
-  # limiting. The literal "cloudflare" auto-expands to Cloudflare's IP ranges.
+  # Trust Cloudflare's edge so its forwarded headers are honoured: X-Forwarded-
+  # For for the auth rate-limit client IP, and X-Forwarded-Host for the host in
+  # the OAuth issuer and token MCP URLs. The literal "cloudflare" auto-expands
+  # to Cloudflare's IP ranges.
   trusted_proxies:
     - cloudflare
 ```

@@ -209,7 +209,9 @@ _NEEDS_CONFIRMATION: frozenset[str] = frozenset({
 # -- ``hookscript`` (a script PVE runs on VM lifecycle events) or raw QEMU
 # ``args`` -- which an injected instruction could set to run code on the PVE
 # host. ``config`` is a declared parameter of the tool, so reading it is
-# sound; gating only on its presence keeps the no-config create ungated.
+# sound; the gate is on a *non-empty* ``config`` (the check below is
+# ``bool(args.get(...))``), so a bare create -- no ``config`` or an empty
+# ``{}`` -- carries no code-execution keys and stays ungated.
 _CONFIRM_WHEN_ARG_PRESENT: dict[str, str] = {
     "proxmox_vm_config": "updates",
     "beaconmcp_self_update": "confirm",

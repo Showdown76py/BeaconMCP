@@ -41,7 +41,11 @@ server:
     - https://www.perplexity.ai
     - https://gemini.google.com
 
-  # Trust X-Forwarded-For only from direct peers you operate.
+  # Direct peers you operate whose forwarded headers are trusted. Governs both
+  # X-Forwarded-For (auth rate-limit client IP) and X-Forwarded-Host (the host
+  # advertised in the OAuth issuer and the "paste this MCP URL" strings). When
+  # empty, both fall back to the request's own peer / Host and forwarded values
+  # from any peer are ignored.
   # IPs and CIDRs are accepted.
   # - Keep loopback entries when your reverse proxy runs on the same host.
   # - Add `cloudflare` to auto-expand to Cloudflare's published proxy CIDRs.
