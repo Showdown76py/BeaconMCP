@@ -12,7 +12,7 @@ dependencies = [
     # MCPServer, which every tool module imports. Hold at 1.x until that
     # migration lands; the range was open-ended, so CI started installing
     # 2.0 the day it shipped and stopped collecting four test modules.
-    "mcp[cli]>=1.0,<2",
+    "mcp[cli]>=1.0,<3",
     "proxmoxer",
     "requests",
     "python-hpilo",
