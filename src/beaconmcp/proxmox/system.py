@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import asyncio
 import hashlib
+import ipaddress
+import socket
 import time
 import uuid
 import shlex
@@ -166,6 +168,49 @@ def _qemu_file_size(client: ProxmoxClient, node: str, vmid: int, path: str) -> i
                 return None
         time.sleep(0.5)
     return None
+
+
+class _LocalTargetRefused(Exception):
+    """A proxmox_fetch_url hop pointed at the BeaconMCP host or link-local."""
+
+
+def _is_local_address(addr: str) -> bool:
+    ip = ipaddress.ip_address(addr.split("%", 1)[0])
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback or ip.is_link_local or ip.is_unspecified or ip.is_multicast
+
+
+async def _host_addresses(host: str) -> list[str]:
+    loop = asyncio.get_running_loop()
+    infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    return [info[4][0] for info in infos]
+
+
+async def _refuse_local_target(request: httpx.Request) -> None:
+    """httpx request hook: refuse loopback / link-local targets on every hop.
+
+    Keeps proxmox_fetch_url from reading services that only listen on the
+    BeaconMCP host (its own /metrics, the Proxmox API on 127.0.0.1) or a
+    cloud metadata endpoint into a guest. The address is resolved here and
+    again by httpx when it connects, so a DNS answer that changes in between
+    is not covered; this is a guard rail, not a sandbox.
+    """
+    host = request.url.host
+    try:
+        ipaddress.ip_address(host)
+        addrs = [host]  # IP literal, nothing to resolve
+    except ValueError:
+        try:
+            addrs = await _host_addresses(host)
+        except OSError:
+            return  # unresolvable: the request fails on its own
+    local = next((a for a in addrs if _is_local_address(a)), None)
+    if local is not None:
+        raise _LocalTargetRefused(
+            f"Refusing to fetch from {host} ({local}): loopback and link-local "
+            "addresses are not allowed."
+        )
 
 
 async def _push_staged(
@@ -800,6 +845,10 @@ def register_system_tools(mcp: MCPServer, client: ProxmoxClient, ssh_client: Any
         (absolute path inside the guest) like ``proxmox_upload_file``. Use it
         when the file is reachable by URL, e.g. a release asset or a raw file
         on GitHub. The staged copy is deleted afterwards.
+
+        URLs that resolve to a loopback or link-local address (the BeaconMCP
+        host itself, cloud metadata endpoints) are refused, redirects
+        included. Private LAN addresses are allowed.
         """
         if not ssh_client:
             return {
@@ -810,6 +859,10 @@ def register_system_tools(mcp: MCPServer, client: ProxmoxClient, ssh_client: Any
             return {"status": "error", "error": "`url` must be an http:// or https:// URL."}
         if not isinstance(dest, str) or not dest.startswith("/"):
             return {"status": "error", "error": "`dest` must be an absolute path inside the guest."}
+        # Check the target before pulling a possibly large file for nothing.
+        loop = asyncio.get_running_loop()
+        if not await loop.run_in_executor(None, _detect_vm_type, client, node, vmid):
+            return {"status": "error", "error": f"VM/CT {vmid} not found on node '{node}'."}
 
         max_bytes = client._config.server.transfers_max_mb * 1024 * 1024
         staged = _staging_dir(client) / f"fetch-{uuid.uuid4().hex[:12]}"
@@ -819,6 +872,7 @@ def register_system_tools(mcp: MCPServer, client: ProxmoxClient, ssh_client: Any
         try:
             async with httpx.AsyncClient(
                 follow_redirects=True, timeout=min(max(timeout, 10), 1800),
+                event_hooks={"request": [_refuse_local_target]},
             ) as http:
                 async with http.stream("GET", url) as resp:
                     if resp.status_code >= 400:
@@ -845,6 +899,8 @@ def register_system_tools(mcp: MCPServer, client: ProxmoxClient, ssh_client: Any
             )
         except httpx.HTTPError as e:
             return {"status": "error", "error": f"Download of {url} failed: {e}"}
+        except _LocalTargetRefused as e:
+            return {"status": "error", "error": str(e)}
         finally:
             part.unlink(missing_ok=True)
             staged.unlink(missing_ok=True)

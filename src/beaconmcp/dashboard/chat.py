@@ -267,6 +267,10 @@ def _tool_call_requires_confirmation(name: str, args: Any) -> bool:
             command = args.get("command")
             if exec_id and not command:
                 return False
+        # With link_id the tool only reports a link's state and ignores
+        # every other argument, so nothing is minted or written.
+        if name == "proxmox_upload_link" and args.get("link_id"):
+            return False
         if name in _DRY_RUN_AWARE and args.get("dry_run") is True:
             return False
     return True

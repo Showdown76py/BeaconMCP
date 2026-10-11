@@ -210,20 +210,42 @@ async def test_unknown_token_is_404(env) -> None:
 # --- proxmox_fetch_url ------------------------------------------------------
 
 
+_DNS = {
+    "files.example": ["93.184.216.34"],
+    "localhost": ["127.0.0.1", "::1"],
+    "metadata.example": ["169.254.169.254"],
+    "mapped.example": ["::ffff:127.0.0.1"],
+    "lan.example": ["192.168.1.50"],
+}
+
+
 @pytest.fixture
 def remote(monkeypatch: pytest.MonkeyPatch):
-    files = {"https://files.example/tool.bin": b"\x00\xffbinary\x00"}
+    files = {
+        "https://files.example/tool.bin": b"\x00\xffbinary\x00",
+        "http://lan.example/f": b"lan",
+    }
+    requested: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        if str(request.url) == "https://files.example/to-metadata":
+            return httpx.Response(302, headers={"location": "http://metadata.example/latest"})
         data = files.get(str(request.url))
         return httpx.Response(200, content=data) if data is not None else httpx.Response(404)
+
+    async def fake_dns(host: str) -> list[str]:
+        if host not in _DNS:
+            raise OSError("unknown host")
+        return _DNS[host]
 
     real = httpx.AsyncClient
     monkeypatch.setattr(
         system.httpx, "AsyncClient",
         lambda **kw: real(transport=httpx.MockTransport(handler), **kw),
     )
-    return files
+    monkeypatch.setattr(system, "_host_addresses", fake_dns)
+    return SimpleNamespace(files=files, requested=requested)
 
 
 async def test_fetch_url_pushes_into_guest(env, remote) -> None:
@@ -231,7 +253,7 @@ async def test_fetch_url_pushes_into_guest(env, remote) -> None:
         node=NODE, vmid=CT, url="https://files.example/tool.bin", dest="/usr/local/bin/tool",
     )
     assert res["status"] == "success", res
-    assert env.ssh.guest_files["/usr/local/bin/tool"] == remote["https://files.example/tool.bin"]
+    assert env.ssh.guest_files["/usr/local/bin/tool"] == remote.files["https://files.example/tool.bin"]
     assert list(env.staging.iterdir()) == []
 
 
@@ -246,3 +268,39 @@ async def test_fetch_url_reports_http_errors(env, remote) -> None:
 async def test_fetch_url_rejects_other_schemes(env) -> None:
     res = await env.tools["proxmox_fetch_url"](node=NODE, vmid=CT, url="file:///etc/passwd", dest="/x")
     assert res["status"] == "error"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost:8420/metrics",
+        "http://127.0.0.1/x",
+        "http://[::1]/x",
+        "http://mapped.example/x",
+        "http://metadata.example/latest",
+        # A public URL that redirects to a link-local one.
+        "https://files.example/to-metadata",
+    ],
+)
+async def test_fetch_url_refuses_local_targets(env, remote, url: str) -> None:
+    res = await env.tools["proxmox_fetch_url"](node=NODE, vmid=CT, url=url, dest="/x")
+    assert res["status"] == "error"
+    assert "not allowed" in res["error"]
+    assert env.ssh.guest_files == {}
+    # Refused before any byte left for a local target.
+    reached = {httpx.URL(u).host for u in remote.requested}
+    assert reached <= {"files.example"}
+
+
+async def test_fetch_url_allows_private_lan(env, remote) -> None:
+    res = await env.tools["proxmox_fetch_url"](node=NODE, vmid=CT, url="http://lan.example/f", dest="/x")
+    assert res["status"] == "success", res
+
+
+async def test_fetch_url_checks_target_before_downloading(env, remote) -> None:
+    res = await env.tools["proxmox_fetch_url"](
+        node=NODE, vmid=999, url="https://files.example/tool.bin", dest="/x",
+    )
+    assert res["status"] == "error"
+    assert "999" in res["error"]
+    assert remote.requested == []

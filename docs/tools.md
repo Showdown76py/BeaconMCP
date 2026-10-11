@@ -103,7 +103,7 @@ which is the same snapshot as data. Nothing breaks; you just don't get the frame
 | `proxmox_download_file` | Stream a file out of a VM (SFTP) or CT (`pct pull` + SFTP) into the staging directory, same cap and checksum. |
 | `proxmox_list_transfers` | List what's currently in the staging directory. |
 | `proxmox_upload_link` | Mint a one-shot HTTP link bound to a VM/CT path: `curl -T <file> <url>` writes the file into the guest (any bytes, up to `server.transfers_max_mb`). Pass `link_id` to read the outcome. See below. |
-| `proxmox_fetch_url` | Have the server download an http(s) URL and write it into a VM/CT, same cap and checksum. |
+| `proxmox_fetch_url` | Have the server download an http(s) URL and write it into a VM/CT, same cap and checksum. URLs resolving to loopback or link-local addresses (the BeaconMCP host itself, cloud metadata) are refused, redirects included; private LAN addresses are allowed. |
 | `proxmox_delete_transfer` | Delete a staged file by basename. |
 
 ### Sending a local file into a guest
