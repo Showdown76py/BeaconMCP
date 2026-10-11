@@ -145,7 +145,12 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any =
         For VMs, this uses the QEMU Guest Agent safely (file must be < 1MB).
         For containers, this requires SSH to be configured.
         """
-        vm_type = _detect_vm_type(client, node, vmid)
+        # Every Proxmox call below is a blocking proxmoxer request (5 s timeout,
+        # retried). This tool is async, so server._metric_tool runs it on the
+        # event loop as-is: each call must go through an executor or one slow
+        # node freezes every other request, /health included.
+        loop = asyncio.get_running_loop()
+        vm_type = await loop.run_in_executor(None, _detect_vm_type, client, node, vmid)
         if not vm_type:
             return {"status": "error", "error": f"VM/CT {vmid} not found on node '{node}'."}
             
@@ -153,7 +158,7 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any =
             # Pre-flight: refuse oversized files before the guest agent pulls
             # the whole thing into memory. Best-effort -- if the guest has no
             # `stat` we fall through to the post-read guard below.
-            size = await asyncio.get_running_loop().run_in_executor(
+            size = await loop.run_in_executor(
                 None, _qemu_file_size, client, node, vmid, path,
             )
             if size is not None and size > _FILE_READ_MAX_BYTES:
@@ -164,7 +169,10 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any =
                         "limit. Use proxmox_download_file for large files."
                     ),
                 }
-            result = client.get(node, f"nodes/{node}/qemu/{vmid}/agent/file-read", file=path)
+            result = await loop.run_in_executor(
+                None,
+                lambda: client.get(node, f"nodes/{node}/qemu/{vmid}/agent/file-read", file=path),
+            )
             if isinstance(result, dict) and "error" in result:
                 return {"status": "error", "error": result["error"]}
             # QEMU Guest Agent returns file content base64-encoded
@@ -196,7 +204,9 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any =
         For VMs, this uses the QEMU Guest Agent safely to avoid shell escaping issues.
         For containers, this requires SSH to be configured.
         """
-        vm_type = _detect_vm_type(client, node, vmid)
+        # Blocking proxmoxer calls go through the executor (see proxmox_read_file).
+        loop = asyncio.get_running_loop()
+        vm_type = await loop.run_in_executor(None, _detect_vm_type, client, node, vmid)
         if not vm_type:
             return {"status": "error", "error": f"VM/CT {vmid} not found on node '{node}'."}
             
@@ -206,7 +216,13 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any =
         if vm_type == "qemu":
             import base64
             encoded = base64.b64encode(content.encode("utf-8")).decode("utf-8")
-            result = client.post(node, f"nodes/{node}/qemu/{vmid}/agent/file-write", file=path, content=encoded, encode=1)
+            result = await loop.run_in_executor(
+                None,
+                lambda: client.post(
+                    node, f"nodes/{node}/qemu/{vmid}/agent/file-write",
+                    file=path, content=encoded, encode=1,
+                ),
+            )
             if isinstance(result, dict) and "error" in result:
                 return {"status": "error", "error": result["error"]}
             return {"status": "success", "vmid": vmid, "node": node, "path": path, "action": "file_write"}
