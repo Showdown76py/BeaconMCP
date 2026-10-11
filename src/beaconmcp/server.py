@@ -52,7 +52,7 @@ _allowed_hosts = config.server.allowed_hosts or _csv_env(
 )
 _allowed_origins = config.server.allowed_origins or _csv_env(
     "BEACONMCP_ALLOWED_ORIGINS",
-    ["https://assistant.ai", "https://chat.openai.com", "https://gemini.google.com"],
+    ["https://claude.ai", "https://chat.openai.com", "https://gemini.google.com"],
 )
 
 

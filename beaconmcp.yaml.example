@@ -34,7 +34,7 @@ server:
   # clients (Assistant Desktop, Gemini CLI, Cursor, VS Code, Mistral Vibe,
   # OpenCode, ...) are NOT browser-based and don't need an entry.
   allowed_origins:
-    - https://assistant.ai
+    - https://claude.ai
     - https://chatgpt.com
     - https://chat.openai.com
     - https://chat.mistral.ai

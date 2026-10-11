@@ -34,7 +34,6 @@ auth paths the dashboard helps you drive:
 > server:
 >   allowed_origins:
 >     - https://claude.ai
->     - https://assistant.ai
 >     - https://chatgpt.com
 >     - https://chat.mistral.ai
 >     - https://www.perplexity.ai
