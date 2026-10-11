@@ -75,9 +75,10 @@ class DashboardDeps:
     session_store: SessionStore
     client_store: object  # beaconmcp.auth.ClientStore -- avoid import cycle
     token_store: object  # beaconmcp.auth.TokenStore
-    totp_locked: Callable[[str], bool]
-    totp_record_failure: Callable[[str], None]
-    totp_record_success: Callable[[str], None]
+    # TOTP lockout, keyed on (client_id, source IP): see ratelimit.TotpLockout.
+    totp_locked: Callable[[str, str], bool]
+    totp_record_failure: Callable[[str, str], None]
+    totp_record_success: Callable[[str, str], None]
     conversations: ConversationStore | None = None
     engine: ChatEngine | None = None
     confirmations: ConfirmationStore | None = None
@@ -252,7 +253,15 @@ def _bearer_live(deps: DashboardDeps, session: Session) -> bool:
     return True
 
 
-def _check_totp(deps: DashboardDeps, client_id: str, code: str) -> TotpResult:
+def _source_ip(request: Request, deps: DashboardDeps) -> str:
+    """Client IP used to key the TOTP lockout (honours trusted proxies)."""
+    from ..ratelimit import client_ip  # local import: avoid cycle at module load
+    return client_ip(request, deps.trusted_proxies)
+
+
+def _check_totp(
+    deps: DashboardDeps, client_id: str, code: str, request: Request,
+) -> TotpResult:
     """Check a 2FA code, recording a lockout strike only for a wrong one.
 
     The dashboard prompts for 2FA on several actions (login, minting a token,
@@ -263,7 +272,7 @@ def _check_totp(deps: DashboardDeps, client_id: str, code: str) -> TotpResult:
     """
     result = deps.client_store.check_totp(client_id, code)  # type: ignore[attr-defined]
     if result is TotpResult.INVALID:
-        deps.totp_record_failure(client_id)
+        deps.totp_record_failure(client_id, _source_ip(request, deps))
     return result
 
 
@@ -508,14 +517,14 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         if not deps.client_store.verify(client_id, client_secret):  # type: ignore[attr-defined]
             return _fail("Invalid credentials.", status=401)
 
-        if deps.totp_locked(client_id):
+        if deps.totp_locked(client_id, _source_ip(request, deps)):
             return _fail(
                 "Too many attempts. Try again in 5 minutes.",
                 status=429,
                 locked=True,
             )
 
-        totp_result = _check_totp(deps, client_id, totp)
+        totp_result = _check_totp(deps, client_id, totp, request)
         if totp_result is not TotpResult.OK:
             audit.emit(
                 "dashboard.login.fail", client_id=client_id,
@@ -527,10 +536,10 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                     "Invalid 2FA code. Check that your device clock is in sync.",
                 ),
                 status=401,
-                locked=deps.totp_locked(client_id),
+                locked=deps.totp_locked(client_id, _source_ip(request, deps)),
             )
 
-        deps.totp_record_success(client_id)
+        deps.totp_record_success(client_id, _source_ip(request, deps))
         audit.emit("dashboard.login.ok", client_id=client_id)
         _, _, response = _start_session(
             request,
@@ -558,7 +567,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             client_name=client_name,
             next=request.query_params.get("next", ""),
             banner=None,
-            locked=deps.totp_locked(session.client_id),
+            locked=deps.totp_locked(session.client_id, _source_ip(request, deps)),
         )
 
     async def refresh_post(request: Request) -> Response:
@@ -597,21 +606,21 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         if not totp:
             return _fail("2FA code is required.")
 
-        if deps.totp_locked(session.client_id):
+        if deps.totp_locked(session.client_id, _source_ip(request, deps)):
             return _fail(
                 "Too many attempts. Try again in 5 minutes.",
                 status=429, locked=True,
             )
 
-        totp_result = _check_totp(deps, session.client_id, totp)
+        totp_result = _check_totp(deps, session.client_id, totp, request)
         if totp_result is not TotpResult.OK:
             return _fail(
                 _totp_error(totp_result, "Invalid 2FA code."),
                 status=401,
-                locked=deps.totp_locked(session.client_id),
+                locked=deps.totp_locked(session.client_id, _source_ip(request, deps)),
             )
 
-        deps.totp_record_success(session.client_id)
+        deps.totp_record_success(session.client_id, _source_ip(request, deps))
 
         # Re-issue MCP bearer using the stored client_secret.
         secret = deps.session_store.get_client_secret(session.session_id)
@@ -716,20 +725,20 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                 form_error="2FA code is required.",
                 form_name=name,
             )
-        if deps.totp_locked(session.client_id):
+        if deps.totp_locked(session.client_id, _source_ip(request, deps)):
             return _render_tokens_page(
                 request, session, deps,
                 form_error="Too many 2FA attempts; try again in 5 minutes.",
                 form_name=name,
             )
-        totp_result = _check_totp(deps, session.client_id, totp)
+        totp_result = _check_totp(deps, session.client_id, totp, request)
         if totp_result is not TotpResult.OK:
             return _render_tokens_page(
                 request, session, deps,
                 form_error=_totp_error(totp_result, "Invalid 2FA code."),
                 form_name=name,
             )
-        deps.totp_record_success(session.client_id)
+        deps.totp_record_success(session.client_id, _source_ip(request, deps))
 
         try:
             token, ttl = deps.token_store.issue(  # type: ignore[attr-defined]
@@ -803,7 +812,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             form_error=form_error,
             form_label=form_label,
             just_created=just_created,
-            locked=deps.totp_locked(session.client_id),
+            locked=deps.totp_locked(session.client_id, _source_ip(request, deps)),
         )
 
     async def connectors_get(request: Request) -> Response:
@@ -847,20 +856,20 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                 form_error="Label cannot exceed 60 characters.",
                 form_label=label,
             )
-        if deps.totp_locked(session.client_id):
+        if deps.totp_locked(session.client_id, _source_ip(request, deps)):
             return _render_connectors_page(
                 request, session,
                 form_error="Too many 2FA attempts; try again in 5 minutes.",
                 form_label=label,
             )
-        totp_result = _check_totp(deps, session.client_id, totp_code)
+        totp_result = _check_totp(deps, session.client_id, totp_code, request)
         if totp_result is not TotpResult.OK:
             return _render_connectors_page(
                 request, session,
                 form_error=_totp_error(totp_result, "Invalid 2FA code."),
                 form_label=label,
             )
-        deps.totp_record_success(session.client_id)
+        deps.totp_record_success(session.client_id, _source_ip(request, deps))
 
         store = deps.dyn_reg
         assert store is not None
@@ -1151,7 +1160,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             next_url = _default_landing()
         # A passkey sign-in is a clean second factor: clear any TOTP
         # lockout the same way a correct code would.
-        deps.totp_record_success(client_id)
+        deps.totp_record_success(client_id, _source_ip(request, deps))
         audit.emit("dashboard.login.ok", client_id=client_id, via="passkey")
         _, _, response = _start_session(
             request,
@@ -1218,18 +1227,18 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         totp = str(body.get("totp") or "").strip()
         if not totp:
             return _json({"ok": False, "error": "2FA code is required."}, status=400)
-        if deps.totp_locked(session.client_id):
+        if deps.totp_locked(session.client_id, _source_ip(request, deps)):
             return _json(
                 {"ok": False, "error": "Too many 2FA attempts; try again in 5 minutes."},
                 status=429,
             )
-        totp_result = _check_totp(deps, session.client_id, totp)
+        totp_result = _check_totp(deps, session.client_id, totp, request)
         if totp_result is not TotpResult.OK:
             return _json(
                 {"ok": False, "error": _totp_error(totp_result, "Invalid 2FA code.")},
                 status=401,
             )
-        deps.totp_record_success(session.client_id)
+        deps.totp_record_success(session.client_id, _source_ip(request, deps))
 
         from .. import updates as updates_mod
 
@@ -1887,7 +1896,7 @@ def _render_tokens_page(
         form_name=form_name,
         just_created=just_created,
         mcp_url=mcp_url,
-        locked=deps.totp_locked(session.client_id),
+        locked=deps.totp_locked(session.client_id, _source_ip(request, deps)),
         chat_enabled=deps.engine is not None,
         dcr_enabled=deps.dyn_reg is not None,
         passkeys_enabled=_passkeys_ready(deps),

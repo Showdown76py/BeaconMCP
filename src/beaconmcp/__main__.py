@@ -1088,7 +1088,7 @@ def _run_http(mcp, host: str, port: int):
         TotpResult,
         current_bearer_token,
     )
-    from .ratelimit import RateLimiter, client_ip, forwarded_host
+    from .ratelimit import RateLimiter, TotpLockout, client_ip, forwarded_host
     from .server import config
 
     from .metrics import REGISTRY, auth_events, http_requests
@@ -1178,31 +1178,17 @@ def _run_http(mcp, host: str, port: int):
     # the caller's bearer without an import cycle.
     auth.register_token_store(token_store)
 
-    # In-memory TOTP bruteforce guard: per client_id, (failures, cooldown_until).
-    # 5 failed attempts → 5-minute lockout. Reset on first success.
-    totp_fail_max = 5
-    totp_lockout_seconds = 300
-    totp_failures: dict[str, tuple[int, float]] = {}
+    # In-memory TOTP brute-force guard, keyed on (client_id, source IP): 5
+    # wrong codes from one IP lock that IP out for 5 minutes, and 20 from any
+    # mix of IPs lock the client. Keyed on client_id alone, anyone who knew a
+    # client_id could lock its owner out of every 2FA path.
+    totp_lockout = TotpLockout(per_source=5, per_client=20, lockout_seconds=300)
+    totp_locked = totp_lockout.locked
+    totp_record_failure = totp_lockout.record_failure
+    totp_record_success = totp_lockout.record_success
 
-    def totp_locked(client_id: str) -> bool:
-        entry = totp_failures.get(client_id)
-        if not entry:
-            return False
-        count, until = entry
-        if count < totp_fail_max:
-            return False
-        if time.time() >= until:
-            totp_failures.pop(client_id, None)
-            return False
-        return True
-
-    def totp_record_failure(client_id: str) -> None:
-        count, _ = totp_failures.get(client_id, (0, 0.0))
-        count += 1
-        totp_failures[client_id] = (count, time.time() + totp_lockout_seconds)
-
-    def totp_record_success(client_id: str) -> None:
-        totp_failures.pop(client_id, None)
+    def _ip(request: Request) -> str:
+        return client_ip(request, tuple(config.server.trusted_proxies))
 
     def _issuer(request: Request) -> str:
         scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
@@ -1578,10 +1564,20 @@ def _run_http(mcp, host: str, port: int):
         return _authorize_page(
             normalized,
             request=request,
-            locked=totp_locked(normalized["client_id"]),
+            locked=totp_locked(normalized["client_id"], _ip(request)),
         )
 
     async def oauth_authorize_post(request: Request) -> Response:
+        # This endpoint takes a TOTP guess with nothing but a client_id, so
+        # it gets the same per-IP limit as /app/login.
+        ip = _ip(request)
+        if not _login_limiter.check(ip):
+            retry = _login_limiter.retry_after(ip)
+            return JSONResponse(
+                {"error": "rate_limited", "error_description": "too many requests"},
+                status_code=429,
+                headers={"Retry-After": str(retry)},
+            )
         form = await request.form()
         body = {k: v for k, v in form.items() if isinstance(v, str)}
         normalized, err = _validate_authorize_params(body)
@@ -1589,7 +1585,7 @@ def _run_http(mcp, host: str, port: int):
             return err
 
         client_id = normalized["client_id"]
-        if totp_locked(client_id):
+        if totp_locked(client_id, ip):
             return _authorize_failed(
                 request, normalized,
                 "Too many attempts. Try again in 5 minutes.",
@@ -1602,11 +1598,10 @@ def _run_http(mcp, host: str, port: int):
             # A replayed code is the operator re-submitting one they already
             # spent, not an attack -- it must not count towards the lockout.
             if totp_result is TotpResult.INVALID:
-                totp_record_failure(client_id)
+                totp_record_failure(client_id, ip)
             audit.emit(
                 "auth.authorize.fail", client_id=client_id,
-                reason=totp_result.value,
-                ip=client_ip(request, tuple(config.server.trusted_proxies)),
+                reason=totp_result.value, ip=ip,
             )
             return _authorize_failed(
                 request, normalized,
@@ -1615,13 +1610,10 @@ def _run_http(mcp, host: str, port: int):
                     if totp_result is TotpResult.REPLAY
                     else "Incorrect code. Check that your device clock is in sync."
                 ),
-                locked=totp_locked(client_id),
+                locked=totp_locked(client_id, ip),
             )
-        totp_record_success(client_id)
-        audit.emit(
-            "auth.authorize.2fa", client_id=client_id,
-            ip=client_ip(request, tuple(config.server.trusted_proxies)),
-        )
+        totp_record_success(client_id, ip)
+        audit.emit("auth.authorize.2fa", client_id=client_id, ip=ip)
         return _authorize_approved(request, normalized)
 
     async def oauth_authorize_finalize(request: Request) -> Response:
@@ -1685,7 +1677,7 @@ def _run_http(mcp, host: str, port: int):
             return JSONResponse(
                 {"ok": False, "error": "Unknown client."}, status_code=400,
             )
-        if totp_locked(client_id):
+        if totp_locked(client_id, _ip(request)):
             return JSONResponse(
                 {"ok": False, "error": "Too many attempts. Try again in 5 minutes."},
                 status_code=429,
@@ -1718,7 +1710,7 @@ def _run_http(mcp, host: str, port: int):
                 status_code=400,
             )
         client_id = normalized["client_id"]
-        if totp_locked(client_id):
+        if totp_locked(client_id, _ip(request)):
             return JSONResponse(
                 {"ok": False, "error": "Too many attempts. Try again in 5 minutes."},
                 status_code=429,
@@ -1748,7 +1740,7 @@ def _run_http(mcp, host: str, port: int):
                 {"ok": False, "error": "This passkey belongs to another client."},
                 status_code=401,
             )
-        totp_record_success(client_id)
+        totp_record_success(client_id, _ip(request))
         audit.emit(
             "auth.authorize.2fa", client_id=client_id, via="passkey",
             ip=client_ip(request, tuple(config.server.trusted_proxies)),
@@ -1841,7 +1833,7 @@ def _run_http(mcp, host: str, port: int):
             # 2FA mandatory on every client_credentials exchange (design choice:
             # no non-interactive escape hatch, the operator must re-type a TOTP
             # code at every 24 h token refresh).
-            if totp_locked(client_id):
+            if totp_locked(client_id, ip):
                 return JSONResponse(
                     {
                         "error": "invalid_grant",
@@ -1854,7 +1846,7 @@ def _run_http(mcp, host: str, port: int):
             if totp_result is not TotpResult.OK:
                 # Replays don't count towards the lockout -- see /authorize.
                 if totp_result is TotpResult.INVALID:
-                    totp_record_failure(client_id)
+                    totp_record_failure(client_id, ip)
                 return JSONResponse(
                     {
                         "error": "invalid_grant",
@@ -1866,7 +1858,7 @@ def _run_http(mcp, host: str, port: int):
                     },
                     status_code=400,
                 )
-            totp_record_success(client_id)
+            totp_record_success(client_id, ip)
             token, expires_in = token_store.issue(client_id)
             auth_events.inc(kind="token", outcome="ok")
             audit.emit("auth.token.issue", client_id=client_id, grant_type=grant_type)

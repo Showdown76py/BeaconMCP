@@ -91,18 +91,18 @@ def deps(tmp_path, monkeypatch):
     session_store = SessionStore(db, key=os.urandom(32))
     failures: dict[str, tuple[int, float]] = {}
 
-    def totp_locked(cid):
+    def totp_locked(cid, ip=None):
         e = failures.get(cid)
         if not e:
             return False
         count, until = e
         return count >= 5 and time.time() < until
 
-    def totp_record_failure(cid):
+    def totp_record_failure(cid, ip=None):
         c, _ = failures.get(cid, (0, 0.0))
         failures[cid] = (c + 1, time.time() + 300)
 
-    def totp_record_success(cid):
+    def totp_record_success(cid, ip=None):
         failures.pop(cid, None)
 
     # A sentinel non-None engine so the post-login landing stays /app/chat.
@@ -143,15 +143,15 @@ def tokens_only_client(tmp_path):
         session_store=session_store,
         client_store=FakeClientStore(),
         token_store=FakeTokenStore(),
-        totp_locked=lambda cid: (
+        totp_locked=lambda cid, ip=None: (
             failures.get(cid, (0, 0.0))[0] >= 5
             and time.time() < failures.get(cid, (0, 0.0))[1]
         ),
-        totp_record_failure=lambda cid: failures.__setitem__(
+        totp_record_failure=lambda cid, ip=None: failures.__setitem__(
             cid,
             (failures.get(cid, (0, 0.0))[0] + 1, time.time() + 300),
         ),
-        totp_record_success=lambda cid: (failures.pop(cid, None), None)[1],
+        totp_record_success=lambda cid, ip=None: (failures.pop(cid, None), None)[1],
         engine=None,
     )
     app = Starlette(routes=build_dashboard_routes(deps_local))

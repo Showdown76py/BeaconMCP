@@ -613,9 +613,9 @@ def _make_client(tmp_path, monkeypatch, **overrides):
         session_store=SessionStore(db, key=os.urandom(32)),
         client_store=FakeClientStore(),
         token_store=FakeTokenStore(),
-        totp_locked=lambda cid: False,
-        totp_record_failure=lambda cid: None,
-        totp_record_success=lambda cid: None,
+        totp_locked=lambda cid, ip=None: False,
+        totp_record_failure=lambda cid, ip=None: None,
+        totp_record_success=lambda cid, ip=None: None,
         **overrides,
     )
     client = TestClient(

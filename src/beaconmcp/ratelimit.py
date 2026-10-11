@@ -90,6 +90,77 @@ class RateLimiter:
             return max(0, int(self._window - (time.monotonic() - oldest)) + 1)
 
 
+class TotpLockout:
+    """TOTP brute-force lockout keyed on ``(client_id, source IP)``.
+
+    ``client_id`` is not a secret (it travels in authorize URLs, browser
+    history, proxy logs), so a lockout keyed on it alone let anyone who knew
+    it lock the owner out of every 2FA path with a handful of wrong codes.
+    Strikes are counted per source instead: ``per_source`` wrong codes from
+    one IP lock that IP out for that client. A second, higher per-client cap
+    (``per_client`` wrong codes from any mix of IPs) still stops a guesser
+    who spreads attempts over many addresses.
+
+    Every failure pushes the cooldown of its counters forward; a counter
+    whose cooldown has passed starts again from zero. A success clears the
+    caller's own per-source counter only, so a distributed guesser can't
+    reset the per-client cap by having the owner log in.
+    """
+
+    def __init__(
+        self,
+        *,
+        per_source: int = 5,
+        per_client: int = 20,
+        lockout_seconds: float = 300.0,
+    ) -> None:
+        self._per_source = per_source
+        self._per_client = per_client
+        self._lockout = lockout_seconds
+        # key -> (failures, cooldown_until). Keys are ("src", client_id, ip)
+        # and ("client", client_id).
+        self._strikes: dict[tuple[str, ...], tuple[int, float]] = {}
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _src_key(client_id: str, ip: str | None) -> tuple[str, ...]:
+        return ("src", client_id, ip or "-")
+
+    def _count_locked(self, key: tuple[str, ...], now: float) -> int:
+        entry = self._strikes.get(key)
+        if entry is None:
+            return 0
+        count, until = entry
+        if now >= until:
+            del self._strikes[key]
+            return 0
+        return count
+
+    def locked(self, client_id: str, ip: str | None = None) -> bool:
+        now = time.time()
+        with self._lock:
+            return (
+                self._count_locked(("client", client_id), now) >= self._per_client
+                or self._count_locked(self._src_key(client_id, ip), now)
+                >= self._per_source
+            )
+
+    def record_failure(self, client_id: str, ip: str | None = None) -> None:
+        now = time.time()
+        until = now + self._lockout
+        with self._lock:
+            for key in (("client", client_id), self._src_key(client_id, ip)):
+                self._strikes[key] = (self._count_locked(key, now) + 1, until)
+            if len(self._strikes) > 4096:
+                for key, (_, key_until) in list(self._strikes.items()):
+                    if now >= key_until:
+                        del self._strikes[key]
+
+    def record_success(self, client_id: str, ip: str | None = None) -> None:
+        with self._lock:
+            self._strikes.pop(self._src_key(client_id, ip), None)
+
+
 def _coerce_ip(value: object) -> str | None:
     raw = str(value).strip()
     if not raw:
