@@ -96,7 +96,7 @@ which is the same snapshot as data. Nothing breaks; you just don't get the frame
 |------|-------------|
 | `proxmox_storage_status` | Storage pool status. |
 | `proxmox_network_config` | Network configuration per node. |
-| `proxmox_run` | Run a command inside a QEMU VM through the guest agent. For LXC containers, use `ssh_run` on the node with `pct exec <vmid> -- <command>`. |
+| `proxmox_run` | Run a shell command inside a QEMU VM (guest agent) or an LXC container (`pct exec` over SSH to the node, so SSH must be configured). The command goes through `sh -c`, or `cmd.exe /c` on Windows VMs, so pipes, redirections and `&&` work. |
 | `proxmox_read_file` | Read a file from a VM via the guest agent. |
 | `proxmox_write_file` | Write a file to a VM via the guest agent. |
 | `proxmox_upload_file` | Stream a file from the staging directory into a VM (SFTP) or CT (SFTP + `pct push`), up to `server.transfers_max_mb`. Verifies SHA-256 by default. |
