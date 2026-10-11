@@ -303,3 +303,31 @@ def test_pve_ca_bundle_verifies_and_other_ca_fails(tmp_path, https_server, monke
     s.mount("https://", _CABundleAdapter(str(other_ca)))
     with pytest.raises(requests.exceptions.SSLError):
         s.get(url, verify=str(other_ca), timeout=5)
+
+
+async def test_tofu_parallel_first_contacts_both_accept_the_same_key(tmp_path) -> None:
+    """Two connections racing to a new host must not call each other a MITM.
+
+    Both start before the key is recorded; the first pins it, and the second
+    then finds that same key on file, which is a match, not a change.
+    """
+    import asyncio
+
+    cfg = _load(tmp_path, _ssh())
+    server = await _serve(asyncssh.generate_private_key("ssh-ed25519"))
+    try:
+        spec = cfg.get_ssh_host("h")
+        spec.host, spec.port = "127.0.0.1", server.sockets[0].getsockname()[1]
+        policy = host_key_policy(cfg, spec)
+        results = await asyncio.gather(
+            *(_connect_to_host(spec, policy) for _ in range(4)), return_exceptions=True,
+        )
+        for conn in results:
+            if not isinstance(conn, BaseException):
+                conn.close()
+        errors = [r for r in results if isinstance(r, BaseException)]
+        assert errors == []
+        assert len(Path(policy.path).read_text().splitlines()) == 1
+    finally:
+        server.close()
+        await server.wait_closed()

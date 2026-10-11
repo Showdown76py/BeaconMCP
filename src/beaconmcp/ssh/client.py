@@ -125,8 +125,10 @@ class _TofuClient(asyncssh.SSHClient):
     """Accepts and records the key of a host the managed file doesn't know.
 
     asyncssh only calls ``validate_host_public_key`` when the presented key
-    is not among the trusted keys loaded from the managed file. If that file
-    already holds keys for this host the key has changed, and it is refused.
+    is not among the trusted keys it loaded from the managed file when the
+    connection started. The file is re-read here, under the lock: a parallel
+    first connection may have recorded this very key in the meantime, which
+    is a match. Only a different key on file means the key has changed.
     """
 
     def __init__(self, path: str, host: str, port: int) -> None:
@@ -137,8 +139,10 @@ class _TofuClient(asyncssh.SSHClient):
 
     def validate_host_public_key(self, host: str, addr: str, port: int, key) -> bool:
         with _tofu_lock:
-            known = _load_known_hosts(self._path)
-            if known.match(host, addr, port)[0]:
+            pinned = _load_known_hosts(self._path).match(host, addr, port)[0]
+            if key in pinned:
+                return True
+            if pinned:
                 self.changed = True
                 return False
             line = key.export_public_key("openssh").decode().split()
