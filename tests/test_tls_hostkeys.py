@@ -198,3 +198,108 @@ async def test_known_hosts_file_refuses_unknown_key(tmp_path) -> None:
         server.close()
         await server.wait_closed()
 
+
+
+# --- the Proxmox CA really verifies ----------------------------------------
+
+
+def _pve_like_pki(tmp_path: Path, cn: str):
+    """A CA shaped like /etc/pve/pve-root-ca.pem (no keyUsage) and a leaf."""
+    import datetime
+    import ipaddress
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    ca_key = ec.generate_private_key(ec.SECP256R1())
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+    ca = (
+        x509.CertificateBuilder()
+        .subject_name(ca_name).issuer_name(ca_name)
+        .public_key(ca_key.public_key()).serial_number(1)
+        .not_valid_before(now).not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False)
+        .sign(ca_key, hashes.SHA256())
+    )
+    leaf_key = ec.generate_private_key(ec.SECP256R1())
+    leaf = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "pve1")]))
+        .issuer_name(ca_name)
+        .public_key(leaf_key.public_key()).serial_number(2)
+        .not_valid_before(now).not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]),
+            critical=False,
+        )
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+            critical=False,
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+    pem = serialization.Encoding.PEM
+    ca_path = tmp_path / f"{cn}-ca.pem"
+    ca_path.write_bytes(ca.public_bytes(pem))
+    chain = tmp_path / f"{cn}-leaf.pem"
+    chain.write_bytes(
+        leaf.public_bytes(pem)
+        + leaf_key.private_bytes(
+            pem, serialization.PrivateFormat.PKCS8, serialization.NoEncryption(),
+        )
+    )
+    return ca_path, chain
+
+
+@pytest.fixture()
+def https_server(tmp_path):
+    import http.server
+    import ssl
+    import threading
+
+    ca, chain = _pve_like_pki(tmp_path, "pve")
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b'{"data": {"version": "8"}}'
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(chain)
+    srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    yield srv.server_address[1], ca
+    srv.shutdown()
+
+
+def test_pve_ca_bundle_verifies_and_other_ca_fails(tmp_path, https_server, monkeypatch) -> None:
+    import requests
+
+    from beaconmcp.proxmox.client import _CABundleAdapter
+
+    for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        monkeypatch.delenv(var, raising=False)
+    port, ca = https_server
+    url = f"https://127.0.0.1:{port}/api2/json/version"
+
+    s = requests.Session()
+    s.mount("https://", _CABundleAdapter(str(ca)))
+    assert s.get(url, verify=str(ca), timeout=5).json()["data"]["version"] == "8"
+
+    other_ca, _ = _pve_like_pki(tmp_path, "other")
+    s = requests.Session()
+    s.mount("https://", _CABundleAdapter(str(other_ca)))
+    with pytest.raises(requests.exceptions.SSLError):
+        s.get(url, verify=str(other_ca), timeout=5)

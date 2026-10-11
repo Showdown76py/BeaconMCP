@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
+import ssl
 import threading
 import time
 from typing import Any
 
 from proxmoxer import ProxmoxAPI
+from requests.adapters import HTTPAdapter
 from requests.exceptions import ConnectionError, Timeout
 
 from ..config import Config
@@ -57,6 +60,44 @@ _RETRY_ATTEMPTS = 2
 _RETRY_BACKOFF_SECONDS = 0.5
 
 
+class _CABundleAdapter(HTTPAdapter):
+    """HTTPS adapter verifying against one CA bundle without X.509 strict mode.
+
+    On Python 3.13+, urllib3 turns on ``VERIFY_X509_STRICT``, which rejects a
+    CA certificate that has no keyUsage extension. The CA every Proxmox
+    cluster generates (``/etc/pve/pve-root-ca.pem``) has none, so verifying
+    against it would always fail with "CA cert does not include key usage
+    extension". Chain and hostname checks are unchanged.
+    """
+
+    def __init__(self, ca_path: str) -> None:
+        if os.path.isdir(ca_path):
+            ctx = ssl.create_default_context(capath=ca_path)
+        else:
+            ctx = ssl.create_default_context(cafile=ca_path)
+        ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+        self._ssl_context = ctx
+        super().__init__()
+
+    def init_poolmanager(self, *args: Any, **kwargs: Any) -> None:
+        kwargs["ssl_context"] = self._ssl_context
+        super().init_poolmanager(*args, **kwargs)
+
+
+def _trust_ca_bundle(conn: ProxmoxAPI, ca_path: str) -> None:
+    """Make ``conn`` verify the API certificate against ``ca_path``.
+
+    proxmoxer already hands the path to requests as ``verify``; this only
+    swaps in an SSL context that accepts the Proxmox CA (see
+    :class:`_CABundleAdapter`).
+    """
+    session = getattr(conn, "_store", {}).get("session")
+    if session is None:  # pragma: no cover - proxmoxer internals changed
+        _logger.warning("could not install the Proxmox CA adapter; using requests defaults")
+        return
+    session.mount("https://", _CABundleAdapter(ca_path))
+
+
 class ProxmoxClient:
     """Manages connections to one or more Proxmox VE nodes via API tokens."""
 
@@ -95,6 +136,8 @@ class ProxmoxClient:
             token_value=pve_node.token_secret,
             verify_ssl=self._config.verify_ssl,
         )
+        if isinstance(self._config.verify_ssl, str):
+            _trust_ca_bundle(conn, self._config.verify_ssl)
         cache[node_name] = conn
         return conn
 
