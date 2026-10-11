@@ -47,6 +47,26 @@ and revoke it from `/app/tokens` the moment it leaks.
 API tokens survive restarts** — they live in `server.tokens_db`. Revoke them individually from
 `/app/tokens`, or delete `tokens.db` before restarting to kill all of them at once.
 
+OAuth access tokens and refresh tokens also survive restarts. They are stored in the same
+`tokens.db`, hashed with SHA-256, so the file alone does not hand out working credentials. Refresh
+tokens are only issued on the `authorization_code` grant (never on `client_credentials`, which keeps
+its TOTP-on-every-exchange rule). Each refresh rotates the token; replaying an already-used refresh
+token revokes every access and refresh token of that sign-in (`auth.token.refresh.reuse` in the
+audit log), and the client has to go through the authorization page again. The one exception is a
+replay within 60 s of the rotation, which is read as the same client retrying after a network
+timeout and gets the pair the first call minted. Deleting a client, or calling
+`security_end_session`, drops its refresh tokens too.
+
+**A sign-in never outlives 24 h.** Every access and refresh token of a sign-in expires 24 h after
+the `authorization_code` exchange, whatever `server.refresh_token_ttl` says (it is capped at 24 h and
+`0` is refused): a refresh can carry a connector up to that point but never past it, so claude.ai,
+ChatGPT or Le Chat ask for your TOTP once a day. Refresh tokens persist across restarts within that
+day only, and rotated-out tokens disappear with the sign-in they belonged to.
+
+`beaconmcp auth revoke` takes effect immediately, server running or not: the server re-reads
+`clients.json` when it changes on disk, and the revoked client's bearers, refresh tokens and named
+API tokens are refused from its next request on.
+
 `security_end_session` lets a client revoke its own bearer at the end of a task, which is a cheap way
 to shrink the replay window.
 

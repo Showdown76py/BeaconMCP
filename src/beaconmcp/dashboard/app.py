@@ -923,6 +923,8 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             # Only allow revoking clients WE own.
             if target is not None and target.owner_client_id == session.client_id:
                 deps.client_store.revoke(client_id)  # type: ignore[attr-defined]
+                # OAuth tokens are persisted now: kill them with the client.
+                deps.token_store.revoke_client(client_id)  # type: ignore[attr-defined]
                 audit.emit(
                     "auth.client.revoke", client_id=client_id,
                     owner_client_id=session.client_id, via="dashboard",

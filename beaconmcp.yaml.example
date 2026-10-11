@@ -91,6 +91,16 @@ server:
   # sure you trust every client you paste one into). The
   # BEACONMCP_NAMED_TOKEN_TTL env var overrides this.
   # named_token_ttl: 2592000
+  # Idle lifetime (seconds) of OAuth refresh tokens handed to
+  # authorization_code clients (claude.ai, ChatGPT, Le Chat...). Each
+  # refresh rotates the token and restarts this clock; replaying a
+  # rotated-out token revokes the whole chain. No sign-in outlives 24 h
+  # though: every refresh token expires 24 h after the authorization,
+  # whatever this says, so clients re-enter their TOTP once a day. Default
+  # and maximum 86400 (24 h); 0 (never) is refused. A smaller value only
+  # adds an idle timeout inside the day. The BEACONMCP_REFRESH_TOKEN_TTL
+  # env var overrides this.
+  # refresh_token_ttl: 86400
 
 # -------- Proxmox capability (optional) ------------------------------------
 # Delete this section if you have no Proxmox cluster. Tools starting with

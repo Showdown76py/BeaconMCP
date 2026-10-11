@@ -141,6 +141,23 @@ def _log_cloudflare_unauthorized(cf_ray: str) -> None:
     )
 
 
+def _oauth_server_metadata(issuer: str) -> dict:
+    """RFC 8414 authorization-server metadata for the main issuer."""
+    # registration_endpoint is intentionally omitted: dynamic client
+    # registration is disabled, clients must be provisioned via CLI.
+    return {
+        "issuer": issuer,
+        "authorization_endpoint": f"{issuer}/oauth/authorize",
+        "token_endpoint": f"{issuer}/oauth/token",
+        "response_types_supported": ["code"],
+        "grant_types_supported": [
+            "authorization_code", "refresh_token", "client_credentials",
+        ],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["client_secret_post"],
+    }
+
+
 def _build_unauthorized_body(headers, *, error: str) -> dict:
     """Build the JSON body for a 401 on an MCP/OAuth-protected request.
 
@@ -1084,6 +1101,7 @@ def _run_http(mcp, host: str, port: int):
         TOTP_REPLAY_MESSAGE,
         ClientStore,
         CodeStore,
+        RefreshTokenError,
         TokenStore,
         TotpResult,
         current_bearer_token,
@@ -1143,7 +1161,41 @@ def _run_http(mcp, host: str, port: int):
         if env_named_ttl and env_named_ttl.isdigit()
         else config.server.named_token_ttl
     )
-    token_store = TokenStore(db_path=tokens_db, named_token_ttl=named_token_ttl)
+    # Refresh-token idle lifetime: BEACONMCP_REFRESH_TOKEN_TTL env (seconds) >
+    # server.refresh_token_ttl in the YAML > TokenStore default (24 h). The
+    # env path skips the YAML loader, so it gets the same bounds check here:
+    # no sign-in outlives 24 h, and "0 = never" is gone.
+    env_refresh_ttl = os.environ.get("BEACONMCP_REFRESH_TOKEN_TTL")
+    refresh_token_ttl = (
+        int(env_refresh_ttl)
+        if env_refresh_ttl and env_refresh_ttl.isdigit()
+        else config.server.refresh_token_ttl
+    )
+    if refresh_token_ttl is not None and not (
+        0 < refresh_token_ttl <= TokenStore.SESSION_LIFETIME
+    ):
+        print(
+            "ERROR: BEACONMCP_REFRESH_TOKEN_TTL must be between 1 and "
+            f"{TokenStore.SESSION_LIFETIME} seconds (24 h); a sign-in never "
+            "outlives 24 h and 0 (never expires) is not supported.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    token_store = TokenStore(
+        db_path=tokens_db,
+        named_token_ttl=named_token_ttl,
+        refresh_token_ttl=refresh_token_ttl,
+    )
+    # OAuth tokens now survive restarts: drop those of clients deleted while
+    # the server was down. Skipped when no client loaded at all, so an
+    # unreadable clients.json can't wipe the db.
+    known_clients = {c["client_id"] for c in client_store.list_clients()}
+    if known_clients:
+        token_store.prune_unknown_clients(known_clients)
+    # ...and of clients deleted while it is up: ``beaconmcp auth revoke``
+    # rewrites clients.json from another process, the store notices at the
+    # next lookup and hands us the survivors.
+    client_store.on_clients_removed = token_store.prune_unknown_clients
     code_store = CodeStore()
 
     # Shared dashboard SQLite handle. Three features live in it -- sessions,
@@ -1201,18 +1253,7 @@ def _run_http(mcp, host: str, port: int):
         return f"{scheme}://{host_header}"
 
     async def oauth_metadata(request: Request) -> Response:
-        issuer = _issuer(request)
-        # registration_endpoint is intentionally omitted: dynamic client
-        # registration is disabled, clients must be provisioned via CLI.
-        return JSONResponse({
-            "issuer": issuer,
-            "authorization_endpoint": f"{issuer}/oauth/authorize",
-            "token_endpoint": f"{issuer}/oauth/token",
-            "response_types_supported": ["code"],
-            "grant_types_supported": ["authorization_code", "client_credentials"],
-            "code_challenge_methods_supported": ["S256"],
-            "token_endpoint_auth_methods_supported": ["client_secret_post"],
-        })
+        return JSONResponse(_oauth_server_metadata(_issuer(request)))
 
     async def protected_resource_metadata(request: Request) -> Response:
         # RFC 9728 - required by the MCP 2025-06-18 spec so that clients
@@ -1856,13 +1897,15 @@ def _run_http(mcp, host: str, port: int):
                     status_code=400,
                 )
             totp_record_success(client_id, ip)
-            token, expires_in = token_store.issue(client_id)
+            # No refresh token here: every client_credentials exchange must
+            # carry a fresh TOTP code, a refresh token would bypass that.
+            grant = token_store.issue_oauth(client_id)
             auth_events.inc(kind="token", outcome="ok")
             audit.emit("auth.token.issue", client_id=client_id, grant_type=grant_type)
             return JSONResponse({
-                "access_token": token,
+                "access_token": grant.access_token,
                 "token_type": "bearer",
-                "expires_in": expires_in,
+                "expires_in": grant.expires_in,
             })
 
         if grant_type == "authorization_code":
@@ -1871,11 +1914,45 @@ def _run_http(mcp, host: str, port: int):
             code_verifier = body.get("code_verifier", "")
             if not code_store.consume(code, client_id, redirect_uri, code_verifier):
                 return JSONResponse({"error": "invalid_grant"}, status_code=400)
-            token, expires_in = token_store.issue(client_id)
+            grant = token_store.issue_oauth(client_id, refresh=True)
+            auth_events.inc(kind="token", outcome="ok")
+            audit.emit("auth.token.issue", client_id=client_id, grant_type=grant_type)
             return JSONResponse({
-                "access_token": token,
+                "access_token": grant.access_token,
                 "token_type": "bearer",
-                "expires_in": expires_in,
+                "expires_in": grant.expires_in,
+                "refresh_token": grant.refresh_token,
+            })
+
+        if grant_type == "refresh_token":
+            presented = body.get("refresh_token", "")
+            family_id = token_store.family_of(presented) if presented else None
+            try:
+                if not presented:
+                    raise RefreshTokenError("invalid")
+                grant = token_store.refresh(presented, client_id)
+            except RefreshTokenError as exc:
+                auth_events.inc(kind="token", outcome=f"refresh_{exc.reason}")
+                if exc.reason == "reused":
+                    audit.emit(
+                        "auth.token.refresh.reuse",
+                        client_id=client_id, family_id=exc.family_id,
+                    )
+                else:
+                    audit.emit(
+                        "auth.token.fail", client_id=client_id,
+                        reason=f"refresh_{exc.reason}", grant_type=grant_type,
+                    )
+                return JSONResponse({"error": "invalid_grant"}, status_code=400)
+            auth_events.inc(kind="token", outcome="ok")
+            audit.emit(
+                "auth.token.refresh", client_id=client_id, family_id=family_id,
+            )
+            return JSONResponse({
+                "access_token": grant.access_token,
+                "token_type": "bearer",
+                "expires_in": grant.expires_in,
+                "refresh_token": grant.refresh_token,
             })
 
         return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
@@ -1966,6 +2043,11 @@ def _run_http(mcp, host: str, port: int):
 
         bearer = authorization[7:]
         client_id = token_store.validate(bearer)
+        # A bearer of a client revoked from the CLI dies with the client:
+        # ``exists`` re-reads clients.json when it changed on disk, which
+        # also prunes the client's tokens via ``on_clients_removed``.
+        if client_id and not client_store.exists(client_id):
+            client_id = None
         if not client_id:
             return JSONResponse(
                 _build_unauthorized_body(request.headers, error="invalid_token"),
@@ -2024,7 +2106,7 @@ def _run_http(mcp, host: str, port: int):
             "token_endpoint": f"{issuer}/oauth/token",
             "registration_endpoint": f"{issuer}/oauth/register/c/{slug}",
             "response_types_supported": ["code"],
-            "grant_types_supported": ["authorization_code"],
+            "grant_types_supported": ["authorization_code", "refresh_token"],
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": ["client_secret_post"],
         })
@@ -2107,7 +2189,7 @@ def _run_http(mcp, host: str, port: int):
             "client_secret": new_client_secret,
             "client_id_issued_at": int(row.created_at),
             "token_endpoint_auth_method": "client_secret_post",
-            "grant_types": ["authorization_code"],
+            "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
             "redirect_uris": redirect_uris_raw,
         }, status_code=201)

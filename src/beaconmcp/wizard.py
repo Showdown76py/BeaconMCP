@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from .config import MAX_REFRESH_TOKEN_TTL
+
 try:
     from textual.app import App, ComposeResult
     from textual.binding import Binding
@@ -152,6 +154,9 @@ class ServerDraft:
     audit_log: str = ""
     # Named-token lifetime in seconds; empty means the 30-day default.
     named_token_ttl: str = ""
+    # OAuth refresh-token idle lifetime in seconds; empty means the 24 h
+    # default, which is also the maximum (a sign-in never outlives 24 h).
+    refresh_token_ttl: str = ""
 
 
 @dataclass
@@ -259,6 +264,8 @@ def render_yaml(draft: ConfigDraft) -> str:
         lines.append(f"  audit_log: {_q(draft.server.audit_log)}")
     if draft.server.named_token_ttl:
         lines.append(f"  named_token_ttl: {draft.server.named_token_ttl}")
+    if draft.server.refresh_token_ttl:
+        lines.append(f"  refresh_token_ttl: {draft.server.refresh_token_ttl}")
     lines.append("")
 
     # Proxmox
@@ -457,6 +464,11 @@ def load_yaml_into_draft(path: Path) -> ConfigDraft:
         draft.server.named_token_ttl = (
             str(server.get("named_token_ttl"))
             if server.get("named_token_ttl") is not None
+            else ""
+        )
+        draft.server.refresh_token_ttl = (
+            str(server.get("refresh_token_ttl"))
+            if server.get("refresh_token_ttl") is not None
             else ""
         )
 
@@ -1240,6 +1252,18 @@ class _ServerPanel(Static):
             id="srv-named-ttl",
             placeholder="2592000",
         )
+        yield Static(
+            "refresh_token_ttl -- idle lifetime (seconds) of OAuth refresh "
+            "tokens (claude.ai and other authorization_code clients). Empty = "
+            "24 h, also the maximum: a sign-in never outlives 24 h, so clients "
+            "re-enter their TOTP once a day. 0 (never) is not accepted.",
+            classes="field-label",
+        )
+        yield Input(
+            value=srv.refresh_token_ttl,
+            id="srv-refresh-ttl",
+            placeholder="86400",
+        )
 
     def on_input_changed(self, event: Input.Changed) -> None:
         srv = self.draft.server
@@ -1258,6 +1282,12 @@ class _ServerPanel(Static):
         elif event.input.id == "srv-named-ttl":
             raw = event.value.strip()
             srv.named_token_ttl = raw if raw.isdigit() else ""
+        elif event.input.id == "srv-refresh-ttl":
+            raw = event.value.strip()
+            # Same bounds as the loader: 1..24 h, no "never".
+            srv.refresh_token_ttl = (
+                raw if raw.isdigit() and 0 < int(raw) <= MAX_REFRESH_TOKEN_TTL else ""
+            )
         self.on_change()
 
     def on_switch_changed(self, event: Switch.Changed) -> None:
