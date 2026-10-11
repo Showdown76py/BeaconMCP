@@ -1179,9 +1179,10 @@ def _run_http(mcp, host: str, port: int):
     auth.register_token_store(token_store)
 
     # In-memory TOTP brute-force guard, keyed on (client_id, source IP): 5
-    # wrong codes from one IP lock that IP out for 5 minutes, and 20 from any
-    # mix of IPs lock the client. Keyed on client_id alone, anyone who knew a
-    # client_id could lock its owner out of every 2FA path.
+    # wrong codes from one IP lock that IP out for 5 minutes, and 10 from any
+    # mix of IPs lock the client's TOTP (passkeys stay usable). Keyed on
+    # client_id alone, anyone who knew a client_id could lock its owner out
+    # of every 2FA path.
     totp_lockout = TotpLockout(per_source=5, per_client=10, lockout_seconds=300)
     totp_locked = totp_lockout.locked
     totp_record_failure = totp_lockout.record_failure
