@@ -15,7 +15,7 @@ import asyncssh
 import hpilo
 
 from ..config import BMCDevice, Config
-from ..ssh.client import _connect_to_host
+from ..ssh.client import _connect_to_host, host_key_policy
 from .base import BMCTunnelError
 
 
@@ -66,13 +66,8 @@ class HPILOBackend:
             )
 
         try:
-            kh = self._config.ssh.known_hosts if self._config.ssh else None
-            strict = (
-                self._config.ssh.strict_host_key_checking
-                if self._config.ssh else False
-            )
             self._tunnel = await _connect_to_host(
-                jump_spec, known_hosts=kh, strict_host_key_checking=strict,
+                jump_spec, host_key_policy(self._config, jump_spec),
             )
             self._tunnel_listener = await self._tunnel.forward_local_port(
                 "", 0, self._device.host, 443

@@ -106,6 +106,11 @@ server:
 # fully remote node, declare it explicitly under `ssh.hosts[]` with its
 # real SSH address (Tailscale IP, VPN tunnel, bastion…).
 proxmox:
+  # TLS verification of the Proxmox API: false (skip), true (system CAs),
+  # or the path of a CA bundle. For the default self-signed cluster cert,
+  # copy /etc/pve/pve-root-ca.pem from a node to this host and use:
+  #   verify_ssl: /etc/beaconmcp/pve-root-ca.pem
+  # The API token is sent on every request, so prefer the CA path.
   verify_ssl: false
   # One entry per Proxmox node. N nodes supported; the first one is not special.
   # Each node needs an API token (Datacenter > Permissions > API Tokens).
@@ -152,11 +157,14 @@ ssh:
   # just works without repeating credentials per node.
   inherit_proxmox_nodes: true
 
-  # Host-key verification. Unset (default) means "accept any key on first
-  # contact" -- fine on a trusted LAN, unsafe over the public internet.
-  # Set `known_hosts` to an OpenSSH-format file to pin keys, or leave it
-  # unset and flip `strict_host_key_checking: true` to use the system
-  # `~/.ssh/known_hosts` instead.
+  # Host-key verification. Unset (default): trust on first use. The first
+  # connection to a host records its key in `ssh_known_hosts` next to
+  # clients_file; a different key later is refused (if the host was
+  # reinstalled: ssh-keygen -R <host> -f <that file>).
+  # Set `known_hosts` to an OpenSSH-format file to pin keys yourself,
+  # `strict_host_key_checking: true` to only accept the system
+  # `~/.ssh/known_hosts`, or `strict_host_key_checking: false` to accept
+  # any key (trusted lab networks only).
   # known_hosts: /etc/beaconmcp/known_hosts
   # strict_host_key_checking: true
 
@@ -169,10 +177,9 @@ ssh:
       # Per-host host-key overrides; unset fields inherit the global
       # `ssh.known_hosts` / `ssh.strict_host_key_checking` above. Handy to
       # enforce strict checking on one public-internet host while
-      # trusted-LAN nodes stay permissive. Note: overrides only *tighten* —
-      # once a global `known_hosts` file is set, a per-host
-      # `strict_host_key_checking: false` cannot loosen back to
-      # accept-any-key.
+      # other nodes keep the default. Note: once a global `known_hosts` file
+      # is set, a per-host `strict_host_key_checking: false` cannot loosen
+      # back to accept-any-key.
       # known_hosts: /etc/beaconmcp/vps1_known_hosts
       # strict_host_key_checking: true
 

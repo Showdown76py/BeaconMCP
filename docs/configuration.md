@@ -46,13 +46,15 @@ Tailscale IP, a VPN address, a bastion.
 
 | Key | Notes |
 |-----|-------|
+| `proxmox.verify_ssl` | TLS verification of the Proxmox API. `false` (default) skips it, `true` uses the system CA store, and a file path verifies against that CA bundle. For the default self-signed cluster certificate, copy `/etc/pve/pve-root-ca.pem` from any node to the BeaconMCP host and point `verify_ssl` at the copy. Any other value is refused at startup, so a mistyped path can't silently turn verification off. |
 | `proxmox.nodes[]` | One entry per node, each with its own API token. Prefer a LAN IP in `host:` — it's the one string that works for both the API and SSH inheritance. `localhost` is fine when BeaconMCP runs on that node. Reserve FQDN-with-port for nodes you cannot reach on the LAN, and give those an explicit `ssh.hosts[]` entry. |
 
 ## SSH
 
 | Key | Notes |
 |-----|-------|
-| `ssh.hosts[]` | One entry per SSH target: VPS, Proxmox node, jump box. Each carries its own `user` plus exactly one of `password` / `key_file`. Names may match `proxmox.nodes[].name`. Per-host `known_hosts` and `strict_host_key_checking` override the global `ssh.*` settings, but only to tighten them. |
+| `ssh.hosts[]` | One entry per SSH target: VPS, Proxmox node, jump box. Each carries its own `user` plus exactly one of `password` / `key_file`. Names may match `proxmox.nodes[].name`. Per-host `known_hosts` and `strict_host_key_checking` override the global `ssh.*` settings (a `known_hosts` file, once set at either level, always applies). |
+| `ssh.known_hosts` / `ssh.strict_host_key_checking` | Host-key verification. **Unset (default): trust on first use**, like OpenSSH `accept-new`: the first connection to a host records its key in `ssh_known_hosts` next to `clients_file`, and a different key later is refused. If a host is reinstalled, remove its line with `ssh-keygen -R <host> -f <that file>`. `known_hosts: <file>` only accepts the keys in that file; `strict_host_key_checking: true` only accepts `~/.ssh/known_hosts`; `strict_host_key_checking: false` accepts any key (lab networks only). The iLO jump-host tunnel follows the same rules. |
 | `ssh.defaults` + `ssh.inherit_proxmox_nodes` | Homelab shortcut: set `defaults:` (user + password/key_file), flip `inherit_proxmox_nodes: true`, and every Proxmox node becomes SSH-reachable under its own name without duplication. An explicit `ssh.hosts[]` entry still wins when it matches a node by name or address. |
 | `ssh.vmid_to_ip` | Optional template (`"192.168.1.{id}"`) used by `ssh_run` when `host` is a bare VMID. The resolved IP must match an `ssh.hosts[].host` to authenticate. Omit it to disable numeric shortcuts entirely. |
 

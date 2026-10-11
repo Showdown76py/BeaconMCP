@@ -113,10 +113,11 @@ class SSHDraft:
     inherit_proxmox_nodes: bool = True
     defaults: SSHDefaultsDraft = field(default_factory=SSHDefaultsDraft)
     hosts: list[SSHHostDraft] = field(default_factory=list)
-    # Global host-key verification (see beaconmcp.yaml.example). Empty
-    # known_hosts + strict off keeps the permissive accept-any-key default.
+    # Global host-key verification (see beaconmcp.yaml.example). Strict is
+    # tri-state: "" (unset) trusts a new host on first use and pins its key,
+    # "true" only accepts ~/.ssh/known_hosts, "false" accepts any key.
     known_hosts: str = ""
-    strict_host_key_checking: bool = False
+    strict_host_key_checking: str = ""
 
 
 @dataclass
@@ -169,6 +170,9 @@ class ConfigDraft:
     server: ServerDraft = field(default_factory=ServerDraft)
     pve_nodes: list[PVENodeDraft] = field(default_factory=list)
     verify_ssl: bool = False  # proxmox.verify_ssl
+    # CA bundle path for proxmox.verify_ssl; when set it is written instead
+    # of the boolean (verification on, against this CA).
+    verify_ssl_ca: str = ""
     ssh: SSHDraft = field(default_factory=SSHDraft)
     bmc_devices: list[BMCDeviceDraft] = field(default_factory=list)
     dashboard: DashboardDraft = field(default_factory=DashboardDraft)
@@ -264,7 +268,10 @@ def render_yaml(draft: ConfigDraft) -> str:
     # Proxmox
     if draft.pve_nodes:
         lines.append("proxmox:")
-        lines.append(f"  verify_ssl: {'true' if draft.verify_ssl else 'false'}")
+        if draft.verify_ssl_ca:
+            lines.append(f"  verify_ssl: {_q(draft.verify_ssl_ca)}")
+        else:
+            lines.append(f"  verify_ssl: {'true' if draft.verify_ssl else 'false'}")
         lines.append("  nodes:")
         for n in draft.pve_nodes:
             lines.append(f"    - name: {_q(n.name)}")
@@ -304,8 +311,10 @@ def render_yaml(draft: ConfigDraft) -> str:
             lines.append("  inherit_proxmox_nodes: true")
         if draft.ssh.known_hosts:
             lines.append(f"  known_hosts: {_q(draft.ssh.known_hosts)}")
-        if draft.ssh.strict_host_key_checking:
-            lines.append("  strict_host_key_checking: true")
+        if draft.ssh.strict_host_key_checking in ("true", "false"):
+            lines.append(
+                f"  strict_host_key_checking: {draft.ssh.strict_host_key_checking}"
+            )
         if draft.ssh.hosts:
             lines.append("  hosts:")
             for h in draft.ssh.hosts:
@@ -462,7 +471,14 @@ def load_yaml_into_draft(path: Path) -> ConfigDraft:
 
     proxmox = raw.get("proxmox") or {}
     if isinstance(proxmox, dict):
-        draft.verify_ssl = bool(proxmox.get("verify_ssl", False))
+        verify = proxmox.get("verify_ssl", False)
+        if isinstance(verify, str) and verify.strip().lower() not in (
+            "", "0", "1", "true", "false", "yes", "no", "on", "off",
+        ):
+            draft.verify_ssl = True
+            draft.verify_ssl_ca = verify.strip()
+        else:
+            draft.verify_ssl = str(verify).strip().lower() in ("1", "true", "yes", "on")
         for node in proxmox.get("nodes") or []:
             if not isinstance(node, dict):
                 continue
@@ -481,8 +497,10 @@ def load_yaml_into_draft(path: Path) -> ConfigDraft:
         draft.ssh.vmid_to_ip = str(ssh.get("vmid_to_ip") or "")
         draft.ssh.inherit_proxmox_nodes = bool(ssh.get("inherit_proxmox_nodes", False))
         draft.ssh.known_hosts = str(ssh.get("known_hosts") or "")
-        draft.ssh.strict_host_key_checking = bool(
-            ssh.get("strict_host_key_checking", False)
+        strict = ssh.get("strict_host_key_checking")
+        draft.ssh.strict_host_key_checking = (
+            "" if strict is None
+            else ("true" if str(strict).strip().lower() in ("1", "true", "yes", "on") else "false")
         )
         defaults = ssh.get("defaults") or {}
         if isinstance(defaults, dict):
@@ -758,6 +776,13 @@ class _ProxmoxPanel(Static):
         with Horizontal(classes="form-row"):
             yield Label("verify_ssl:")
             yield Switch(value=self.draft.verify_ssl, id="pve-verify-ssl")
+        with Horizontal(classes="form-row"):
+            yield Label("CA bundle:")
+            yield Input(
+                value=self.draft.verify_ssl_ca,
+                placeholder="copy of /etc/pve/pve-root-ca.pem (verifies the self-signed cert)",
+                id="pve-verify-ca",
+            )
         yield DataTable(id="pve-table", cursor_type="row", zebra_stripes=True)
         with Horizontal(classes="form-actions"):
             yield Button("Add", id="pve-add", variant="primary")
@@ -772,6 +797,11 @@ class _ProxmoxPanel(Static):
     def on_switch_changed(self, event: Switch.Changed) -> None:
         if event.switch.id == "pve-verify-ssl":
             self.draft.verify_ssl = event.value
+            self.on_change()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "pve-verify-ca":
+            self.draft.verify_ssl_ca = event.value.strip()
             self.on_change()
 
     def _refresh_table(self) -> None:
@@ -878,9 +908,10 @@ class _SSHPanel(Static):
 
         yield Static("Host-key verification", classes="section-heading")
         yield Static(
-            "Defaults to accept-any-key (trusted LAN). Point known_hosts at "
-            "an OpenSSH file to pin keys, or flip strict to use "
-            "~/.ssh/known_hosts. Hosts can override per-entry in their form.",
+            "Default: trust a new host on first contact and pin its key "
+            "(refused if it changes later). Point known_hosts at an OpenSSH "
+            "file to pin keys yourself; strict = true uses ~/.ssh/known_hosts, "
+            "false accepts any key. Hosts can override per-entry in their form.",
             classes="hint",
         )
         with Horizontal(classes="form-row"):
@@ -892,7 +923,11 @@ class _SSHPanel(Static):
             )
         with Horizontal(classes="form-row"):
             yield Label("Strict host keys:")
-            yield Switch(value=ssh.strict_host_key_checking, id="ssh-strict")
+            yield Input(
+                value=ssh.strict_host_key_checking,
+                placeholder="empty = pin on first use, true, or false (accept any)",
+                id="ssh-strict",
+            )
 
         yield Static("Default credentials", classes="section-heading")
         yield Static(
@@ -948,8 +983,6 @@ class _SSHPanel(Static):
             self.draft.ssh.enabled = event.value
         elif event.switch.id == "ssh-inherit":
             self.draft.ssh.inherit_proxmox_nodes = event.value
-        elif event.switch.id == "ssh-strict":
-            self.draft.ssh.strict_host_key_checking = event.value
         self.on_change()
 
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -958,6 +991,9 @@ class _SSHPanel(Static):
             ssh.vmid_to_ip = event.value.strip()
         elif event.input.id == "ssh-known-hosts":
             ssh.known_hosts = event.value.strip()
+        elif event.input.id == "ssh-strict":
+            value = event.value.strip().lower()
+            ssh.strict_host_key_checking = value if value in ("true", "false") else ""
         elif event.input.id == "ssh-def-user":
             ssh.defaults.user = event.value.strip() or "root"
         elif event.input.id == "ssh-def-key":

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import asyncssh
@@ -54,42 +56,143 @@ def _prune_ssh_sessions() -> None:
         del _ssh_sessions[eid]
 
 
+class HostKeyChangedError(Exception):
+    """A host presented a different key than the one recorded on first contact."""
+
+
+# Name of the managed known_hosts file used for trust-on-first-use, kept
+# beside clients.json so it lives on the same persistent volume.
+TOFU_KNOWN_HOSTS_NAME = "ssh_known_hosts"
+
+
+@dataclass(frozen=True)
+class HostKeyPolicy:
+    """How a connection verifies the server's host key.
+
+    * ``file``: only keys listed in ``path`` (an OpenSSH known_hosts file).
+    * ``system``: only keys in the user's ``~/.ssh/known_hosts``.
+    * ``tofu``: like OpenSSH ``accept-new``. A host never seen before is
+      trusted and its key recorded in ``path``; afterwards only that key is
+      accepted.
+    * ``any``: accept every key (explicit ``strict_host_key_checking: false``).
+    """
+
+    mode: str
+    path: str | None = None
+
+
+def tofu_known_hosts_path(config: Config) -> Path:
+    clients = os.environ.get("BEACONMCP_CLIENTS_FILE") or str(config.server.clients_file)
+    return Path(clients).expanduser().parent / TOFU_KNOWN_HOSTS_NAME
+
+
+def host_key_policy(config: Config, spec: SSHHost) -> HostKeyPolicy:
+    """Resolve the host-key policy for ``spec`` from the YAML settings.
+
+    Per-host ``known_hosts`` / ``strict_host_key_checking`` win over the
+    ``ssh:`` level ones; ``None`` means "inherit". A known_hosts file, once
+    set at either level, always applies (overrides only tighten). With
+    nothing set, new hosts are trusted on first use and pinned.
+    """
+    ssh = config.ssh
+    known_hosts = spec.known_hosts or (ssh.known_hosts if ssh else None)
+    strict = spec.strict_host_key_checking
+    if strict is None and ssh is not None:
+        strict = ssh.strict_host_key_checking
+    if known_hosts:
+        return HostKeyPolicy("file", os.path.expanduser(known_hosts))
+    if strict is True:
+        return HostKeyPolicy("system")
+    if strict is False:
+        return HostKeyPolicy("any")
+    return HostKeyPolicy("tofu", str(tofu_known_hosts_path(config)))
+
+
+_tofu_lock = threading.Lock()
+
+
+def _known_host_pattern(host: str, port: int) -> str:
+    return host if port == 22 else f"[{host}]:{port}"
+
+
+def _load_known_hosts(path: str) -> asyncssh.SSHKnownHosts:
+    if os.path.isfile(path):
+        return asyncssh.read_known_hosts(path)
+    return asyncssh.import_known_hosts("")
+
+
+class _TofuClient(asyncssh.SSHClient):
+    """Accepts and records the key of a host the managed file doesn't know.
+
+    asyncssh only calls ``validate_host_public_key`` when the presented key
+    is not among the trusted keys loaded from the managed file. If that file
+    already holds keys for this host the key has changed, and it is refused.
+    """
+
+    def __init__(self, path: str, host: str, port: int) -> None:
+        self._path = path
+        self._host = host
+        self._port = port
+        self.changed = False
+
+    def validate_host_public_key(self, host: str, addr: str, port: int, key) -> bool:
+        with _tofu_lock:
+            known = _load_known_hosts(self._path)
+            if known.match(host, addr, port)[0]:
+                self.changed = True
+                return False
+            line = key.export_public_key("openssh").decode().split()
+            entry = f"{_known_host_pattern(self._host, self._port)} {line[0]} {line[1]}\n"
+            os.makedirs(os.path.dirname(self._path) or ".", exist_ok=True)
+            fd = os.open(self._path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "a") as f:
+                f.write(entry)
+        return True
+
+
 async def _connect_to_host(
     spec: SSHHost,
-    *,
-    known_hosts: str | None = None,
-    strict_host_key_checking: bool = False,
+    policy: HostKeyPolicy,
 ) -> asyncssh.SSHClientConnection:
     """Open an asyncssh connection to a declared host using its auth method.
 
     Exposed at module level so BMC jump-host tunneling in ``bmc/hp_ilo.py``
     can reuse the same auth plumbing (password vs. key_file, port override,
-    trusted host keys) instead of duplicating it.
-
-    Host-key verification:
-    * ``known_hosts`` (path): asyncssh loads the file and refuses unknown keys.
-    * ``strict_host_key_checking=True`` with no ``known_hosts``: use the
-      caller's ``~/.ssh/known_hosts`` (asyncssh's default when the kwarg
-      is omitted entirely).
-    * Neither: pass ``known_hosts=None`` -- accept any key. Default to keep
-      existing trusted-LAN deployments working unchanged.
+    host-key policy from :func:`host_key_policy`) instead of duplicating it.
     """
     connect_kwargs: dict[str, Any] = {
         "host": spec.host,
         "port": spec.port,
         "username": spec.user,
     }
-    if known_hosts:
-        connect_kwargs["known_hosts"] = os.path.expanduser(known_hosts)
-    elif not strict_host_key_checking:
-        # Trusted-LAN default.
+    tofu_client: _TofuClient | None = None
+    if policy.mode == "file":
+        connect_kwargs["known_hosts"] = policy.path
+    elif policy.mode == "any":
         connect_kwargs["known_hosts"] = None
-    # else: omit the kwarg -> asyncssh uses ~/.ssh/known_hosts automatically.
+    elif policy.mode == "tofu":
+        assert policy.path is not None
+        connect_kwargs["known_hosts"] = _load_known_hosts(policy.path)
+        tofu_client = _TofuClient(policy.path, spec.host, spec.port)
+        connect_kwargs["client_factory"] = lambda: tofu_client
+    # "system": omit the kwarg -> asyncssh uses ~/.ssh/known_hosts.
     if spec.password:
         connect_kwargs["password"] = spec.password
     elif spec.key_file:
         connect_kwargs["client_keys"] = [os.path.expanduser(spec.key_file)]
-    return await asyncssh.connect(**connect_kwargs)
+    try:
+        return await asyncssh.connect(**connect_kwargs)
+    except asyncssh.HostKeyNotVerifiable as exc:
+        if tofu_client is not None and tofu_client.changed:
+            pattern = _known_host_pattern(spec.host, spec.port)
+            raise HostKeyChangedError(
+                f"SSH host key for {spec.name!r} ({pattern}) does not match the "
+                f"key recorded on first contact in {policy.path}. Someone may "
+                "be intercepting the connection. If the host was reinstalled "
+                f"or its keys regenerated, remove its entry (ssh-keygen -R "
+                f"'{pattern}' -f {policy.path}) and retry."
+            ) from exc
+        raise
 
 
 class SSHClient:
@@ -223,19 +326,8 @@ class SSHClient:
                 pass
             del _connection_cache[cache_key]
 
-        global_kh = self._config.ssh.known_hosts if self._config.ssh else None
-        global_strict = (
-            self._config.ssh.strict_host_key_checking if self._config.ssh else False
-        )
-        # Per-host overrides win; ``None`` means "inherit the global setting".
-        kh = host_spec.known_hosts if host_spec.known_hosts is not None else global_kh
-        strict = (
-            host_spec.strict_host_key_checking
-            if host_spec.strict_host_key_checking is not None
-            else global_strict
-        )
         conn = await _connect_to_host(
-            host_spec, known_hosts=kh, strict_host_key_checking=strict,
+            host_spec, host_key_policy(self._config, host_spec),
         )
         _connection_cache[cache_key] = (conn, time.time())
         return conn

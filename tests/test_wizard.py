@@ -45,7 +45,7 @@ def test_render_yaml_round_trips_host_key_and_server_paths(tmp_path: Path) -> No
     draft.server.tokens_db = "/var/lib/beaconmcp/tokens.db"
     draft.server.audit_log = "-"
     draft.ssh.known_hosts = "/etc/beaconmcp/known_hosts"
-    draft.ssh.strict_host_key_checking = True
+    draft.ssh.strict_host_key_checking = "true"
     draft.ssh.defaults.key_file = "~/.ssh/beaconmcp"
     draft.ssh.hosts.append(SSHHostDraft(
         name="vps",
@@ -67,7 +67,7 @@ def test_render_yaml_round_trips_host_key_and_server_paths(tmp_path: Path) -> No
     assert reloaded.server.tokens_db == "/var/lib/beaconmcp/tokens.db"
     assert reloaded.server.audit_log == "-"
     assert reloaded.ssh.known_hosts == "/etc/beaconmcp/known_hosts"
-    assert reloaded.ssh.strict_host_key_checking is True
+    assert reloaded.ssh.strict_host_key_checking == "true"
     host = reloaded.ssh.hosts[0]
     assert host.known_hosts == "/etc/beaconmcp/vps_known_hosts"
     assert host.strict_host_key_checking == "false"
@@ -93,7 +93,7 @@ ssh:
     draft = load_yaml_into_draft(cfg)
 
     assert draft.ssh.known_hosts == ""
-    assert draft.ssh.strict_host_key_checking is False
+    assert draft.ssh.strict_host_key_checking == ""
     assert draft.ssh.hosts[0].known_hosts == ""
     assert draft.ssh.hosts[0].strict_host_key_checking == ""
 
@@ -112,3 +112,27 @@ server:
     # 0 means "never expires" -- it must not be dropped as falsy.
     assert draft.server.named_token_ttl == "0"
     assert "named_token_ttl: 0" in render_yaml(draft)
+
+
+def test_render_yaml_round_trips_verify_ssl_ca_and_explicit_strict_false(
+    tmp_path: Path,
+) -> None:
+    from beaconmcp.wizard import PVENodeDraft
+
+    draft = ConfigDraft()
+    draft.pve_nodes.append(PVENodeDraft(
+        name="pve1", host="10.0.0.1", token_id="root@pam!t", token_secret_env="PVE1",
+    ))
+    draft.verify_ssl_ca = "/etc/beaconmcp/pve-root-ca.pem"
+    # An explicit opt-out must survive a save: unset now means "pin on first use".
+    draft.ssh.strict_host_key_checking = "false"
+    yaml_text = render_yaml(draft)
+    assert "verify_ssl: /etc/beaconmcp/pve-root-ca.pem" in yaml_text
+    assert "strict_host_key_checking: false" in yaml_text
+
+    cfg = tmp_path / "beaconmcp.yaml"
+    cfg.write_text(yaml_text, encoding="utf-8")
+    reloaded = load_yaml_into_draft(cfg)
+    assert reloaded.verify_ssl_ca == "/etc/beaconmcp/pve-root-ca.pem"
+    assert reloaded.ssh.strict_host_key_checking == "false"
+    assert render_yaml(reloaded) == yaml_text
