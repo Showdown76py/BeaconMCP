@@ -55,7 +55,7 @@ def stack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     captured: dict[str, Any] = {}
     # `_run_http` does `import uvicorn` locally, so patching the attribute on
     # the module is enough; the fake keeps the server from binding a port.
-    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: captured.update(app=app))
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: captured.update(app=app, uvicorn_kw=kw))
 
     # Seed a client before the build: `_run_http` loads clients.json itself.
     client_id, _secret, _totp = auth.ClientStore(tmp_path / "clients.json").create("t")
@@ -118,6 +118,13 @@ async def _handshake(c: httpx.AsyncClient, token: str, path: str = "/mcp") -> di
     done = await c.post(path, json=_rpc("notifications/initialized"), headers=h)
     assert done.status_code == 202, done.text
     return h
+
+
+def test_stop_does_not_wait_forever_on_open_requests(stack) -> None:
+    # uvicorn waits for every connection to close by default; one stalled
+    # request then held restarts until systemd SIGKILLed the process at 90 s.
+    grace = stack["uvicorn_kw"].get("timeout_graceful_shutdown")
+    assert grace is not None and 0 < grace < 90
 
 
 async def test_missing_bearer_is_401_with_resource_metadata(stack) -> None:

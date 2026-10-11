@@ -120,6 +120,12 @@ _CF_LOG_INTERVAL_SECONDS = 300.0
 _cf_log_state = {"last": 0.0, "suppressed": 0}
 _cf_log_lock = threading.Lock()
 
+#: How long a stop waits for in-flight requests before cancelling them.
+#: uvicorn waits forever by default, so one request that never finishes (a
+#: stalled upload, a long tool call) held every restart until systemd's
+#: 90 s stop timeout SIGKILLed the process, skipping the app's shutdown.
+_SHUTDOWN_GRACE_SECONDS = 10
+
 
 def _log_cloudflare_unauthorized(cf_ray: str) -> None:
     now = time.monotonic()
@@ -2443,7 +2449,14 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
     # helpers -- their trusted-proxy branch could never open. Every scheme read
     # goes through the x-forwarded-proto header directly, so nothing else needs
     # uvicorn to interpret the forwarded headers for us.
-    uvicorn.run(app, host=host, port=port, log_level="info", proxy_headers=False)
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_level="info",
+        proxy_headers=False,
+        timeout_graceful_shutdown=_SHUTDOWN_GRACE_SECONDS,
+    )
 
 
 def _build_dashboard_routes(client_store, token_store, totp_locked,
