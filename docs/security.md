@@ -100,8 +100,9 @@ Things worth knowing before you enrol:
 - Registrations, revocations and passkey sign-ins are recorded in the audit log
   (`dashboard.passkey.*`, `auth.passkey.*`, and `login`/`authorize` events tagged `via=passkey`).
 
-Passkey ceremonies are rate-limited per IP by the same limiter that guards `/app/login`, and a TOTP
-lockout also blocks the passkey path for that client.
+Passkey ceremonies are rate-limited per IP by the same limiter that guards `/app/login`. A TOTP
+lockout does not block them: a passkey cannot be guessed, so it stays the owner's way in while
+someone burns the client's TOTP budget.
 
 Manage enrolled credentials from `/app/tokens`, or drop them all for a client with:
 

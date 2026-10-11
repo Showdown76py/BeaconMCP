@@ -117,3 +117,41 @@ def test_unknown_ip_is_its_own_source(clock) -> None:
         guard.record_failure("c1")
     assert guard.locked("c1")
     assert not guard.locked("c1", OWNER)
+
+
+def test_default_per_client_cap_is_ten(clock) -> None:
+    """Two addresses at the per-source limit are enough to hit the client cap."""
+    guard = TotpLockout()
+    for ip in ("203.0.113.1", "203.0.113.2"):
+        for _ in range(5):
+            guard.record_failure("c1", ip)
+    assert guard.locked("c1", OWNER)
+
+
+def test_forwarded_header_without_trusted_proxies_warns_once(caplog, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(ratelimit, "_forwarding_warned", False)
+    request = SimpleNamespace(
+        client=SimpleNamespace(host="10.0.0.2"),
+        headers={"x-forwarded-for": ATTACKER},
+    )
+    with caplog.at_level("WARNING", logger="beaconmcp"):
+        assert ratelimit.client_ip(request) == "10.0.0.2"
+        ratelimit.client_ip(request)
+    warnings = [r for r in caplog.records if "trusted_proxies is empty" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "10.0.0.2" in warnings[0].getMessage()
+
+
+def test_no_warning_when_the_proxy_is_trusted(caplog, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(ratelimit, "_forwarding_warned", False)
+    request = SimpleNamespace(
+        client=SimpleNamespace(host="10.0.0.2"),
+        headers={"x-forwarded-for": ATTACKER},
+    )
+    with caplog.at_level("WARNING", logger="beaconmcp"):
+        assert ratelimit.client_ip(request, ("10.0.0.2",)) == ATTACKER
+    assert not [r for r in caplog.records if "trusted_proxies" in r.getMessage()]

@@ -1182,7 +1182,7 @@ def _run_http(mcp, host: str, port: int):
     # wrong codes from one IP lock that IP out for 5 minutes, and 20 from any
     # mix of IPs lock the client. Keyed on client_id alone, anyone who knew a
     # client_id could lock its owner out of every 2FA path.
-    totp_lockout = TotpLockout(per_source=5, per_client=20, lockout_seconds=300)
+    totp_lockout = TotpLockout(per_source=5, per_client=10, lockout_seconds=300)
     totp_locked = totp_lockout.locked
     totp_record_failure = totp_lockout.record_failure
     totp_record_success = totp_lockout.record_success
@@ -1680,11 +1680,9 @@ def _run_http(mcp, host: str, port: int):
             return JSONResponse(
                 {"ok": False, "error": "Unknown client."}, status_code=400,
             )
-        if totp_locked(client_id, _ip(request)):
-            return JSONResponse(
-                {"ok": False, "error": "Too many attempts. Try again in 5 minutes."},
-                status_code=429,
-            )
+        # No TOTP-lockout check on the passkey path: a passkey cannot be
+        # guessed, so it stays the owner's way in while someone burns the
+        # client's TOTP budget. The per-IP guard above still applies.
         try:
             options, state = passkey_service.authentication_options(
                 request, client_id=_passkey_owner(client_id),
@@ -1713,11 +1711,6 @@ def _run_http(mcp, host: str, port: int):
                 status_code=400,
             )
         client_id = normalized["client_id"]
-        if totp_locked(client_id, _ip(request)):
-            return JSONResponse(
-                {"ok": False, "error": "Too many attempts. Try again in 5 minutes."},
-                status_code=429,
-            )
         credential = body.get("credential")
         state = str(body.get("state") or "")
         if not isinstance(credential, dict) or not state:

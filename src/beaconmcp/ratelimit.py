@@ -15,6 +15,7 @@ front if you need global state.
 from __future__ import annotations
 
 import ipaddress
+import logging
 import threading
 import time
 from collections import deque
@@ -111,7 +112,7 @@ class TotpLockout:
         self,
         *,
         per_source: int = 5,
-        per_client: int = 20,
+        per_client: int = 10,
         lockout_seconds: float = 300.0,
     ) -> None:
         self._per_source = per_source
@@ -209,6 +210,29 @@ def _is_trusted_proxy(ip_value: str, trusted_proxies: tuple[str, ...]) -> bool:
     return False
 
 
+_forwarding_warned = False
+
+
+def _warn_untrusted_forwarding(forwarded_for: str | None, peer: str | None) -> None:
+    """Say once that a proxy is forwarding but ``trusted_proxies`` is empty.
+
+    Behind a reverse proxy every request then comes from the proxy's own
+    address, so the per-IP limits (login, authorize, TOTP lockout) become
+    one budget shared by every visitor, and one attacker can spend it for
+    everyone.
+    """
+    global _forwarding_warned
+    if _forwarding_warned or not forwarded_for:
+        return
+    _forwarding_warned = True
+    logging.getLogger("beaconmcp").warning(
+        "X-Forwarded-For received from %s but server.trusted_proxies is empty: "
+        "every client behind that proxy shares one rate-limit and TOTP-lockout "
+        "budget. Add the proxy's address to server.trusted_proxies.",
+        peer or "an unknown peer",
+    )
+
+
 def client_ip(request: object, trusted_proxies: tuple[str, ...] = ()) -> str:
     """Best-effort client IP for a Starlette ``Request``.
 
@@ -222,6 +246,8 @@ def client_ip(request: object, trusted_proxies: tuple[str, ...] = ()) -> str:
     direct_ip = _coerce_ip(direct_peer_raw)
 
     headers = getattr(request, "headers", None)
+    if not trusted_proxies and headers is not None and hasattr(headers, "get"):
+        _warn_untrusted_forwarding(headers.get("x-forwarded-for"), direct_ip)
     if headers is not None and direct_ip and _is_trusted_proxy(direct_ip, trusted_proxies):
         fwd = headers.get("x-forwarded-for") if hasattr(headers, "get") else None
         if fwd:
