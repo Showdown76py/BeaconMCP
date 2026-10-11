@@ -423,8 +423,8 @@ def _cmd_check_startup(args):
                     transport = httpx.ASGITransport(app=app)
                     async with httpx.AsyncClient(
                         transport=transport, base_url="http://127.0.0.1",
-                    ) as client:
-                        return await client.get("/health")
+                    ) as http:
+                        return await http.get("/health")
 
             response = asyncio.run(_probe())
             if response.status_code != 200:
