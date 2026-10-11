@@ -172,6 +172,9 @@ _NEEDS_CONFIRMATION: frozenset[str] = frozenset({
     "proxmox_upload_file",
     "proxmox_download_file",
     "proxmox_delete_transfer",
+    # Mints a URL that writes into a guest; fetches arbitrary URLs into one.
+    "proxmox_upload_link",
+    "proxmox_fetch_url",
     # --- destructive / irreversible -----------------------------------
     "vm_bulk_action",
     "proxmox_vm_stop",

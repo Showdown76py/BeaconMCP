@@ -41,7 +41,7 @@ Tailscale IP, a VPN address, a bastion.
 | `server.named_token_ttl` | Lifetime of named API tokens, in seconds. Default `2592000` (30 days); `0` means never expires, revoke-only. OAuth access tokens and dashboard session bearers keep their fixed 24 h TTL either way. Env override: `BEACONMCP_NAMED_TOKEN_TTL`. |
 | `server.refresh_token_ttl` | Idle lifetime of OAuth refresh tokens (issued to `authorization_code` clients such as claude.ai, ChatGPT or Le Chat), in seconds. Default and maximum `86400` (24 h); `0` is rejected. Every refresh rotates the token and restarts this clock, but no sign-in outlives 24 h: every refresh token of a sign-in expires 24 h after the authorization, whatever this value says, and the client goes back through the TOTP page. A shorter value only adds an idle timeout inside that day. Env override: `BEACONMCP_REFRESH_TOKEN_TTL`. |
 | `server.audit_log` | JSON-lines audit log covering tool calls, dashboard logins, OAuth authorize and client revokes. Created owner-only (0600). Default `/opt/beaconmcp/audit.log`; `-` keeps stderr only. Env override: `BEACONMCP_AUDIT_LOG`. |
-| `server.transfers_max_mb` | Size cap for `proxmox_upload_file` / `proxmox_download_file`. Default 500. |
+| `server.transfers_max_mb` | Size cap for `proxmox_upload_file` / `proxmox_download_file` / `proxmox_upload_link` / `proxmox_fetch_url`. Default 500. |
 
 ## Proxmox
 

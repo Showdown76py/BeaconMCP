@@ -98,7 +98,7 @@ Gemini 2.5 Flash / Pro and `gemini-3-flash-preview` were retired from the picker
 
 The model's input is untrusted: a log line, a config file, or a web-search result can carry an injected instruction. So two classes of tool **never** run without manual approval from the chat UI.
 
-**Arbitrary code execution** — `ssh_run`, `proxmox_run`, and the primitives that become code execution in one hop (`proxmox_write_file`, `proxmox_upload_file`, `proxmox_download_file`, `proxmox_delete_transfer`). Writing `~/.ssh/authorized_keys` or a file under `/etc/cron.d` is exactly as good as a shell, which is why the file tools sit alongside the exec tools.
+**Arbitrary code execution** — `ssh_run`, `proxmox_run`, and the primitives that become code execution in one hop (`proxmox_write_file`, `proxmox_upload_file`, `proxmox_upload_link`, `proxmox_fetch_url`, `proxmox_download_file`, `proxmox_delete_transfer`). Writing `~/.ssh/authorized_keys` or a file under `/etc/cron.d` is exactly as good as a shell, which is why the file tools sit alongside the exec tools.
 
 **Destructive or irreversible** — `vm_bulk_action`, `proxmox_vm_stop`, `proxmox_vm_restart`, `proxmox_vm_migrate`, `proxmox_snapshot_rollback`, `proxmox_snapshot_delete`, `proxmox_backup_restore`, `bmc_power_off`, `bmc_power_reset`, and `beaconmcp_self_update` with `confirm=True` — which pulls new code, reinstalls dependencies and restarts the service, i.e. replaces the very process enforcing this gate.
 

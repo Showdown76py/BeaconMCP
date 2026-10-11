@@ -1194,6 +1194,7 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
 
     from . import audit
     from . import auth
+    from . import transfers
     from .auth import (
         TOTP_REPLAY_MESSAGE,
         ClientStore,
@@ -1219,6 +1220,9 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
                 path = "/app"
             elif path.startswith("/static/"):
                 path = "/static"
+            elif path.startswith(transfers.UPLOAD_PATH_PREFIX):
+                # The rest of the path is a live credential.
+                path = transfers.UPLOAD_PATH_PREFIX.rstrip("/")
 
             try:
                 response = await call_next(request)
@@ -2103,6 +2107,12 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         ):
             return await call_next(request)
 
+        # One-shot upload links: the token in the path is the credential,
+        # minted by an authenticated proxmox_upload_link call. The handler
+        # rejects unknown, expired and already used tokens.
+        if path.startswith(transfers.UPLOAD_PATH_PREFIX):
+            return await call_next(request)
+
         # Passkey ceremonies for /oauth/authorize. They are part of signing
         # in, so they cannot require a bearer -- there isn't one yet. Their
         # own guards are the WebAuthn signature, the TOTP lockout and the
@@ -2157,9 +2167,13 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         # Expose the bearer to downstream MCP tools via ContextVar so
         # security_end_session can revoke it after responding.
         token_var = current_bearer_token.set(bearer)
+        # Lets proxmox_upload_link build an absolute URL when no public_url
+        # is configured.
+        base_var = transfers.current_public_base.set(issuer)
         try:
             return await call_next(request)
         finally:
+            transfers.current_public_base.reset(base_var)
             current_bearer_token.reset(token_var)
 
     # OAuth Dynamic Client Registration plumbing. Only engaged when both
@@ -2381,6 +2395,11 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             ),
             Route("/oauth/token", oauth_token, methods=["POST"]),
             Route("/oauth/register", oauth_register, methods=["POST"]),
+            Route(
+                transfers.UPLOAD_PATH_PREFIX + "{token}",
+                transfers.make_upload_endpoint(tuple(config.server.trusted_proxies)),
+                methods=["PUT", "POST"],
+            ),
             *dcr_routes,
             *dashboard_routes,
             Mount("/", app=mcp_app),

@@ -185,3 +185,38 @@ async def test_unknown_host_is_rejected_with_421(stack) -> None:
             "/mcp", json=_INIT, headers=_headers(stack["token"], Host="evil.example.net"),
         )
     assert resp.status_code == 421
+
+
+async def test_upload_link_route_skips_bearer_auth(stack) -> None:
+    # The token in the path is the credential: no bearer, and an unknown
+    # token is the handler's 404, not the middleware's 401.
+    app = stack["app"]
+    async with app.router.lifespan_context(app), _client(app) as c:
+        resp = await c.put("/transfers/upload/not-a-real-token", content=b"x")
+        metrics = await c.get("/metrics")
+    assert resp.status_code == 404
+    assert "not-a-real-token" not in metrics.text
+
+
+async def test_upload_link_body_streams_through_middleware(stack, tmp_path) -> None:
+    from beaconmcp import transfers
+
+    received: dict[str, bytes] = {}
+
+    async def pusher(node, vmid, path, dest, verify):
+        received[dest] = path.read_bytes()
+        return {"status": "success"}
+
+    transfers.register_pusher(pusher)
+    link = transfers.get_store().issue(
+        node="pve1", vmid=100, dest="/root/f", max_bytes=1 << 20, staging_dir=tmp_path,
+    )
+    payload = b"\x00\x01binary\xff" * 5000
+    app = stack["app"]
+    try:
+        async with app.router.lifespan_context(app), _client(app) as c:
+            resp = await c.put(transfers.UPLOAD_PATH_PREFIX + link.token, content=payload)
+    finally:
+        transfers.register_pusher(None)
+    assert resp.status_code == 200, resp.text
+    assert received["/root/f"] == payload

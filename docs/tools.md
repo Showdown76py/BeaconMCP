@@ -1,6 +1,6 @@
 # MCP tools
 
-49 tools across eight modules. The infrastructure modules are only registered when the matching
+51 tools across eight modules. The infrastructure modules are only registered when the matching
 capability is configured, so an SSH-only deployment exposes the 2 SSH tools and nothing else from
 Proxmox or BMC. `security_end_session` and the two maintenance tools are always registered,
 whatever the topology.
@@ -90,7 +90,7 @@ Clients that did not negotiate the extension ignore `_meta.ui` and show the tool
 which is the same snapshot as data. Nothing breaks; you just don't get the frame. BeaconMCP's own
 `/app/chat` negotiates it and renders the panels inline.
 
-## Proxmox — system and files (9)
+## Proxmox — system and files (11)
 
 | Tool | Description |
 |------|-------------|
@@ -102,7 +102,28 @@ which is the same snapshot as data. Nothing breaks; you just don't get the frame
 | `proxmox_upload_file` | Stream a file from the staging directory into a VM (SFTP) or CT (SFTP + `pct push`), up to `server.transfers_max_mb`. Verifies SHA-256 by default. |
 | `proxmox_download_file` | Stream a file out of a VM (SFTP) or CT (`pct pull` + SFTP) into the staging directory, same cap and checksum. |
 | `proxmox_list_transfers` | List what's currently in the staging directory. |
+| `proxmox_upload_link` | Mint a one-shot HTTP link bound to a VM/CT path: `curl -T <file> <url>` writes the file into the guest (any bytes, up to `server.transfers_max_mb`). Pass `link_id` to read the outcome. See below. |
+| `proxmox_fetch_url` | Have the server download an http(s) URL and write it into a VM/CT, same cap and checksum. |
 | `proxmox_delete_transfer` | Delete a staged file by basename. |
+
+### Sending a local file into a guest
+
+MCP tool arguments are JSON, so a file can only ride inside a tool call as text. To send a real
+file, binary included, ask for a link and upload the raw bytes to it:
+
+```
+proxmox_upload_link(node="pve1", vmid=201, dest="/root/backup.tar.gz")
+  -> {"url": "https://beacon.example.com/transfers/upload/<token>", "link_id": "...", ...}
+
+curl -sS -T backup.tar.gz "https://beacon.example.com/transfers/upload/<token>"
+  -> {"status": "success", "bytes": ..., "sha256": "...", "checksum_verified": true}
+```
+
+The token in the URL is the credential, so the route needs no bearer. A link is bound to the
+node, VMID and path chosen when it was minted, works once, expires after `expires_in` seconds
+(default 600, at most 3600) and is forgotten on restart. The base of the URL is
+`features.dashboard.public_url` when set, otherwise the address the MCP request came in on.
+Behind Cloudflare, uploads are limited to 100 MB per request on the free plan.
 
 ## SSH (2)
 
