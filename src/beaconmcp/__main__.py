@@ -1204,7 +1204,7 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         current_bearer_token,
     )
     from .ratelimit import RateLimiter, TotpLockout, client_ip, forwarded_host
-    from .server import config
+    from .server import config, transport_security
 
     from .metrics import REGISTRY, auth_events, http_requests
 
@@ -2316,16 +2316,18 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
                         scope["raw_path"] = new_path.encode("ascii")
             await self._inner(scope, receive, send)
 
-    mcp_app = _McpSlugRewriteApp(mcp.streamable_http_app())
+    mcp_app = _McpSlugRewriteApp(
+        mcp.streamable_http_app(transport_security=transport_security)
+    )
 
-    # The MCP streamable-HTTP app starts its session manager task group in its
-    # own lifespan. When we Mount it under a parent Starlette, only the parent
-    # app's lifespan runs — so we forward the child's lifespan explicitly,
-    # otherwise requests fail with "Task group is not initialized".
-    inner_mcp = mcp_app._inner
+    # The MCP streamable-HTTP app starts its session manager in its own
+    # lifespan. Mount does not run a child's lifespan, so the parent
+    # Starlette's lifespan must start the StreamableHTTP session manager
+    # itself; mcp 2.x prescribes ``session_manager.run()`` for that, otherwise
+    # requests fail with "Task group is not initialized".
     @asynccontextmanager
     async def lifespan(_app):
-        async with inner_mcp.router.lifespan_context(_app):
+        async with mcp.session_manager.run():
             yield
 
     dcr_routes: list = []

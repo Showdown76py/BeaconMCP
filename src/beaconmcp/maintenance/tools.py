@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from .. import audit, updates
 from ..auth import current_client_id
@@ -12,7 +12,7 @@ from ..config import UpdatesConfig
 
 
 def register_maintenance_tools(
-    mcp: FastMCP,
+    mcp: MCPServer,
     settings: UpdatesConfig | None = None,
     *,
     config_path: Path | None = None,

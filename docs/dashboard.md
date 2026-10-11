@@ -121,7 +121,7 @@ The allow-list is hard-coded in `src/beaconmcp/dashboard/chat.py` (`_NEEDS_CONFI
 
 Tools that carry `_meta.ui.resourceUri` — `proxmox_vm_panel`, `proxmox_logs_panel`, `cluster_overview_interactive` — render as a live interface in the chat instead of a block of JSON. The dashboard implements both halves of the [MCP Apps extension](https://modelcontextprotocol.io/extensions/apps/overview): it announces `io.modelcontextprotocol/ui` when it opens its MCP session, and it plays host to the `ui://` document over `postMessage`.
 
-The extension is declared through `ClientCapabilities.extensions`, a field mcp only types in 2.0. The `<2` pin is not in the way: the model accepts extra fields, so the capability serialises under the name the spec gives it and the server reads the same JSON either way (`dashboard/mcp_bridge.py`).
+The extension is declared through `ClientCapabilities.extensions`, a field mcp types from 2.0 on (the project pins `mcp>=2.3,<3`). Even without that typing the model accepts extra fields, so the capability serialises under the name the spec gives it and the server reads the same JSON either way (`dashboard/mcp_bridge.py`).
 
 ### How a panel is isolated
 
@@ -191,7 +191,7 @@ Constants live in `src/beaconmcp/dashboard/usage.py` — update them when Google
 
 ## Internal MCP architecture
 
-The dashboard keeps its own MCP session (`streamablehttp_client` + `ClientSession`) pointed at the local `/mcp` endpoint (`http://127.0.0.1:8420/mcp`). Tools are converted manually into `FunctionDeclaration` objects and the `function_call` / `function_response` loop is orchestrated server-side (AFC SDK disabled via `AutomaticFunctionCallingConfig(disable=True)`). This works around known `google-genai` bugs with Gemini 2.5 Pro + MCP + streaming + thinking.
+The dashboard keeps its own MCP session (`streamable_http_client` + `ClientSession`) pointed at the local `/mcp` endpoint (`http://127.0.0.1:8420/mcp`). Tools are converted manually into `FunctionDeclaration` objects and the `function_call` / `function_response` loop is orchestrated server-side (AFC SDK disabled via `AutomaticFunctionCallingConfig(disable=True)`). This works around known `google-genai` bugs with Gemini 2.5 Pro + MCP + streaming + thinking.
 
 > A remote mode (server-driven `McpServer`) exists but is disabled: requests through Cloudflare Tunnel lose the `Authorization` header, producing systematic 500 INTERNAL responses. Setting `BEACONMCP_DASHBOARD_MCP_MODE=remote` logs a startup warning and returns an actionable error on every chat turn.
 

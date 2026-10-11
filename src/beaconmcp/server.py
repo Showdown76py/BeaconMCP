@@ -1,12 +1,15 @@
 import base64
 import inspect
 import os
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
 
 import anyio
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.shared.exceptions import MCPError
 from mcp.types import Icon
 
 from .bmc import build_registry as build_bmc_registry
@@ -70,7 +73,7 @@ def _load_icons() -> list[Icon]:
     return [
         Icon(
             src=f"data:image/webp;base64,{data}",
-            mimeType="image/webp",
+            mime_type="image/webp",
             sizes=["512x512"],
         )
     ]
@@ -119,29 +122,44 @@ def _build_instructions() -> str:
     return body + entry_line
 
 
-mcp = FastMCP(
+try:
+    _version = _pkg_version("beaconmcp")
+except PackageNotFoundError:
+    _version = ""
+
+# Must be passed to ``mcp.streamable_http_app(transport_security=...)``: the
+# 2.x MCPServer constructor has no such parameter, and with
+# ``transport_security=None`` the factory auto-enables a loopback-only
+# allowlist (``127.0.0.1:*``, ``localhost:*``), so every public Host header
+# would get a 421.
+transport_security = TransportSecuritySettings(
+    enable_dns_rebinding_protection=True,
+    allowed_hosts=_allowed_hosts,
+    allowed_origins=_allowed_origins,
+)
+
+mcp = MCPServer(
     "beaconmcp",
     instructions=_build_instructions(),
     website_url="https://github.com/Showdown76py/BeaconMCP",
     icons=_load_icons(),
-    transport_security=TransportSecuritySettings(
-        enable_dns_rebinding_protection=True,
-        allowed_hosts=_allowed_hosts,
-        allowed_origins=_allowed_origins,
-    ),
+    version=_version,
 )
 
 
 # Wrap mcp.tool to inject metrics tracking.
 #
-# FastMCP (mcp 1.27) runs sync tool functions INLINE in the asyncio event
-# loop -- it never offloads them to a thread. Most Proxmox tools are sync
+# The wrapper is kept on purpose: it measures latency, emits the audit event,
+# and keeps blocking work off the event loop. Most Proxmox tools are sync
 # ``def`` wrappers around blocking proxmoxer calls (5s timeout x 2 retries),
-# so a single unreachable node would otherwise freeze the entire server.
-# We therefore make EVERY registered tool async from FastMCP's view and push
-# sync bodies onto a worker thread, keeping blocking work off the event loop.
-# ``@wraps(func)`` preserves the original signature so FastMCP still derives
-# the tool input schema correctly.
+# so we run sync bodies on a worker thread via ``anyio.to_thread``. The SDK
+# only ever sees async tools (it offloads sync functions itself, so an
+# ``async def`` wrapper avoids a double offload). ``@wraps(func)`` preserves
+# the original signature so the tool input schema is still derived correctly.
+#
+# In mcp 2.x only ``ToolError`` keeps its message for the model; any other
+# exception becomes a generic "Error executing tool X" and the text stays
+# server-side. We therefore convert unexpected exceptions to ``ToolError``.
 _orig_tool = mcp.tool
 def _metric_tool(*args, **kwargs):
     def decorator(func):
@@ -158,9 +176,15 @@ def _metric_tool(*args, **kwargs):
                 return await anyio.to_thread.run_sync(
                     partial(func, *f_args, **f_kwargs)
                 )
-            except Exception:
+            except anyio.get_cancelled_exc_class():
+                status = "cancelled"
+                raise
+            except (ToolError, MCPError):
                 status = "error"
                 raise
+            except Exception as e:
+                status = "error"
+                raise ToolError(str(e)) from e
             finally:
                 latency = (time.monotonic() - start) * 1000
                 tool_calls.inc(tool=tool_name, status=status)

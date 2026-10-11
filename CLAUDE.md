@@ -18,7 +18,7 @@ beaconmcp serve                            # Start HTTP server on :8420
 ```
 src/beaconmcp/
   __main__.py         CLI: serve + auth + validate-config
-  server.py           FastMCP server, registers every tool module
+  server.py           MCPServer (`mcp.server.mcpserver`), registers every tool module
   config.py           YAML loader with ${ENV} resolver + legacy env fallback
   auth.py             OAuth 2.1 client credentials (ClientStore + TokenStore)
   proxmox/

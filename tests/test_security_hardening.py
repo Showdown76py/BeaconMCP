@@ -174,7 +174,7 @@ def test_read_only_calls_do_not_require_confirmation(name: str, args: dict) -> N
 def test_dry_run_does_not_bypass_gate_on_tools_lacking_it(name: str, args: dict) -> None:
     """A stray ``dry_run`` must not talk a tool past the modal.
 
-    None of these tools declare ``dry_run``, and FastMCP validates
+    None of these tools declare ``dry_run``, and the MCP SDK validates
     arguments with a plain pydantic model, so the extra key is dropped
     server-side and the call runs for real. Trusting the argument would
     make the gate bypassable by adding one word to an injected

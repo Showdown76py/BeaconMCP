@@ -10,13 +10,10 @@ Both hats need the same three things, which is what lives here: a session
 that declares the Apps extension, a way to read a ``ui://`` document, and
 the ``_meta.ui.resourceUri`` lookup that ties a tool to its panel.
 
-**On the mcp 1.x pin.** A client announces Apps support through
-``ClientCapabilities.extensions``, a field that only exists in mcp 2.0 --
-which is why this looked blocked behind the ``<2`` pin. It is not:
-``ClientCapabilities`` is declared ``extra="allow"``, so the field rides
-onto the wire under exactly the name 2.0 will emit, and the server reads
-the same JSON either way. The pin costs us the typed attribute, not the
-capability.
+**Apps capability.** A client announces Apps support through
+``ClientCapabilities.extensions``. In mcp 2.x ``ClientSession`` takes an
+``extensions`` mapping and puts it in the handshake itself, so no subclass
+or request rewriting is needed.
 """
 
 from __future__ import annotations
@@ -25,9 +22,9 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
-from mcp import types
+import httpx2
 from mcp.client.session import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 from pydantic import AnyUrl
 
 # Extension identifier and content type from the MCP Apps spec (SEP-1865).
@@ -41,27 +38,7 @@ UI_PROTOCOL_VERSION = "2026-01-26"
 _UI_CAPABILITY: dict[str, Any] = {"mimeTypes": [APP_MIME_TYPE]}
 
 
-class AppsClientSession(ClientSession):
-    """A ``ClientSession`` that declares the MCP Apps extension.
-
-    ``ClientSession.initialize()`` builds its own ``ClientCapabilities`` and
-    takes no hook for extra fields, so rather than reimplement it -- version
-    negotiation, the ``notifications/initialized`` follow-up, the capability
-    bookkeeping -- we tag the outgoing ``InitializeRequest`` on its way past.
-    Everything else stays the SDK's business.
-    """
-
-    async def send_request(self, request, *args, **kwargs):  # type: ignore[override]
-        root = getattr(request, "root", None)
-        if isinstance(root, types.InitializeRequest):
-            # extra="allow" on ClientCapabilities: the attribute lands in
-            # __pydantic_extra__ and serialises as a real field.
-            setattr(
-                root.params.capabilities,
-                "extensions",
-                {UI_EXTENSION_ID: dict(_UI_CAPABILITY)},
-            )
-        return await super().send_request(request, *args, **kwargs)
+CLIENT_EXTENSIONS: dict[str, dict[str, Any]] = {UI_EXTENSION_ID: _UI_CAPABILITY}
 
 
 @asynccontextmanager
@@ -74,19 +51,25 @@ async def open_session(
 ) -> AsyncIterator[ClientSession]:
     """Open an initialized Apps-aware session against ``mcp_url``.
 
-    ``streamablehttp_client`` (no underscore) is the variant that threads
-    ``headers`` through every request; the other one drops the bearer and
-    the handshake 401s on loopback. Same reason as in ``chat.py``.
+    In mcp 2.x the bearer header and the timeouts live on the
+    ``httpx2.AsyncClient`` handed to ``streamable_http_client``; ``timeout``
+    is the connect/write/pool budget and ``sse_read_timeout`` the read one.
     """
-    async with streamablehttp_client(
-        mcp_url,
+    async with httpx2.AsyncClient(
         headers={"Authorization": f"Bearer {bearer}"},
-        timeout=timeout,
-        sse_read_timeout=sse_read_timeout,
-    ) as (read_stream, write_stream, _session_id):
-        async with AppsClientSession(read_stream, write_stream) as session:
-            await session.initialize()
-            yield session
+        timeout=httpx2.Timeout(float(timeout), read=float(sse_read_timeout)),
+    ) as http:
+        async with streamable_http_client(mcp_url, http_client=http) as (
+            read_stream,
+            write_stream,
+        ):
+            async with ClientSession(
+                read_stream,
+                write_stream,
+                extensions={k: dict(v) for k, v in CLIENT_EXTENSIONS.items()},
+            ) as session:
+                await session.initialize()
+                yield session
 
 
 def ui_resource_uri(meta: Any) -> str | None:
@@ -132,16 +115,16 @@ def call_result_to_wire(result: Any) -> dict[str, Any]:
         if text is not None:
             content.append({"type": "text", "text": text})
             continue
-        mime = getattr(item, "mimeType", None)
+        mime = getattr(item, "mime_type", None)
         content.append({
             "type": getattr(item, "type", "resource") or "resource",
             "mimeType": mime or "application/octet-stream",
         })
     wire: dict[str, Any] = {
         "content": content,
-        "isError": bool(getattr(result, "isError", False)),
+        "isError": bool(result.is_error),
     }
-    structured = getattr(result, "structuredContent", None)
+    structured = result.structured_content
     if structured is not None:
         wire["structuredContent"] = structured
     return wire
@@ -169,7 +152,7 @@ async def read_ui_resource(session: ClientSession, uri: str) -> str:
         text = getattr(item, "text", None)
         if text is None:
             continue
-        mime = (getattr(item, "mimeType", None) or "").replace(" ", "")
+        mime = (getattr(item, "mime_type", None) or "").replace(" ", "")
         if mime != APP_MIME_TYPE:
             raise UiResourceError(f"unexpected mime type {mime or '(none)'}")
         return text

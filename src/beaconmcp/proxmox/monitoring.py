@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from ..utils import filter_fields
 from .client import ProxmoxClient
 
 
-def register_monitoring_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
+def register_monitoring_tools(mcp: MCPServer, client: ProxmoxClient) -> None:
     """Register all Proxmox monitoring and diagnostic tools."""
 
     @mcp.tool()

@@ -41,6 +41,15 @@ Detection is not a guess about how you *should* have installed it:
 | pip distribution | `pip install --upgrade 'beaconmcp @ git+https://github.com/Showdown76py/BeaconMCP.git'` |
 | unknown | Re-run `deploy/install.sh` from a checkout |
 
+## Upgrading to the mcp 2.x SDK
+
+This release moves the SDK dependency to `mcp>=2.3,<3` (the server now builds on `MCPServer`).
+
+1. Pip or git install: run `<venv>/bin/pip install -e .` (or the pip command from the table above), then `systemctl restart beaconmcp`.
+2. Docker: `docker compose pull` then `docker compose up -d`, or rebuild the image if you build it yourself.
+3. Run `beaconmcp validate-config`: it works unchanged, your `beaconmcp.yaml` needs no edit.
+4. Roll back by checking out the previous tag and reinstalling, then restart.
+
 ## MCP tools
 
 Two tools, registered on every deployment shape:

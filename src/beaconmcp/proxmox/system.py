@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from .client import ProxmoxClient
 
@@ -165,7 +165,7 @@ def _qemu_file_size(client: ProxmoxClient, node: str, vmid: int, path: str) -> i
     return None
 
 
-def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any = None) -> None:
+def register_system_tools(mcp: MCPServer, client: ProxmoxClient, ssh_client: Any = None) -> None:
     """Register Proxmox system administration and command execution tools."""
 
 

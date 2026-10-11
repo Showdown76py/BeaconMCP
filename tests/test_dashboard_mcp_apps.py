@@ -16,6 +16,7 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import anyio
 import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
@@ -52,13 +53,11 @@ PANEL_HTML = "<!doctype html><title>vm</title><script>1</script>"
 
 @pytest.mark.anyio
 async def test_initialize_declares_the_apps_extension(monkeypatch):
-    """The extension rides on ``ClientCapabilities`` even on mcp 1.x.
+    """``ClientSession(extensions=...)`` puts the ui capability in the handshake.
 
-    ``extensions`` only becomes a typed field in mcp 2.0, which is what made
-    this look blocked behind the ``<2`` pin. It is not: the model allows
-    extras, so the field serialises under the name the spec gives it. If a
-    future SDK bump makes ``ClientCapabilities`` strict, this fails here
-    rather than silently dropping the capability at runtime.
+    In mcp 2.x the extension is a typed constructor argument. If a later SDK
+    bump stops sending it, the server stops advertising ui:// panels to us
+    and nothing fails visibly, so pin the outgoing InitializeRequest here.
     """
     from mcp import types
     from mcp.client.session import ClientSession
@@ -67,52 +66,67 @@ async def test_initialize_declares_the_apps_extension(monkeypatch):
 
     async def fake_send_request(self, request, result_type, **kwargs):
         captured["request"] = request
-        return None
+        raise RuntimeError("stop after the handshake request")
 
     monkeypatch.setattr(ClientSession, "send_request", fake_send_request)
 
-    session = object.__new__(mcp_bridge.AppsClientSession)
-    request = types.ClientRequest(
-        types.InitializeRequest(
-            params=types.InitializeRequestParams(
-                protocolVersion=types.LATEST_PROTOCOL_VERSION,
-                capabilities=types.ClientCapabilities(),
-                clientInfo=types.Implementation(name="t", version="1"),
-            ),
-        )
+    read_send, read_recv = anyio.create_memory_object_stream(1)
+    write_send, write_recv = anyio.create_memory_object_stream(1)
+    session = ClientSession(
+        read_recv, write_send, extensions={k: dict(v) for k, v in mcp_bridge.CLIENT_EXTENSIONS.items()}
     )
-    await session.send_request(request, types.InitializeResult)
+    with pytest.raises(RuntimeError, match="stop after"):
+        await session.initialize()
 
-    wire = captured["request"].model_dump(by_alias=True, exclude_none=True)
-    extensions = wire["params"]["capabilities"]["extensions"]
-    assert extensions == {
-        "io.modelcontextprotocol/ui": {
-            "mimeTypes": ["text/html;profile=mcp-app"],
-        }
+    request = captured["request"]
+    assert isinstance(request, types.InitializeRequest)
+    assert request.params.capabilities.extensions == {
+        "io.modelcontextprotocol/ui": {"mimeTypes": ["text/html;profile=mcp-app"]}
     }
 
 
 @pytest.mark.anyio
-async def test_non_initialize_requests_pass_through_untouched(monkeypatch):
-    """Only the handshake is rewritten; every other request goes as-is."""
-    from mcp import types
-    from mcp.client.session import ClientSession
+async def test_open_session_wires_bearer_timeouts_and_extensions(monkeypatch):
+    import httpx2
 
-    captured: dict = {}
+    seen: dict = {}
 
-    async def fake_send_request(self, request, result_type, **kwargs):
-        captured["request"] = request
-        return None
+    @asynccontextmanager
+    async def fake_transport(url, *, http_client=None, **kwargs):
+        seen["url"] = url
+        seen["http"] = http_client
+        yield ("read", "write")
 
-    monkeypatch.setattr(ClientSession, "send_request", fake_send_request)
+    class FakeSession:
+        def __init__(self, read, write, **kwargs):
+            seen["streams"] = (read, write)
+            seen["kwargs"] = kwargs
+            seen["initialized"] = False
 
-    session = object.__new__(mcp_bridge.AppsClientSession)
-    original = types.ClientRequest(types.ListToolsRequest(method="tools/list"))
-    await session.send_request(original, types.ListToolsResult)
+        async def __aenter__(self):
+            return self
 
-    assert captured["request"] is original
-    assert captured["request"].model_dump(by_alias=True, exclude_none=True) == {
-        "method": "tools/list",
+        async def __aexit__(self, *exc):
+            return False
+
+        async def initialize(self):
+            seen["initialized"] = True
+
+    monkeypatch.setattr(mcp_bridge, "streamable_http_client", fake_transport)
+    monkeypatch.setattr(mcp_bridge, "ClientSession", FakeSession)
+
+    async with mcp_bridge.open_session("http://x/mcp", "tok") as session:
+        assert isinstance(session, FakeSession)
+        assert seen["initialized"] is True
+
+    assert seen["url"] == "http://x/mcp"
+    assert seen["streams"] == ("read", "write")
+    http = seen["http"]
+    assert isinstance(http, httpx2.AsyncClient)
+    assert http.headers["Authorization"] == "Bearer tok"
+    assert http.timeout == httpx2.Timeout(30.0, read=300.0)
+    assert seen["kwargs"]["extensions"] == {
+        "io.modelcontextprotocol/ui": {"mimeTypes": ["text/html;profile=mcp-app"]}
     }
 
 
@@ -142,7 +156,7 @@ def test_ui_resource_uris_by_tool():
 class _FakeResourceContent:
     def __init__(self, text, mime):
         self.text = text
-        self.mimeType = mime
+        self.mime_type = mime
 
 
 class _FakeReadResult:
@@ -329,8 +343,8 @@ class _StubSession:
 
         class _Result:
             content = []
-            isError = False
-            structuredContent = {"ok": True}
+            is_error = False
+            structured_content = {"ok": True}
 
         return _Result()
 

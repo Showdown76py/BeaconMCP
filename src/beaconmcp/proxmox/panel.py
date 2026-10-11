@@ -5,10 +5,10 @@ reference to an interactive UI: `_meta.ui.resourceUri` points at a `ui://`
 resource served as `text/html;profile=mcp-app`, which the host renders in a
 sandboxed iframe and talks to over JSON-RPC on `postMessage`.
 
-The wire format is all this module needs, so it runs on mcp 1.x. The `Apps`
-extension class that wraps it lives in mcp 2.0 and requires `MCPServer`; the
-two knobs it sets -- `meta=` on the tool and `mime_type=` on the resource --
-are already on `FastMCP`.
+The wire format is all this module needs, so it does not go through the SDK's
+`Apps` extension class: the two knobs that class would set -- `meta=` on the
+tool and `mime_type=` on the resource -- are plain `MCPServer` arguments, and
+the `ui/initialize` handshake is handled by the panels' own bridge.
 
 Hosts that did not negotiate Apps ignore `_meta.ui` and just show the tool's
 return value, which is why every panel tool returns its full snapshot as data
@@ -25,7 +25,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from .aggregators import (
     _collect_node_summaries,
@@ -95,7 +95,7 @@ def _vm_snapshot(client: ProxmoxClient, node: str, vmid: int) -> dict[str, Any]:
     return {"error": f"VM/CT {vmid} not found on node '{node}'. Check the VMID and node name."}
 
 
-def register_panel_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
+def register_panel_tools(mcp: MCPServer, client: ProxmoxClient) -> None:
     @mcp.tool(
         meta={"ui": {"resourceUri": VM_PANEL_URI, "visibility": ["model", "app"]}},
     )
@@ -215,7 +215,7 @@ def _syslog_level(line: str) -> str:
 
 
 def _register_app_resource(
-    mcp: FastMCP, uri: str, name: str, title: str, filename: str,
+    mcp: MCPServer, uri: str, name: str, title: str, filename: str,
 ) -> None:
     @mcp.resource(uri, name=name, title=title, mime_type=APP_MIME_TYPE)
     def _app() -> str:

@@ -1296,7 +1296,7 @@ def test_pages_and_api_are_never_cached(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 class _RecordingMCP:
-    """Minimal stand-in for FastMCP that just collects registrations."""
+    """Minimal stand-in for MCPServer that just collects registrations."""
 
     def __init__(self):
         self.tools: dict[str, object] = {}

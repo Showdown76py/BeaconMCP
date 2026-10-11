@@ -10,14 +10,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from ..utils import filter_fields
 from .base import BMCClient, BMCNotConfiguredError, BMCTunnelError
 
 
 def register_bmc_tools(
-    mcp: FastMCP, registry: dict[str, BMCClient]
+    mcp: MCPServer, registry: dict[str, BMCClient]
 ) -> None:
     """Register BMC management tools on the MCP server.
 

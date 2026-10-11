@@ -112,6 +112,21 @@ jobs:
           /tmp/smoke/bin/pip install dist/*.whl -c constraints.txt
           /tmp/smoke/bin/beaconmcp --help
 
+      # --help and validate-config never import the MCP SDK, so exercise the
+      # real import path here: an SDK API break must fail CI.
+      - name: Import the server modules from the installed wheel
+        env:
+          BEACONMCP_CONFIG: beaconmcp.yaml.example
+          BEACONMCP_SESSION_KEY: MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=
+          GEMINI_API_KEY: ci-dummy
+          PVE1_TOKEN_SECRET: ci-dummy
+          PVE2_TOKEN_SECRET: ci-dummy
+          RACK1_ILO_PASSWORD: ci-dummy
+          RACK2_IPMI_PASSWORD: ci-dummy
+          RACK3_IDRAC_PASSWORD: ci-dummy
+          VPS2_PW: ci-dummy
+        run: /tmp/smoke/bin/python -c 'import beaconmcp.server, beaconmcp.dashboard.mcp_bridge'
+
   docker:
     runs-on: ubuntu-latest
     steps:
@@ -131,3 +146,16 @@ jobs:
 
       - name: Smoke-test the entrypoint
         run: docker run --rm beaconmcp:ci --help
+
+      # The image sets BEACONMCP_CONFIG=/config/beaconmcp.yaml and the server
+      # module loads the config at import, so mount the example there.
+      - name: Import the server module inside the image
+        run: |
+          docker run --rm --entrypoint python \
+            -v "$PWD/beaconmcp.yaml.example:/config/beaconmcp.yaml:ro" \
+            -e BEACONMCP_SESSION_KEY=MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA= \
+            -e GEMINI_API_KEY=ci-dummy -e PVE1_TOKEN_SECRET=ci-dummy \
+            -e PVE2_TOKEN_SECRET=ci-dummy -e RACK1_ILO_PASSWORD=ci-dummy \
+            -e RACK2_IPMI_PASSWORD=ci-dummy -e RACK3_IDRAC_PASSWORD=ci-dummy \
+            -e VPS2_PW=ci-dummy \
+            beaconmcp:ci -c 'import beaconmcp.server'

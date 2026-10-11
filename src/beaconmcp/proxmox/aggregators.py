@@ -25,7 +25,7 @@ import fnmatch
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from ..config import Config
 from ..utils import filter_fields
@@ -232,7 +232,7 @@ def _recent_errors(client: ProxmoxClient, node: str, limit: int = 20) -> list[di
 # ---------------------------------------------------------------------------
 
 def register_aggregator_tools(
-    mcp: FastMCP,
+    mcp: MCPServer,
     proxmox_client: ProxmoxClient,
     config: Config,
     bmc_registry: dict | None = None,
