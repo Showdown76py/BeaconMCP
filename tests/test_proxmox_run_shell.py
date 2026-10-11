@@ -80,7 +80,7 @@ WINDOWS = {"result": {"id": "mswindows", "name": "Microsoft Windows"}}
 def test_guest_argv_picks_the_guest_shell(osinfo, expected_prefix) -> None:
     client = FakeClient(osinfo)
     cmd = "echo a | tr a b"
-    assert _guest_argv(client, "pve1", 100, cmd) == expected_prefix + [cmd]
+    assert _guest_argv(client, "pve1", 100, cmd)[0] == expected_prefix + [cmd]
 
 
 async def test_qemu_command_is_passed_whole_to_the_shell() -> None:
@@ -111,3 +111,23 @@ async def test_unbalanced_quote_no_longer_raises() -> None:
     res = await run(node="pve1", vmid=100, command="echo 'oops")
     assert res["status"] == "ok"
     assert client.exec_commands == [["/bin/sh", "-c", "echo 'oops"]]
+
+
+class FailingExecClient(FakeClient):
+    def post(self, node, path, **kwargs):
+        self.exec_commands.append(kwargs["command"])
+        return {"error": "Failed to execute child process \u201c/bin/sh\u201d (No such file or directory)"}
+
+
+async def test_exec_error_names_the_shell_fallback_when_the_os_is_unknown() -> None:
+    client = FailingExecClient({"error": "guest-get-osinfo has been disabled"})
+    res = await _tools(client)["proxmox_run"](node="pve1", vmid=100, command="dir")
+    assert res["status"] == "failed"
+    assert "/bin/sh" in res["error"] and "guest-get-osinfo" in res["error"]
+
+
+async def test_exec_error_has_no_hint_when_the_os_is_known() -> None:
+    client = FailingExecClient(LINUX)
+    res = await _tools(client)["proxmox_run"](node="pve1", vmid=100, command="dir")
+    assert res["status"] == "failed"
+    assert "guest-get-osinfo" not in res["error"]

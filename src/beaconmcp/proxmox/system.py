@@ -55,7 +55,18 @@ def _detect_vm_type(client: ProxmoxClient, node: str, vmid: int) -> str | None:
     return None
 
 
-def _guest_argv(client: ProxmoxClient, node: str, vmid: int, command: str) -> list[str]:
+#: Added to an agent/exec error when the guest OS could not be detected, so a
+#: Windows guest whose agent blocks guest-get-osinfo is not left guessing.
+_OS_UNKNOWN_HINT = (
+    "The guest agent did not report its OS (guest-get-osinfo failed or is "
+    "blocked), so the command was run through /bin/sh -c. On a Windows guest, "
+    "allow guest-get-osinfo in the agent so cmd.exe /c is used instead."
+)
+
+
+def _guest_argv(
+    client: ProxmoxClient, node: str, vmid: int, command: str,
+) -> tuple[list[str], str | None]:
     """Wrap ``command`` in the guest's shell for the QEMU guest agent.
 
     ``agent/exec`` takes an argv and runs it without a shell, so pipes,
@@ -63,13 +74,16 @@ def _guest_argv(client: ProxmoxClient, node: str, vmid: int, command: str) -> li
     literal arguments. LXC commands already go through ``sh -c``; this gives
     QEMU guests the same semantics. Windows guests have no ``/bin/sh`` and get
     ``cmd.exe /c`` instead. When the agent can't report its OS (old agent,
-    command blocked), assume a POSIX guest, which is by far the common case.
+    command blocked), assume a POSIX guest, which is by far the common case,
+    and return a hint to attach to an exec error (``None`` when the OS is known).
     """
     info = client.get(node, f"nodes/{node}/qemu/{vmid}/agent/get-osinfo")
     result = info.get("result") if isinstance(info, dict) else None
-    if isinstance(result, dict) and result.get("id") == "mswindows":
-        return ["cmd.exe", "/c", command]
-    return ["/bin/sh", "-c", command]
+    if not isinstance(result, dict) or not result.get("id"):
+        return ["/bin/sh", "-c", command], _OS_UNKNOWN_HINT
+    if result.get("id") == "mswindows":
+        return ["cmd.exe", "/c", command], None
+    return ["/bin/sh", "-c", command], None
 
 
 def _staging_dir(client: ProxmoxClient) -> Path:
@@ -714,12 +728,15 @@ def register_system_tools(mcp: FastMCP, client: ProxmoxClient, ssh_client: Any =
         )
         _exec_sessions[exec_id] = session
 
-        parts = _guest_argv(client, node, vmid, command)
+        parts, os_hint = _guest_argv(client, node, vmid, command)
         result = client.post(node, f"nodes/{node}/qemu/{vmid}/agent/exec", command=parts)
         if isinstance(result, dict) and "error" in result:
+            error = str(result["error"])
+            if os_hint:
+                error = f"{error} ({os_hint})"
             session.status = "failed"
-            session.stderr = str(result["error"])
-            return {"exec_id": exec_id, "status": "failed", "error": result["error"]}
+            session.stderr = error
+            return {"exec_id": exec_id, "status": "failed", "error": error}
         session.pid = result.get("pid") if isinstance(result, dict) else None
         return {"exec_id": exec_id, "status": "running"}
 
