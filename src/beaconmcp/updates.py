@@ -70,6 +70,11 @@ _GIT_TIMEOUT = 60
 _PIP_TIMEOUT = 900
 #: ``check-startup`` imports the whole server and builds the HTTP app.
 _STARTUP_CHECK_TIMEOUT = 180
+#: Longest a post-restart watchdog can still act: two health waits (with
+#: their settle re-check), a pip reinstall and some slack. While the last
+#: status is a ``pending`` younger than this, a new update is refused, so a
+#: watchdog that is still waiting cannot roll back a newer update.
+_WATCHDOG_WINDOW_SECONDS = 2 * (HEALTH_WAIT_SECONDS + 15) + _PIP_TIMEOUT + 60
 
 
 @dataclass
@@ -623,13 +628,36 @@ def _verify_signature(root: Path, target: _Target) -> tuple[bool, str]:
     return code == 0, detail
 
 
-def _ahead_behind(root: Path, sha: str) -> tuple[int, int]:
-    """(commits HEAD has that ``sha`` lacks, commits ``sha`` has that HEAD lacks)."""
+def _ahead_behind(root: Path, sha: str) -> tuple[int, int] | None:
+    """(commits HEAD has that ``sha`` lacks, commits ``sha`` has that HEAD lacks).
+
+    ``None`` when git cannot compare them: that is an error, never "up to date".
+    """
     code, out, _ = _git(root, "rev-list", "--left-right", "--count", f"HEAD...{sha}")
     parts = out.split()
     if code != 0 or len(parts) != 2 or not all(p.isdigit() for p in parts):
-        return 0, 0
+        return None
     return int(parts[0]), int(parts[1])
+
+
+def _watchdog_in_flight(root: Path) -> dict[str, Any] | None:
+    """The last update's status while its post-restart watchdog may still act."""
+    status = last_update_status(root)
+    if not status or status.get("outcome") != "pending":
+        return None
+    try:
+        age = time.time() - float(status.get("at", 0))
+    except (TypeError, ValueError):
+        return None
+    return status if 0 <= age < _WATCHDOG_WINDOW_SECONDS else None
+
+
+def _in_flight_message(status: dict[str, Any]) -> str:
+    return (
+        f"the previous update ({str(status.get('to', ''))[:12]}) is still being "
+        "checked after its restart; wait for it to finish (the outcome lands in "
+        f"{STATUS_FILE})"
+    )
 
 
 def last_update_status(root: Path | None) -> dict[str, Any] | None:
@@ -690,7 +718,12 @@ def _check_uncached(
         info.release_tag = target.name
         info.instructions = manual_instructions(install, release_tag=target.name)
 
-    ahead, behind = _ahead_behind(root, target.sha)
+    counts = _ahead_behind(root, target.sha)
+    if counts is None:
+        info.error = f"could not compare this checkout with {target.name} (git rev-list failed)"
+        info.blockers = _self_update_blockers(install, root)
+        return info
+    ahead, behind = counts
     info.behind = behind
     info.available = behind > 0
 
@@ -711,6 +744,9 @@ def _check_uncached(
 
     info.drift = config_drift(root, target.sha, config_path)
     info.blockers = _self_update_blockers(install, root)
+    in_flight = _watchdog_in_flight(root)
+    if in_flight:
+        info.blockers.append(_in_flight_message(in_flight))
     if ahead:
         info.blockers.append(
             f"this checkout has {ahead} commit(s) that {target.name} does not, "
@@ -855,9 +891,15 @@ if wait_healthy; then
   exit 0
 fi
 log "no healthy answer from $url within ${wait}s; rolling back to $from"
+if [ "$(git -C "$root" rev-parse HEAD)" != "$to" ]; then
+  write_status superseded
+  log "the checkout is no longer at $to (another update ran); not rolling back"
+  exit 1
+fi
 if git -C "$root" reset --hard "$from"; then
   cd "$root" || exit 1
-  if [ -f constraints.txt ]; then "$@" install -e . -c constraints.txt; else "$@" install -e .; fi
+  if [ -f constraints.txt ]; then "$@" install -e . -c constraints.txt; else "$@" install -e .; fi \
+    || log "reinstalling the dependencies of $from FAILED; run pip install by hand"
   systemctl restart "$service"
   if wait_healthy; then
     write_status rolled_back
@@ -897,7 +939,9 @@ def _write_status(root: Path, payload: dict[str, Any]) -> None:
         pass
 
 
-def _schedule_restart(service: str, delay: int, watchdog: _Watchdog | None = None) -> bool:
+def _schedule_restart(
+    service: str, delay: int, watchdog: _Watchdog | None = None,
+) -> str | None:
     """Restart the unit after ``delay`` seconds, detached from this process.
 
     A direct ``systemctl restart`` would kill us mid-response, so the caller
@@ -906,14 +950,19 @@ def _schedule_restart(service: str, delay: int, watchdog: _Watchdog | None = Non
 
     With a ``watchdog`` and ``systemd-run`` available, the restart is done by
     :data:`_WATCHDOG_SCRIPT` in its own transient unit, which rolls the
-    update back if the new process never becomes healthy.
+    update back if the new process never becomes healthy. ``systemd-run``
+    returns once the unit is started, so its exit status is checked; when it
+    fails the restart falls back to the unwatched form.
+
+    Returns ``"watched"``, ``"unwatched"``, or ``None`` when nothing could be
+    scheduled.
     """
     if not shutil.which("systemctl"):
-        return False
+        return None
     if watchdog is not None and shutil.which("systemd-run"):
         cmd = [
             "systemd-run", "--quiet", "--collect",
-            f"--unit=beaconmcp-update-{int(time.time())}",
+            f"--unit=beaconmcp-update-{time.time_ns()}",
             "--setenv=GIT_TERMINAL_PROMPT=0",
             "/bin/sh", "-c", _WATCHDOG_SCRIPT, "beaconmcp-update",
             str(int(delay)), service, watchdog.health_url, str(watchdog.root),
@@ -921,24 +970,22 @@ def _schedule_restart(service: str, delay: int, watchdog: _Watchdog | None = Non
             str(watchdog.root / STATUS_FILE), str(int(watchdog.wait_seconds)),
             str(int(watchdog.settle_seconds)), *watchdog.pip,
         ]
-    else:
-        cmd = [
+        code, _ = _run(cmd, watchdog.root, 30)
+        if code == 0:
+            return "watched"
+    try:
+        subprocess.Popen(
             # Values go through argv, never interpolated into the script:
             # `service` is a literal today, but a future change that made it
             # configurable must not turn this into a shell injection.
-            "sh", "-c", 'sleep "$1"; systemctl restart "$2"',
-            "sh", str(int(delay)), service,
-        ]
-    try:
-        subprocess.Popen(
-            cmd,
+            ["sh", "-c", 'sleep "$1"; systemctl restart "$2"', "sh", str(int(delay)), service],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        return True
+        return "unwatched"
     except OSError:
-        return False
+        return None
 
 
 def apply_update(
@@ -996,6 +1043,11 @@ def _apply_update_locked(
         result.message = "Refusing to update: " + "; ".join(blockers)
         result.steps.append(UpdateStep("preflight", False, result.message))
         return result
+    in_flight = _watchdog_in_flight(root)
+    if in_flight:
+        result.message = "Refusing to update: " + _in_flight_message(in_flight) + "."
+        result.steps.append(UpdateStep("preflight", False, result.message))
+        return result
     result.steps.append(UpdateStep("preflight", True, "git checkout is clean"))
 
     code, from_ref, _ = _git(root, "rev-parse", "HEAD")
@@ -1012,7 +1064,15 @@ def _apply_update_locked(
         return result
     result.steps.append(UpdateStep("fetch", True, f"{target.name} is {target.sha[:12]}"))
 
-    ahead, behind = _ahead_behind(root, target.sha)
+    counts = _ahead_behind(root, target.sha)
+    if counts is None:
+        result.message = (
+            f"Could not compare this checkout with {target.name} (git rev-list "
+            "failed). Nothing was changed."
+        )
+        result.steps.append(UpdateStep("compare", False, result.message))
+        return result
+    _, behind = counts
     if behind == 0:
         result.ok = True
         result.to_ref = result.from_ref
@@ -1047,10 +1107,6 @@ def _apply_update_locked(
     def _rollback(reason: str) -> UpdateResult:
         code, out, err = _git(root, "reset", "--hard", from_ref)
         rolled = code == 0
-        if rolled:
-            # Put the dependency set back too, so a half-applied update
-            # doesn't leave newer libraries against older code.
-            _run(_pip_install_command(install, root), root, _PIP_TIMEOUT)
         result.rolled_back = rolled
         result.steps.append(
             UpdateStep(
@@ -1058,12 +1114,29 @@ def _apply_update_locked(
                 f"restored {result.from_ref}" if rolled else _tail(err or out),
             )
         )
+        deps_ok = True
+        if rolled:
+            # Put the dependency set back too, so a half-applied update
+            # doesn't leave newer libraries against older code.
+            pip_code, pip_out = _run(_pip_install_command(install, root), root, _PIP_TIMEOUT)
+            deps_ok = pip_code == 0
+            result.steps.append(UpdateStep(
+                "rollback-pip-install", deps_ok,
+                "previous dependencies restored" if deps_ok else _tail(pip_out),
+            ))
         result.ok = False
-        result.message = reason + (
-            " The checkout was rolled back and the server was NOT restarted."
-            if rolled
-            else " ROLLBACK FAILED -- fix the checkout by hand before restarting."
-        )
+        if not rolled:
+            tail = " ROLLBACK FAILED -- fix the checkout by hand before restarting."
+        elif not deps_ok:
+            tail = (
+                " The checkout was rolled back and the server was NOT restarted, "
+                "but reinstalling the previous dependencies FAILED: run "
+                f"`pip install -e . -c {CONSTRAINTS_FILE}` in {root} before the "
+                "next restart."
+            )
+        else:
+            tail = " The checkout was rolled back and the server was NOT restarted."
+        result.message = reason + tail
         return result
 
     code, out = _run(_pip_install_command(install, root), root, _PIP_TIMEOUT)
@@ -1102,8 +1175,9 @@ def _apply_update_locked(
                 from_sha=from_ref, to_sha=to_sha, python=install.python,
                 pip=_pip_command(install),
             )
-        scheduled = _schedule_restart(install.service, restart_delay, watchdog)
-        watched = scheduled and watchdog is not None and bool(shutil.which("systemd-run"))
+        mode = _schedule_restart(install.service, restart_delay, watchdog)
+        scheduled = mode is not None
+        watched = mode == "watched"
         result.restart_scheduled = scheduled
         result.restart_in_seconds = restart_delay if scheduled else 0
         if scheduled:

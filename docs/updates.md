@@ -87,12 +87,21 @@ with `systemd-run` (a plain child would be killed with the service's cgroup). It
 3. otherwise runs `git reset --hard <previous revision>`, reinstalls the previous pinned
    dependencies and restarts again.
 
-The outcome (`healthy`, `rolled_back`, `rollback_unhealthy`, `rollback_failed`) is written to
-`.beaconmcp-update.json` at the root of the checkout, and `beaconmcp_check_update` reports it as
-`last_update`. Without `systemd-run` the restart still happens, but unwatched, and the status says
-`unwatched`.
+The outcome (`healthy`, `rolled_back`, `rollback_unhealthy`, `rollback_failed`, or `superseded`
+when another update moved the checkout in the meantime, which the watchdog then leaves alone) is
+written to `.beaconmcp-update.json` at the root of the checkout, and `beaconmcp_check_update`
+reports it as `last_update`. While that file still says `pending` (the watchdog is waiting), a new
+update is refused; a `pending` older than the watchdog's longest run no longer blocks. If
+`systemd-run` is missing or refuses the unit, the restart still happens, but unwatched, and the
+status says `unwatched`.
 
 ### Channels and signatures
+
+> **What the defaults trust.** With `channel: branch` and `require_signed: false`, an update installs
+> whatever is on the upstream default branch, and the shipped unit runs the service as `root`. Anyone
+> who can push to that branch (or take over the account that can) can run code on this host the next
+> time someone clicks **Update now**. On a host that matters, use `release` with
+> `require_signed: true`, or `allow_self_update: false` and update by hand.
 
 ```yaml
 features:

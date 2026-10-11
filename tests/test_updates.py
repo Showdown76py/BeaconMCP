@@ -338,7 +338,7 @@ def stub_side_effects(monkeypatch):
         return 0, ""
 
     monkeypatch.setattr(updates, "_run", fake_run)
-    monkeypatch.setattr(updates, "_schedule_restart", lambda service, delay, watchdog=None: True)
+    monkeypatch.setattr(updates, "_schedule_restart", lambda service, delay, watchdog=None: "unwatched")
     return recorded, outcomes
 
 
@@ -494,7 +494,7 @@ def test_a_second_update_is_refused_while_one_runs(checkout, upstream, monkeypat
         return real_run(cmd, cwd, timeout)
 
     monkeypatch.setattr(updates, "_run", blocking_run)
-    monkeypatch.setattr(updates, "_schedule_restart", lambda service, delay, watchdog=None: True)
+    monkeypatch.setattr(updates, "_schedule_restart", lambda service, delay, watchdog=None: "unwatched")
 
     install = _install(checkout)
     first: dict[str, object] = {}
@@ -570,7 +570,7 @@ def test_restart_command_passes_values_through_argv(monkeypatch):
         updates.shutil, "which", lambda name: "/bin/systemctl" if name == "systemctl" else None,
     )
     monkeypatch.setattr(updates.subprocess, "Popen", FakePopen)
-    assert updates._schedule_restart("beaconmcp; rm -rf /", 5) is True
+    assert updates._schedule_restart("beaconmcp; rm -rf /", 5) == "unwatched"
     cmd = seen["cmd"]
     # The dangerous string is an argument, never part of the script.
     assert "beaconmcp; rm -rf /" in cmd
@@ -578,23 +578,30 @@ def test_restart_command_passes_values_through_argv(monkeypatch):
     assert cmd[2] == 'sleep "$1"; systemctl restart "$2"'
 
 
+def _watchdog(tmp_path, python="/opt/venv/bin/python", pip=("/opt/venv/bin/pip",)):
+    return updates._Watchdog(
+        health_url="http://127.0.0.1:8420/health", root=tmp_path,
+        from_sha="a" * 40, to_sha="b" * 40, python=python, pip=list(pip),
+    )
+
+
 def test_restart_with_a_watchdog_runs_as_its_own_transient_unit(monkeypatch, tmp_path):
     """systemctl restart kills the service's cgroup, children included."""
-    seen = {}
+    ran = []
 
-    class FakePopen:
+    def fake_run(cmd, cwd, timeout):
+        ran.append(cmd)
+        return 0, ""
+
+    class NoPopen:
         def __init__(self, cmd, **kwargs):
-            seen["cmd"] = cmd
+            raise AssertionError("no unwatched restart when systemd-run worked")
 
     monkeypatch.setattr(updates.shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(updates.subprocess, "Popen", FakePopen)
-    watchdog = updates._Watchdog(
-        health_url="http://127.0.0.1:8420/health", root=tmp_path,
-        from_sha="a" * 40, to_sha="b" * 40, python="/opt/venv/bin/python",
-        pip=["/opt/venv/bin/pip"],
-    )
-    assert updates._schedule_restart("beaconmcp", 5, watchdog) is True
-    cmd = seen["cmd"]
+    monkeypatch.setattr(updates, "_run", fake_run)
+    monkeypatch.setattr(updates.subprocess, "Popen", NoPopen)
+    assert updates._schedule_restart("beaconmcp", 5, _watchdog(tmp_path)) == "watched"
+    (cmd,) = ran
     assert cmd[0] == "systemd-run"
     script_at = cmd.index("-c") + 1
     # The script is a constant; every value travels as an argument.
@@ -605,6 +612,32 @@ def test_restart_with_a_watchdog_runs_as_its_own_transient_unit(monkeypatch, tmp
         str(tmp_path / updates.STATUS_FILE), str(updates.HEALTH_WAIT_SECONDS), "10",
         "/opt/venv/bin/pip",
     ]
+
+
+def test_two_restarts_in_the_same_second_get_distinct_units(monkeypatch, tmp_path):
+    units = []
+    monkeypatch.setattr(updates.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        updates, "_run",
+        lambda cmd, cwd, timeout: units.append(next(a for a in cmd if a.startswith("--unit="))) or (0, ""),
+    )
+    updates._schedule_restart("beaconmcp", 5, _watchdog(tmp_path))
+    updates._schedule_restart("beaconmcp", 5, _watchdog(tmp_path))
+    assert len(set(units)) == 2
+
+
+def test_a_refused_systemd_run_falls_back_to_an_unwatched_restart(monkeypatch, tmp_path):
+    seen = {}
+
+    class FakePopen:
+        def __init__(self, cmd, **kwargs):
+            seen["cmd"] = cmd
+
+    monkeypatch.setattr(updates.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(updates, "_run", lambda cmd, cwd, timeout: (1, "Failed to start transient service unit"))
+    monkeypatch.setattr(updates.subprocess, "Popen", FakePopen)
+    assert updates._schedule_restart("beaconmcp", 5, _watchdog(tmp_path)) == "unwatched"
+    assert seen["cmd"][:3] == ["sh", "-c", 'sleep "$1"; systemctl restart "$2"']
 
 
 def test_restart_without_systemd_run_falls_back_to_an_unwatched_restart(monkeypatch, tmp_path):
@@ -618,19 +651,69 @@ def test_restart_without_systemd_run_falls_back_to_an_unwatched_restart(monkeypa
         updates.shutil, "which", lambda name: "/bin/systemctl" if name == "systemctl" else None,
     )
     monkeypatch.setattr(updates.subprocess, "Popen", FakePopen)
-    watchdog = updates._Watchdog(
-        health_url="http://127.0.0.1:8420/health", root=tmp_path,
-        from_sha="a" * 40, to_sha="b" * 40, python=sys.executable, pip=["pip"],
-    )
-    assert updates._schedule_restart("beaconmcp", 5, watchdog) is True
+    assert updates._schedule_restart("beaconmcp", 5, _watchdog(tmp_path)) == "unwatched"
     assert seen["cmd"][:3] == ["sh", "-c", 'sleep "$1"; systemctl restart "$2"']
+
+
+def test_a_new_update_waits_for_the_previous_watchdog(checkout, upstream, stub_side_effects):
+    _advance(upstream, "feat: thing")
+    updates._write_status(checkout, {
+        "at": int(time.time()) - 30, "from": "a" * 40, "to": "b" * 40, "outcome": "pending",
+    })
+    before = _head(checkout)
+    info = updates.check_for_update(install=_install(checkout))
+    assert any("still being checked after its restart" in b for b in info.blockers)
+    result = updates.apply_update(install=_install(checkout))
+    assert result.ok is False
+    assert "still being checked" in result.message
+    assert _head(checkout) == before
+
+
+def test_a_stale_pending_status_does_not_block(checkout, upstream, stub_side_effects):
+    _advance(upstream, "feat: thing")
+    updates._write_status(checkout, {
+        "at": int(time.time()) - updates._WATCHDOG_WINDOW_SECONDS - 1,
+        "from": "a" * 40, "to": "b" * 40, "outcome": "pending",
+    })
+    assert updates.apply_update(install=_install(checkout)).ok is True
+
+
+def test_a_failed_comparison_is_an_error_not_up_to_date(checkout, upstream, stub_side_effects, monkeypatch):
+    _advance(upstream, "feat: thing")
+    monkeypatch.setattr(updates, "_ahead_behind", lambda root, sha: None)
+    info = updates.check_for_update(install=_install(checkout))
+    assert info.available is False and "could not compare" in info.error
+    result = updates.apply_update(install=_install(checkout))
+    assert result.ok is False
+    assert "Already up to date" not in result.message
+    assert "Could not compare" in result.message
+
+
+def test_rollback_reports_a_failed_dependency_reinstall(checkout, upstream, monkeypatch):
+    pip_calls = []
+
+    def fake_run(cmd, cwd, timeout):
+        if "pip" in " ".join(cmd):
+            pip_calls.append(cmd)
+            return (0, "ok") if len(pip_calls) == 1 else (1, "No matching distribution")
+        if "check-startup" in cmd:
+            return 1, "ModuleNotFoundError: nope"
+        return 0, ""
+
+    monkeypatch.setattr(updates, "_run", fake_run)
+    _advance(upstream, "feat: broken")
+    result = updates.apply_update(install=_install(checkout))
+    assert result.rolled_back is True
+    step = next(s for s in result.steps if s.name == "rollback-pip-install")
+    assert step.ok is False and "No matching distribution" in step.detail
+    assert "reinstalling the previous dependencies FAILED" in result.message
 
 
 def test_apply_hands_the_watchdog_both_revisions(checkout, upstream, monkeypatch, stub_side_effects):
     calls = []
     monkeypatch.setattr(
         updates, "_schedule_restart",
-        lambda service, delay, watchdog=None: calls.append(watchdog) or True,
+        lambda service, delay, watchdog=None: calls.append(watchdog) or "watched",
     )
     monkeypatch.setattr(updates.shutil, "which", lambda name: f"/usr/bin/{name}")
     updates.configure(UpdatesConfig(), health_url="http://127.0.0.1:8420/health")
@@ -913,6 +996,23 @@ def test_watchdog_reports_a_rollback_that_does_not_help(tmp_path, checkout, upst
     assert proc.returncode == 1
     assert status["outcome"] == "rollback_unhealthy"
     assert _head(checkout) == from_sha
+
+
+def test_watchdog_does_not_undo_a_newer_update(tmp_path, checkout, upstream):
+    """If another update moved HEAD past ``to``, rolling back would wipe it."""
+    from_sha = _head(checkout)
+    _advance(upstream, "feat: first")
+    _run("git", "pull", "--ff-only", cwd=checkout)
+    to_sha = _head(checkout)
+    _advance(upstream, "feat: second")
+    _run("git", "pull", "--ff-only", cwd=checkout)
+    newer = _head(checkout)
+
+    proc, _, status = _run_watchdog(tmp_path, checkout, from_sha, to_sha, "exit 1\n")
+
+    assert proc.returncode == 1
+    assert _head(checkout) == newer
+    assert status["outcome"] == "superseded"
 
 
 def test_check_reports_how_the_last_update_ended(checkout):
