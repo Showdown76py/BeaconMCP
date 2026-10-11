@@ -7,5 +7,6 @@ build/
 .eggs/
 *.egg
 .env
+.beaconmcp-update.json
 .venv/
 venv/

@@ -77,5 +77,7 @@ modal — is in [dashboard.md](dashboard.md).
 |-----|-------|
 | `features.updates.enabled` | Default `true`. Compares this checkout against the upstream default branch and shows a notice to signed-in operators. Set to `false` on an air-gapped or change-controlled box: the server then never contacts the git remote, and the `beaconmcp_*_update` MCP tools are not registered. |
 | `features.updates.allow_self_update` | Default `true`. Set to `false` to keep the notification but forbid applying it from the dashboard or over MCP — the right setting when deploys go through a pipeline. Manual instructions are still shown. |
+| `features.updates.channel` | `branch` (default) follows the tip of the upstream default branch. `release` follows the newest `vX.Y.Z` tag only, and reports "no release tag" until one is published. |
+| `features.updates.require_signed` | Default `false`. When `true`, an update whose target is not signed by a key this host trusts is refused: `git verify-tag` on the release tag, `git verify-commit` on the branch tip. Trust comes from the service user's git setup (GPG keyring, or `gpg.format=ssh` with `gpg.ssh.allowedSignersFile`). |
 
 See [updates.md](updates.md) for the notice, the MCP tools, and what the self-update does.

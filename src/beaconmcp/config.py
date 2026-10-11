@@ -181,6 +181,17 @@ class UpdatesConfig:
 
     enabled: bool = True
     allow_self_update: bool = True
+    #: What an update moves to. "branch": the tip of the remote default
+    #: branch (every merged PR). "release": the newest ``vX.Y.Z`` tag.
+    channel: str = "branch"
+    #: Refuse an update whose target is not signed by a key this host
+    #: trusts: ``git verify-tag`` on the release tag, or ``git
+    #: verify-commit`` on the branch tip. Trust comes from the service
+    #: user's git/GPG setup (keyring or ``gpg.ssh.allowedSignersFile``).
+    require_signed: bool = False
+
+
+UPDATE_CHANNELS = ("branch", "release")
 
 
 @dataclass
@@ -575,12 +586,20 @@ class Config:
             mcp_mode=(dash_raw.get("mcp_mode") or "local").strip().lower(),
         )
         updates_raw = feat_raw.get("updates") or {}
+        update_channel = str(updates_raw.get("channel") or "branch").strip().lower()
+        if update_channel not in UPDATE_CHANNELS:
+            raise ConfigError(
+                f"features.updates.channel: expected one of {', '.join(UPDATE_CHANNELS)}, "
+                f"got {updates_raw.get('channel')!r}."
+            )
         features = FeaturesConfig(
             dashboard=dashboard,
             ssh_enabled=_bool((feat_raw.get("ssh") or {}).get("enabled", True)),
             updates=UpdatesConfig(
                 enabled=_bool(updates_raw.get("enabled", True)),
                 allow_self_update=_bool(updates_raw.get("allow_self_update", True)),
+                channel=update_channel,
+                require_signed=_bool(updates_raw.get("require_signed", False)),
             ),
         )
 
@@ -777,6 +796,8 @@ class Config:
                 "updates": {
                     "enabled": self.features.updates.enabled,
                     "allow_self_update": self.features.updates.allow_self_update,
+                    "channel": self.features.updates.channel,
+                    "require_signed": self.features.updates.require_signed,
                 },
             },
             "infrastructure": self.infrastructure,

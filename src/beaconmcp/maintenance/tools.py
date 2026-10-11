@@ -31,7 +31,9 @@ def register_maintenance_tools(
         """Check whether a newer BeaconMCP revision is available.
 
         Reports the running version, how many commits this install is
-        behind the upstream default branch, the changelog between the two,
+        behind its update target (the upstream default branch, or the
+        newest release tag on the ``release`` channel), the changelog
+        between the two, how the last self-update ended (``last_update``),
         and — importantly — any configuration the new revision knows about
         that this install has not set yet (new ``.env`` variables, new
         ``beaconmcp.yaml`` settings).
@@ -62,15 +64,18 @@ def register_maintenance_tools(
     def beaconmcp_self_update(confirm: bool = False, restart: bool = True) -> dict:
         """Update this BeaconMCP server to the latest upstream revision.
 
-        Runs, in order: ``git pull --ff-only`` → reinstall the Python
-        package and its dependencies → **validate the configuration against
-        the new code** → schedule a service restart.
+        Runs, in order: fetch the target (default branch tip, or newest
+        release tag) → verify its signature when ``require_signed`` is on →
+        fast-forward → reinstall dependencies pinned by ``constraints.txt``
+        → **start the new code against the real configuration**
+        (``beaconmcp check-startup``) → schedule a watched service restart.
 
-        The configuration check is a hard gate. If the new revision cannot
-        load the operator's config (because a setting was renamed, or a new
-        one is now required), the checkout is rolled back to exactly where
-        it started, dependencies are restored, and nothing is restarted. The
-        return value says so explicitly.
+        The startup check is a hard gate. If the new revision cannot start
+        with the operator's config (a renamed or newly required setting, a
+        broken import), the checkout is rolled back to exactly where it
+        started, dependencies are restored, and nothing is restarted. The
+        return value says so explicitly. After the restart, a watchdog rolls
+        back to the previous revision if ``/health`` does not answer.
 
         Requires ``confirm=True``. Call ``beaconmcp_check_update`` first and
         show the user what is about to change — including any new config

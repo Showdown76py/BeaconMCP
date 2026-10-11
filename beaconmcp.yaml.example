@@ -247,6 +247,16 @@ features:
     # the dashboard or over MCP -- appropriate when updates go through a
     # deployment pipeline. Manual instructions are still shown.
     allow_self_update: true
+    # What an update moves to. "branch" (default): the tip of the upstream
+    # default branch, i.e. every merged change. "release": the newest
+    # vX.Y.Z tag only. No release has been tagged yet, so "release" reports
+    # "no release tag" until the first one is published.
+    channel: branch
+    # Refuse an update whose target is not signed by a key this host trusts
+    # (git verify-tag for a release, git verify-commit for the branch tip).
+    # Trust comes from the service user's git setup: a GPG keyring, or
+    # gpg.format=ssh with gpg.ssh.allowedSignersFile.
+    require_signed: false
 
 # Free-form infrastructure context exposed as an MCP resource. Edit freely:
 # the LLM reads this to understand your topology, naming conventions, and

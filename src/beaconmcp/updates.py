@@ -1,9 +1,10 @@
 """Update detection and self-update for BeaconMCP.
 
-BeaconMCP ships no PyPI package and cuts no releases: the canonical install
-is a ``git clone`` at ``/opt/beaconmcp`` with a venv and a systemd unit (see
+BeaconMCP ships no PyPI package: the canonical install is a ``git clone``
+at ``/opt/beaconmcp`` with a venv and a systemd unit (see
 ``deploy/install.sh``). So "is there an update?" means *is this checkout
-behind the remote default branch?*, not "is there a newer version string".
+behind its update target?*: the remote default branch (``channel: branch``,
+the default) or the newest ``vX.Y.Z`` release tag (``channel: release``).
 
 Three things live here:
 
@@ -14,10 +15,13 @@ Three things live here:
   diffs the *new* ``.env.example`` / ``beaconmcp.yaml.example`` against the
   operator's actual files, which is how we can say "this update wants a
   variable you haven't set" before they apply it.
-* :func:`apply_update` -- pull, reinstall dependencies, **validate the
-  config**, and roll back if the new revision cannot load it. Restarting
-  into a config that refuses to parse would take the server down with no
-  one at the keyboard, so validation is a hard gate, not a warning.
+* :func:`apply_update` -- optionally verify the target's signature,
+  fast-forward, reinstall the pinned dependencies, **check that the new
+  code starts** (config, imports, the whole HTTP app), and roll back if it
+  does not. After the restart a detached watchdog polls ``/health`` and
+  rolls back to the previous revision if the new process never answers.
+  BeaconMCP is the tool used to reach the box when something is wrong, so
+  an update that takes it down must undo itself.
 
 Nothing here ever raises into a caller: an air-gapped box, a missing git
 binary or a detached HEAD all degrade to "couldn't check", never to a
@@ -37,7 +41,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .config import UpdatesConfig
+
 _REPO_URL = "https://github.com/Showdown76py/BeaconMCP"
+
+#: Versioned pin file installed with ``-c`` (see constraints.txt).
+CONSTRAINTS_FILE = "constraints.txt"
+#: Written next to the checkout by the post-restart watchdog: how the last
+#: self-update ended (healthy, rolled back, ...). Untracked, git-ignored.
+STATUS_FILE = ".beaconmcp-update.json"
+#: How long the watchdog waits for the restarted server to answer /health
+#: before rolling back.
+HEALTH_WAIT_SECONDS = 90
+#: Release tags the release channel follows. Pre-releases (v2.1.0-rc1) are
+#: skipped on purpose.
+_RELEASE_TAG = re.compile(r"^v\d+(?:\.\d+)*$")
 
 #: How long a successful check stays fresh. Updates are not urgent and the
 #: check shells out to git, so once every few hours is plenty.
@@ -50,6 +68,30 @@ FAILED_CHECK_TTL_SECONDS = 15 * 60
 #: the slow one; the rest finish in well under a second.
 _GIT_TIMEOUT = 60
 _PIP_TIMEOUT = 900
+#: ``check-startup`` imports the whole server and builds the HTTP app.
+_STARTUP_CHECK_TIMEOUT = 180
+
+
+@dataclass
+class _Runtime:
+    """What the running server tells this module at startup (see :func:`configure`)."""
+
+    settings: UpdatesConfig = field(default_factory=UpdatesConfig)
+    #: Where the post-restart watchdog polls the new process.
+    health_url: str | None = None
+
+
+_runtime = _Runtime()
+
+
+def configure(settings: UpdatesConfig | None = None, *, health_url: str | None = None) -> None:
+    """Record the update settings and the server's own /health URL.
+
+    Called once by ``beaconmcp serve``; the dashboard and the MCP tools then
+    share them without threading them through every call.
+    """
+    _runtime.settings = settings or UpdatesConfig()
+    _runtime.health_url = health_url
 
 
 def current_version() -> str:
@@ -348,10 +390,23 @@ class UpdateInfo:
     can_self_update: bool = False
     blockers: list[str] = field(default_factory=list)
     repo_url: str = _REPO_URL
+    #: "branch" or "release" (features.updates.channel).
+    channel: str = "branch"
+    #: Release tag being offered, on the release channel.
+    release_tag: str | None = None
+    #: True/False once the target's signature was checked, None when not
+    #: required.
+    signature_ok: bool | None = None
+    #: How the previous self-update ended, from the watchdog's status file.
+    last_update: dict[str, Any] | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
             "checked_at": self.checked_at,
+            "channel": self.channel,
+            "release_tag": self.release_tag,
+            "signature_ok": self.signature_ok,
+            "last_update": self.last_update,
             "available": self.available,
             "error": self.error,
             "version": self.version,
@@ -374,8 +429,11 @@ class UpdateInfo:
         }
 
 
-def manual_instructions(install: Installation) -> list[str]:
-    """Shell commands that update *this* install, in order."""
+def manual_instructions(install: Installation, release_tag: str | None = None) -> list[str]:
+    """Shell commands that update *this* install, in order.
+
+    ``release_tag`` switches the git steps to "fast-forward to that tag".
+    """
     if install.kind == "git" and install.root:
         root = install.root
         pip = (
@@ -383,7 +441,14 @@ def manual_instructions(install: Installation) -> list[str]:
             if install.venv and (install.venv / "bin" / "pip").exists()
             else f"{install.python} -m pip"
         )
-        steps = [f"cd {root}", "git pull --ff-only", f"{pip} install -e ."]
+        if release_tag:
+            git_steps = ["git fetch --tags origin", f"git merge --ff-only {release_tag}"]
+        else:
+            git_steps = ["git pull --ff-only"]
+        steps = [
+            f"cd {root}", *git_steps,
+            f"{pip} install -e . -c {CONSTRAINTS_FILE}",
+        ]
         if install.service:
             steps.append(f"systemctl restart {install.service}")
         return steps
@@ -444,6 +509,7 @@ def check_for_update(
     force: bool = False,
     config_path: Path | None = None,
     install: Installation | None = None,
+    settings: UpdatesConfig | None = None,
 ) -> UpdateInfo:
     """Return update status, using a cached result when it is still fresh.
 
@@ -453,11 +519,12 @@ def check_for_update(
 
     ``install`` overrides autodetection; passing one also bypasses the
     cache, since the cache is keyed on "this server" and nothing else.
+    ``settings`` defaults to what :func:`configure` recorded.
     """
     global _cached
 
     if install is not None:
-        return _check_uncached(config_path=config_path, install=install)
+        return _check_uncached(config_path=config_path, install=install, settings=settings)
 
     def _fresh() -> UpdateInfo | None:
         with _cache_lock:
@@ -479,7 +546,7 @@ def check_for_update(
             hit = _fresh()
             if hit is not None:
                 return hit
-        info = _check_uncached(config_path=config_path)
+        info = _check_uncached(config_path=config_path, settings=settings)
         with _cache_lock:
             _cached = info
     return info
@@ -497,15 +564,102 @@ def invalidate_cache() -> None:
         _cached = None
 
 
+@dataclass
+class _Target:
+    """The revision an update would move to."""
+
+    #: "branch" or "release".
+    kind: str
+    #: Human name: ``origin/main`` or ``v2.1.0``.
+    name: str
+    #: Full commit sha.
+    sha: str
+
+
+def _resolve_target(root: Path, channel: str) -> tuple[_Target | None, str | None]:
+    """Fetch and name the update target, or explain why there is none."""
+    if channel == "release":
+        code, _, err = _git(root, "fetch", "--quiet", "--tags", "origin")
+        if code != 0:
+            return None, f"could not reach the remote ({err or 'git fetch failed'})"
+        code, out, err = _git(root, "tag", "--list", "v*", "--sort=-v:refname")
+        if code != 0:
+            return None, f"could not list release tags ({err or 'git failed'})"
+        tags = [t for t in out.splitlines() if _RELEASE_TAG.match(t.strip())]
+        if not tags:
+            return None, (
+                "no release tag (vX.Y.Z) has been published yet; set "
+                "features.updates.channel to 'branch' to follow the default branch"
+            )
+        tag = tags[0].strip()
+        code, sha, err = _git(root, "rev-parse", f"refs/tags/{tag}^{{commit}}")
+        if code != 0:
+            return None, f"could not resolve {tag} ({err or 'git failed'})"
+        return _Target("release", tag, sha), None
+
+    branch = _default_branch(root)
+    code, _, err = _git(root, "fetch", "--quiet", "origin", branch)
+    if code != 0:
+        return None, f"could not reach the remote ({err or 'git fetch failed'})"
+    remote_ref = f"origin/{branch}"
+    code, sha, err = _git(root, "rev-parse", remote_ref)
+    if code != 0:
+        return None, f"could not read {remote_ref} ({err or 'git failed'})"
+    return _Target("branch", remote_ref, sha), None
+
+
+def _verify_signature(root: Path, target: _Target) -> tuple[bool, str]:
+    """Check the target's signature against the keys this host trusts.
+
+    A release tag must be a signed annotated tag (``git verify-tag``); on
+    the branch channel the tip commit itself must be signed
+    (``git verify-commit``; GitHub signs the merges it makes).
+    """
+    if target.kind == "release":
+        code, out, err = _git(root, "verify-tag", f"refs/tags/{target.name}")
+    else:
+        code, out, err = _git(root, "verify-commit", target.sha)
+    detail = (err or out or "").strip()
+    return code == 0, detail
+
+
+def _ahead_behind(root: Path, sha: str) -> tuple[int, int]:
+    """(commits HEAD has that ``sha`` lacks, commits ``sha`` has that HEAD lacks)."""
+    code, out, _ = _git(root, "rev-list", "--left-right", "--count", f"HEAD...{sha}")
+    parts = out.split()
+    if code != 0 or len(parts) != 2 or not all(p.isdigit() for p in parts):
+        return 0, 0
+    return int(parts[0]), int(parts[1])
+
+
+def last_update_status(root: Path | None) -> dict[str, Any] | None:
+    """How the last self-update ended, as written by the restart watchdog."""
+    if root is None:
+        return None
+    path = root / STATUS_FILE
+    try:
+        import json
+
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _check_uncached(
-    *, config_path: Path | None = None, install: Installation | None = None,
+    *,
+    config_path: Path | None = None,
+    install: Installation | None = None,
+    settings: UpdatesConfig | None = None,
 ) -> UpdateInfo:
+    settings = settings or _runtime.settings
     install = install or detect_installation()
     info = UpdateInfo(
         checked_at=time.time(),
         version=current_version(),
         install_kind=install.kind,
         instructions=manual_instructions(install),
+        channel=settings.channel,
     )
 
     root = install.root
@@ -516,39 +670,36 @@ def _check_uncached(
         )
         info.blockers = _self_update_blockers(install, root)
         return info
+    info.last_update = last_update_status(root)
 
     code, head, err = _git(root, "rev-parse", "--short", "HEAD")
     if code != 0:
         info.error = f"could not read the local revision ({err or 'git failed'})"
         return info
     info.current_ref = head
+    if settings.channel == "branch":
+        info.branch = _default_branch(root)
 
-    branch = _default_branch(root)
-    info.branch = branch
-
-    code, _, err = _git(root, "fetch", "--quiet", "origin", branch)
-    if code != 0:
-        info.error = f"could not reach the remote ({err or 'git fetch failed'})"
+    target, error = _resolve_target(root, settings.channel)
+    if target is None:
+        info.error = error
         info.blockers = _self_update_blockers(install, root)
         return info
+    info.latest_ref = target.sha[:7]
+    if target.kind == "release":
+        info.release_tag = target.name
+        info.instructions = manual_instructions(install, release_tag=target.name)
 
-    remote_ref = f"origin/{branch}"
-    code, latest, err = _git(root, "rev-parse", "--short", remote_ref)
-    if code != 0:
-        info.error = f"could not read {remote_ref} ({err or 'git failed'})"
-        return info
-    info.latest_ref = latest
-
-    code, count, _ = _git(root, "rev-list", "--count", f"HEAD..{remote_ref}")
-    info.behind = int(count) if code == 0 and count.isdigit() else 0
-    info.available = info.behind > 0
+    ahead, behind = _ahead_behind(root, target.sha)
+    info.behind = behind
+    info.available = behind > 0
 
     if not info.available:
         return info
 
     code, log, _ = _git(
         root, "log", "--no-merges", "--max-count=20",
-        "--pretty=format:%h\x1f%s\x1f%aI", f"HEAD..{remote_ref}",
+        "--pretty=format:%h\x1f%s\x1f%aI", f"HEAD..{target.sha}",
     )
     if code == 0 and log:
         for line in log.splitlines():
@@ -558,8 +709,21 @@ def _check_uncached(
                     {"sha": parts[0], "subject": parts[1], "date": parts[2]}
                 )
 
-    info.drift = config_drift(root, remote_ref, config_path)
+    info.drift = config_drift(root, target.sha, config_path)
     info.blockers = _self_update_blockers(install, root)
+    if ahead:
+        info.blockers.append(
+            f"this checkout has {ahead} commit(s) that {target.name} does not, "
+            "so it cannot be fast-forwarded"
+        )
+    if settings.require_signed:
+        ok, detail = _verify_signature(root, target)
+        info.signature_ok = ok
+        if not ok:
+            info.blockers.append(
+                f"{target.name} is not signed by a key this host trusts "
+                f"(features.updates.require_signed): {_tail(detail, 300) or 'no signature'}"
+            )
     info.can_self_update = not info.blockers
     return info
 
@@ -635,24 +799,139 @@ def _tail(text: str, limit: int = 1500) -> str:
     return text if len(text) <= limit else "…" + text[-limit:]
 
 
-def _schedule_restart(service: str, delay: int) -> bool:
+def _pip_install_command(install: Installation, root: Path) -> list[str]:
+    """``pip install -e .``, pinned by ``constraints.txt`` when the tree has one."""
+    cmd = [*_pip_command(install), "install", "-e", "."]
+    if (root / CONSTRAINTS_FILE).is_file():
+        cmd += ["-c", CONSTRAINTS_FILE]
+    return cmd
+
+
+def _startup_check_command(install: Installation, config_path: Path | None) -> list[str]:
+    cmd = [install.python, "-m", "beaconmcp", "check-startup"]
+    if config_path:
+        cmd += ["--config", str(config_path)]
+    return cmd
+
+
+#: Post-restart watchdog. Runs detached, as its own transient systemd unit
+#: (``systemd-run``): ``systemctl restart`` kills every process in the
+#: service's cgroup, so a child of the server would die with it. All values
+#: arrive through argv, never interpolated into the script. It restarts the
+#: service, waits for the new process to answer /health (and still answer
+#: ``settle`` seconds later, so a crash loop is not mistaken for a start), and
+#: otherwise resets the checkout to the previous revision,
+#: reinstalls its pinned dependencies and restarts again. The outcome lands in
+#: STATUS_FILE so the next check (and the operator) can see it.
+_WATCHDOG_SCRIPT = r"""
+delay=$1 service=$2 url=$3 root=$4 from=$5 to=$6 py=$7 status=$8 wait=$9
+settle=${10}
+shift 10
+log() { echo "beaconmcp-update: $*"; }
+write_status() {
+  printf '{"at": %s, "from": "%s", "to": "%s", "outcome": "%s"}\n' \
+    "$(date +%s)" "$from" "$to" "$1" > "$status.tmp" && mv "$status.tmp" "$status"
+}
+healthy() {
+  "$py" -c 'import sys, urllib.request as u; u.build_opener(u.ProxyHandler({})).open(sys.argv[1], timeout=3).read()' \
+    "$url" >/dev/null 2>&1
+}
+wait_healthy() {
+  end=$(( $(date +%s) + wait ))
+  while [ "$(date +%s)" -lt "$end" ]; do
+    if healthy; then
+      sleep "$settle"
+      if healthy; then return 0; fi
+    fi
+    sleep 2
+  done
+  return 1
+}
+sleep "$delay"
+systemctl restart "$service"
+if wait_healthy; then
+  write_status healthy
+  log "$to is up and healthy"
+  exit 0
+fi
+log "no healthy answer from $url within ${wait}s; rolling back to $from"
+if git -C "$root" reset --hard "$from"; then
+  cd "$root" || exit 1
+  if [ -f constraints.txt ]; then "$@" install -e . -c constraints.txt; else "$@" install -e .; fi
+  systemctl restart "$service"
+  if wait_healthy; then
+    write_status rolled_back
+    log "rolled back to $from, which is healthy"
+  else
+    write_status rollback_unhealthy
+    log "rolled back to $from, but it does not answer either"
+  fi
+else
+  write_status rollback_failed
+  log "git reset to $from failed; fix the checkout by hand"
+fi
+exit 1
+"""
+
+
+@dataclass
+class _Watchdog:
+    """What the post-restart watchdog needs to judge and undo an update."""
+
+    health_url: str
+    root: Path
+    from_sha: str
+    to_sha: str
+    python: str
+    pip: list[str]
+    wait_seconds: int = HEALTH_WAIT_SECONDS
+    settle_seconds: int = 10
+
+
+def _write_status(root: Path, payload: dict[str, Any]) -> None:
+    import json
+
+    try:
+        (root / STATUS_FILE).write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _schedule_restart(service: str, delay: int, watchdog: _Watchdog | None = None) -> bool:
     """Restart the unit after ``delay`` seconds, detached from this process.
 
     A direct ``systemctl restart`` would kill us mid-response, so the caller
     would never learn whether the update worked. Detaching and sleeping lets
     the tool result (or the HTTP response) reach the client first.
+
+    With a ``watchdog`` and ``systemd-run`` available, the restart is done by
+    :data:`_WATCHDOG_SCRIPT` in its own transient unit, which rolls the
+    update back if the new process never becomes healthy.
     """
     if not shutil.which("systemctl"):
         return False
-    try:
-        subprocess.Popen(
+    if watchdog is not None and shutil.which("systemd-run"):
+        cmd = [
+            "systemd-run", "--quiet", "--collect",
+            f"--unit=beaconmcp-update-{int(time.time())}",
+            "--setenv=GIT_TERMINAL_PROMPT=0",
+            "/bin/sh", "-c", _WATCHDOG_SCRIPT, "beaconmcp-update",
+            str(int(delay)), service, watchdog.health_url, str(watchdog.root),
+            watchdog.from_sha, watchdog.to_sha, watchdog.python,
+            str(watchdog.root / STATUS_FILE), str(int(watchdog.wait_seconds)),
+            str(int(watchdog.settle_seconds)), *watchdog.pip,
+        ]
+    else:
+        cmd = [
             # Values go through argv, never interpolated into the script:
             # `service` is a literal today, but a future change that made it
             # configurable must not turn this into a shell injection.
-            [
-                "sh", "-c", 'sleep "$1"; systemctl restart "$2"',
-                "sh", str(int(delay)), service,
-            ],
+            "sh", "-c", 'sleep "$1"; systemctl restart "$2"',
+            "sh", str(int(delay)), service,
+        ]
+    try:
+        subprocess.Popen(
+            cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
@@ -668,13 +947,17 @@ def apply_update(
     restart_delay: int = 5,
     config_path: Path | None = None,
     install: Installation | None = None,
+    settings: UpdatesConfig | None = None,
 ) -> UpdateResult:
-    """Pull, reinstall dependencies, validate the config, then restart.
+    """Verify, fast-forward, reinstall pinned dependencies, check startup, restart.
 
-    The config validation is a **gate**: if the new revision cannot load the
-    operator's configuration (a newly required setting, a renamed key), the
-    checkout is rolled back to where it started and nothing is restarted.
-    An unattended update that bricks the server is worse than no update.
+    Two gates. Before the restart, the new revision must load the
+    operator's configuration and build the whole server (``beaconmcp
+    check-startup``); if not, the checkout is rolled back to where it
+    started and nothing is restarted. After the restart, a watchdog rolls
+    back to the previous revision if the new process does not answer
+    ``/health``. An unattended update that bricks the server is worse than
+    no update.
     """
     if not _apply_lock.acquire(blocking=False):
         busy = UpdateResult(ok=False)
@@ -690,6 +973,7 @@ def apply_update(
             restart_delay=restart_delay,
             config_path=config_path,
             install=install,
+            settings=settings or _runtime.settings,
         )
     finally:
         _apply_lock.release()
@@ -701,6 +985,7 @@ def _apply_update_locked(
     restart_delay: int,
     config_path: Path | None,
     install: Installation | None,
+    settings: UpdatesConfig,
 ) -> UpdateResult:
     install = install or detect_installation()
     result = UpdateResult(ok=False)
@@ -720,25 +1005,44 @@ def _apply_update_locked(
         return result
     result.from_ref = from_ref[:12]
 
-    branch = _default_branch(root)
-    code, out, err = _git(root, "pull", "--ff-only", "origin", branch)
-    if code != 0:
-        detail = _tail(err or out)
-        result.message = (
-            f"git pull failed: {detail}. Nothing was changed."
-        )
-        result.steps.append(UpdateStep("git-pull", False, detail))
+    target, error = _resolve_target(root, settings.channel)
+    if target is None:
+        result.message = f"Could not find the update target: {error}. Nothing was changed."
+        result.steps.append(UpdateStep("fetch", False, error or ""))
         return result
-    code, to_ref, _ = _git(root, "rev-parse", "HEAD")
-    result.to_ref = to_ref[:12] if code == 0 else None
-    result.steps.append(
-        UpdateStep("git-pull", True, f"{result.from_ref} -> {result.to_ref}")
-    )
+    result.steps.append(UpdateStep("fetch", True, f"{target.name} is {target.sha[:12]}"))
 
-    if result.from_ref == result.to_ref:
+    ahead, behind = _ahead_behind(root, target.sha)
+    if behind == 0:
         result.ok = True
+        result.to_ref = result.from_ref
         result.message = "Already up to date; nothing to do."
         return result
+
+    if settings.require_signed:
+        ok, detail = _verify_signature(root, target)
+        result.steps.append(UpdateStep("verify-signature", ok, _tail(detail, 600)))
+        if not ok:
+            result.message = (
+                f"Refusing to update: {target.name} is not signed by a key this "
+                "host trusts (features.updates.require_signed). Nothing was changed."
+            )
+            return result
+
+    # Fast-forward to the exact commit that was resolved (and verified),
+    # not whatever the remote points at by now.
+    code, out, err = _git(root, "merge", "--ff-only", target.sha)
+    if code != 0:
+        detail = _tail(err or out)
+        result.message = f"Could not fast-forward to {target.name}: {detail}. Nothing was changed."
+        result.steps.append(UpdateStep("git-update", False, detail))
+        return result
+    code, to_ref, _ = _git(root, "rev-parse", "HEAD")
+    to_sha = to_ref if code == 0 else target.sha
+    result.to_ref = to_sha[:12]
+    result.steps.append(
+        UpdateStep("git-update", True, f"{result.from_ref} -> {result.to_ref} ({target.name})")
+    )
 
     def _rollback(reason: str) -> UpdateResult:
         code, out, err = _git(root, "reset", "--hard", from_ref)
@@ -746,7 +1050,7 @@ def _apply_update_locked(
         if rolled:
             # Put the dependency set back too, so a half-applied update
             # doesn't leave newer libraries against older code.
-            _run([*_pip_command(install), "install", "-e", "."], root, _PIP_TIMEOUT)
+            _run(_pip_install_command(install, root), root, _PIP_TIMEOUT)
         result.rolled_back = rolled
         result.steps.append(
             UpdateStep(
@@ -762,47 +1066,75 @@ def _apply_update_locked(
         )
         return result
 
-    code, out = _run(
-        [*_pip_command(install), "install", "-e", "."], root, _PIP_TIMEOUT,
-    )
+    code, out = _run(_pip_install_command(install, root), root, _PIP_TIMEOUT)
     if code != 0:
         result.steps.append(UpdateStep("pip-install", False, _tail(out)))
         return _rollback(f"Dependency install failed: {_tail(out, 400)}.")
-    result.steps.append(UpdateStep("pip-install", True, "dependencies up to date"))
+    pinned = (root / CONSTRAINTS_FILE).is_file()
+    result.steps.append(UpdateStep(
+        "pip-install", True,
+        f"dependencies pinned by {CONSTRAINTS_FILE}" if pinned else "dependencies up to date",
+    ))
 
-    # Config gate. Run in a subprocess so the *new* code parses the config,
-    # not the copy this process imported at boot.
-    validate = [install.python, "-m", "beaconmcp", "validate-config"]
-    if config_path:
-        validate += ["--config", str(config_path)]
-    code, out = _run(validate, root, _GIT_TIMEOUT)
+    # Startup gate. Run in a subprocess so the *new* code loads the config,
+    # imports every module and builds the HTTP app -- not the copy this
+    # process imported at boot. validate-config alone only imported
+    # config.py, so a broken import anywhere else sailed through.
+    code, out = _run(
+        _startup_check_command(install, config_path), root, _STARTUP_CHECK_TIMEOUT,
+    )
     if code != 0:
-        result.steps.append(UpdateStep("validate-config", False, _tail(out)))
+        result.steps.append(UpdateStep("check-startup", False, _tail(out)))
         return _rollback(
-            f"The new revision cannot load your configuration: {_tail(out, 600)}"
+            f"The new revision does not start with your configuration: {_tail(out, 600)}"
         )
-    result.steps.append(UpdateStep("validate-config", True, "config still loads"))
+    result.steps.append(UpdateStep("check-startup", True, "config loads and the server builds"))
 
     result.drift = config_drift(root, "HEAD", config_path)
     result.ok = True
 
+    watched = False
     if restart and install.service:
-        scheduled = _schedule_restart(install.service, restart_delay)
+        watchdog = None
+        if _runtime.health_url:
+            watchdog = _Watchdog(
+                health_url=_runtime.health_url, root=root,
+                from_sha=from_ref, to_sha=to_sha, python=install.python,
+                pip=_pip_command(install),
+            )
+        scheduled = _schedule_restart(install.service, restart_delay, watchdog)
+        watched = scheduled and watchdog is not None and bool(shutil.which("systemd-run"))
         result.restart_scheduled = scheduled
         result.restart_in_seconds = restart_delay if scheduled else 0
+        if scheduled:
+            _write_status(root, {
+                "at": int(time.time()), "from": from_ref, "to": to_sha,
+                "outcome": "pending" if watched else "unwatched",
+            })
         result.steps.append(
             UpdateStep(
                 "restart", scheduled,
-                f"systemctl restart {install.service} in {restart_delay}s"
+                (
+                    f"systemctl restart {install.service} in {restart_delay}s"
+                    + (
+                        f", rolled back if /health does not answer within {HEALTH_WAIT_SECONDS}s"
+                        if watched else ", without a post-restart health check"
+                    )
+                )
                 if scheduled else "could not schedule a restart (no systemctl)",
             )
         )
 
-    bits = [f"Updated {result.from_ref} -> {result.to_ref}."]
+    bits = [f"Updated {result.from_ref} -> {result.to_ref} ({target.name})."]
     if result.restart_scheduled:
         bits.append(
             f"The service restarts in {restart_delay}s to run the new code."
         )
+        if watched:
+            bits.append(
+                f"If it does not answer /health within {HEALTH_WAIT_SECONDS}s it is "
+                f"rolled back to {result.from_ref} automatically."
+            )
     elif install.service:
         bits.append(f"Restart it with: systemctl restart {install.service}")
     else:

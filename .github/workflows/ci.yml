@@ -32,7 +32,9 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -e ".[wizard,dev]"
+        # constraints.txt is the dependency set the self-update and the
+        # installer use, so CI tests exactly that.
+        run: pip install -e ".[wizard,dev]" -c constraints.txt
 
       - name: Lint
         run: ruff check src/ tests/
@@ -53,7 +55,7 @@ jobs:
           cache: pip
 
       - name: Install
-        run: pip install -e .
+        run: pip install -e . -c constraints.txt
 
       - name: Validate the example config
         # The template references secrets as ${VAR} and the loader rejects
@@ -67,7 +69,11 @@ jobs:
           RACK2_IPMI_PASSWORD: ci-dummy
           RACK3_IDRAC_PASSWORD: ci-dummy
           VPS2_PW: ci-dummy
-        run: beaconmcp validate-config --config beaconmcp.yaml.example
+        run: |
+          beaconmcp validate-config --config beaconmcp.yaml.example
+          # The gate a self-update must pass: every module imports and the
+          # HTTP app builds and answers /health with this config.
+          beaconmcp check-startup --config beaconmcp.yaml.example
 
   # Templates, static files and the logo ride along implicitly with the package
   # directory. A missing one only surfaces when the dashboard renders, so assert
@@ -103,7 +109,7 @@ jobs:
       - name: Install the wheel in a clean env and smoke-test the CLI
         run: |
           python -m venv /tmp/smoke
-          /tmp/smoke/bin/pip install dist/*.whl
+          /tmp/smoke/bin/pip install dist/*.whl -c constraints.txt
           /tmp/smoke/bin/beaconmcp --help
 
   docker:

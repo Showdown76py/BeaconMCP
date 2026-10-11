@@ -1,0 +1,81 @@
+# Exact versions of every dependency BeaconMCP is tested and deployed with.
+#
+# pyproject.toml keeps the loose ranges the code supports; this file pins the
+# one set that CI tests and that installs actually get:
+#   pip install -e . -c constraints.txt
+# (deploy/install.sh, the Dockerfile, CI and the self-update all do this), so
+# an update never pulls a dependency release nobody has run yet.
+#
+# Regenerate after changing dependencies or to take upgrades, then run the
+# test suite before committing:
+#   python3 -m venv /tmp/c && /tmp/c/bin/pip install -e '.[wizard,dev]'
+#   /tmp/c/bin/pip freeze --exclude-editable | grep -vi '^beaconmcp' >> constraints.txt
+# (keep this header).
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+asyncssh==2.24.1
+attrs==26.1.0
+cbor2==6.1.5
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.5.2
+click==8.5.0
+cryptography==50.0.2
+distro==1.9.0
+google-auth==2.61.0
+google-genai==2.29.0
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+httpx-sse==0.4.3
+idna==3.20
+iniconfig==2.3.1
+Jinja2==3.1.6
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+linkify-it-py==2.2.0
+markdown-it-py==4.2.0
+MarkupSafe==3.0.4
+mcp==1.30.0
+mdit-py-plugins==0.6.1
+mdurl==0.1.2
+packaging==26.3
+platformdirs==4.13.0
+pluggy==1.6.0
+proxmoxer==2.3.0
+pyasn1==0.6.4
+pyasn1_modules==0.4.2
+pycparser==3.11
+pydantic==2.14.0
+pydantic-settings==2.15.0
+pydantic_core==2.50.0
+Pygments==2.21.0
+PyJWT==2.15.1
+pyOpenSSL==26.4.0
+PyOTP==2.10.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
+python-dotenv==1.2.4
+python-hpilo==4.4.3
+python-multipart==0.0.32
+PyYAML==6.0.3
+qrcode==8.2
+referencing==0.37.0
+requests==2.34.2
+rich==15.0.0
+rpds-py==2026.9.1
+ruff==0.17.0
+shellingham==1.5.4
+sniffio==1.3.1
+sse-starlette==3.5.0
+starlette==1.7.0
+tenacity==9.1.4
+textual==8.2.8
+typer==0.27.3
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+urllib3==2.8.0
+uvicorn==0.54.0
+webauthn==3.0.1
+websockets==16.1.1

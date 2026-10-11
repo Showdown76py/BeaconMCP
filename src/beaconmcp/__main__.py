@@ -191,6 +191,17 @@ def main():
         help="Path to beaconmcp.yaml (overrides BEACONMCP_CONFIG and the default search)",
     )
 
+    # --- check-startup (self-update gate) ---
+    check_parser = sub.add_parser(
+        "check-startup",
+        help="Load the config and build the whole server without serving it "
+             "(the gate a self-update must pass before restarting)",
+    )
+    check_parser.add_argument(
+        "--config", type=Path, default=None,
+        help="Path to beaconmcp.yaml (overrides BEACONMCP_CONFIG and the default search)",
+    )
+
     # --- init (interactive TUI wizard) ---
     init_parser = sub.add_parser(
         "init",
@@ -235,6 +246,8 @@ def main():
         _cmd_doctor(args)
     elif args.command == "validate-config":
         _cmd_validate_config(args)
+    elif args.command == "check-startup":
+        _cmd_check_startup(args)
     elif args.command == "init":
         _cmd_init(args)
 
@@ -359,7 +372,83 @@ def _cmd_validate_config(args):
     )
 
 
+def _cmd_check_startup(args):
+    """Import every module and build the HTTP app against this config.
+
+    This is the gate a self-update must pass before it restarts the
+    service: ``validate-config`` only imports ``config.py``, so a broken
+    import anywhere else would sail through it and take the server down.
+    Nothing is served and no live state is touched: the token store, the
+    dashboard database and the audit log point at a scratch directory, and
+    the clients file is a copy.
+    """
+    import shutil
+    import tempfile
+    import traceback
+
+    from .config import Config, ConfigError
+
+    if args.config:
+        os.environ["BEACONMCP_CONFIG"] = str(args.config)
+    try:
+        cfg = Config.load(config_path=args.config)
+    except (ConfigError, FileNotFoundError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    with tempfile.TemporaryDirectory(prefix="beaconmcp-check-") as tmp:
+        scratch = Path(tmp)
+        env_cf = os.environ.get("BEACONMCP_CLIENTS_FILE")
+        clients_src = Path(env_cf) if env_cf else cfg.server.clients_file
+        clients_copy = scratch / "clients.json"
+        if clients_src and Path(clients_src).is_file():
+            shutil.copy2(clients_src, clients_copy)
+        os.environ["BEACONMCP_CLIENTS_FILE"] = str(clients_copy)
+        os.environ["BEACONMCP_TOKENS_DB"] = str(scratch / "tokens.db")
+        os.environ["BEACONMCP_DASHBOARD_DB"] = str(scratch / "dashboard.db")
+        os.environ["BEACONMCP_AUDIT_LOG"] = "-"
+        try:
+            import asyncio
+
+            import httpx
+
+            from .server import mcp
+
+            app = _run_http(mcp, "127.0.0.1", 0, serve=False)
+
+            async def _probe() -> httpx.Response:
+                # Run the app's lifespan too: that is where the MCP session
+                # manager starts, and a failure there is a failed start.
+                async with app.router.lifespan_context(app):
+                    transport = httpx.ASGITransport(app=app)
+                    async with httpx.AsyncClient(
+                        transport=transport, base_url="http://127.0.0.1",
+                    ) as client:
+                        return await client.get("/health")
+
+            response = asyncio.run(_probe())
+            if response.status_code != 200:
+                raise RuntimeError(f"/health answered HTTP {response.status_code}")
+        except Exception:  # noqa: BLE001 -- report whatever broke, then fail
+            traceback.print_exc()
+            print("ERROR: the server does not start with this configuration.", file=sys.stderr)
+            sys.exit(1)
+    print("OK: configuration loads, every module imports and /health answers.")
+
+
+def _local_health_url(host: str, port: int) -> str:
+    """Where a process on this machine reaches our own /health."""
+    if host in ("", "0.0.0.0"):
+        host = "127.0.0.1"
+    elif host == "::":
+        host = "::1"
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"http://{host}:{port}/health"
+
+
 def _cmd_serve(args):
+    from . import updates
     from .server import config, mcp
 
     _configure_audit_log(config.server.audit_log)
@@ -367,6 +456,10 @@ def _cmd_serve(args):
     cli_port = getattr(args, "port", None)
     host = cli_host or os.environ.get("BEACONMCP_HOST") or config.server.host
     port_raw = cli_port or os.environ.get("BEACONMCP_PORT") or config.server.port
+    # Lets a self-update hand its post-restart watchdog the URL to poll.
+    updates.configure(
+        config.features.updates, health_url=_local_health_url(host, int(port_raw)),
+    )
     _run_http(mcp, host, int(port_raw))
 
 
@@ -1062,8 +1155,12 @@ _AUTHORIZE_JS = """
 """
 
 
-def _run_http(mcp, host: str, port: int):
-    """Run the MCP server over Streamable HTTP with OAuth client credentials."""
+def _run_http(mcp, host: str, port: int, *, serve: bool = True):
+    """Run the MCP server over Streamable HTTP with OAuth client credentials.
+
+    ``serve=False`` builds and returns the Starlette app without printing
+    the banner or binding a port (``beaconmcp check-startup``).
+    """
     import datetime as _dt
     import html
     import secrets
@@ -2221,6 +2318,8 @@ def _run_http(mcp, host: str, port: int):
         ],
         lifespan=lifespan,
     )
+    if not serve:
+        return app
 
     n_clients = len(client_store.list_clients())
     print(f"BeaconMCP starting on {host}:{port}")
