@@ -1568,21 +1568,24 @@ def _run_http(mcp, host: str, port: int):
         )
 
     async def oauth_authorize_post(request: Request) -> Response:
-        # This endpoint takes a TOTP guess with nothing but a client_id, so
-        # it gets the same per-IP limit as /app/login.
-        ip = _ip(request)
-        if not _login_limiter.check(ip):
-            retry = _login_limiter.retry_after(ip)
-            return JSONResponse(
-                {"error": "rate_limited", "error_description": "too many requests"},
-                status_code=429,
-                headers={"Retry-After": str(retry)},
-            )
         form = await request.form()
         body = {k: v for k, v in form.items() if isinstance(v, str)}
         normalized, err = _validate_authorize_params(body)
         if err is not None:
             return err
+
+        # This endpoint takes a TOTP guess with nothing but a client_id, so
+        # it gets the same per-IP limit as /app/login.
+        ip = _ip(request)
+        if not _login_limiter.check(ip):
+            retry = _login_limiter.retry_after(ip)
+            response = _authorize_failed(
+                request, normalized,
+                f"Too many attempts. Retry in {retry}s.",
+                status=429,
+            )
+            response.headers["Retry-After"] = str(retry)
+            return response
 
         client_id = normalized["client_id"]
         if totp_locked(client_id, ip):
