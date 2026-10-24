@@ -9,14 +9,19 @@ clients get the plain 401 they always got.
 
 from __future__ import annotations
 
+import json
 import secrets
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import anyio
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
-from .auth import AccessToken
+from . import audit
+from .auth import AccessToken, token_hash
+from .ratelimit import client_ip
 
 
 @dataclass
@@ -189,6 +194,10 @@ class ReauthRuntime:
     hold_timeout: float
     issuer_for: Callable[[Any], str]
     trusted_proxies: tuple[str, ...] = ()
+    # display name for the waiting-request block, e.g. "Claude Code"
+    label_for: Callable[[str, ClientSessionInfo | None], str] = (
+        lambda client_id, info: (info.title or info.name) if info and (info.title or info.name) else client_id
+    )
 
 
 _runtime: ReauthRuntime | None = None
@@ -201,3 +210,140 @@ def configure(rt: ReauthRuntime | None) -> None:
 
 def runtime() -> ReauthRuntime | None:
     return _runtime
+
+
+def reverify_url(issuer: str, pid: str) -> str:
+    return f"{issuer}/oauth/reverify?id={pid}"
+
+
+def request_reverify(
+    rt: ReauthRuntime, *, thash: str, at: AccessToken, tool: str, args: dict,
+    ip: str, user_agent: str,
+) -> tuple[PendingReverify, bool]:
+    info = rt.registry.get(thash)
+    entry, created = rt.pending.get_or_create(
+        token_hash=thash, client_id=at.client_id, tool=tool,
+        args=audit.compact_args(args), ip=ip, user_agent=user_agent,
+        client_label=rt.label_for(at.client_id, info),
+        bearer_issued_at=at.created_at, last_verified_at=at.verified_at,
+    )
+    if created:
+        audit.emit(
+            "auth.reverify.requested", client_id=at.client_id, tool=tool, ip=ip,
+        )
+    return entry, created
+
+
+# methods that act on data; list/initialize/ping stay open so the client
+# keeps its connection and tool list while the session is lapsed
+GATED_METHODS = frozenset({"tools/call", "resources/read", "prompts/get"})
+_MAX_INSPECT_BODY = 1024 * 1024
+
+
+class McpGateApp:
+    """ASGI wrapper around the MCP app.
+
+    Records client capabilities at ``initialize`` and, for a lapsed human
+    session, answers before the MCP app does: 401 for clients that can't
+    elicit, a JSON-RPC error carrying the re-verify link for reads.
+    ``tools/call`` from capable clients goes through to :func:`gate_tool_call`.
+    """
+
+    def __init__(self, inner, *, resource_metadata_for: Callable[[Request], str]):
+        self._inner = inner
+        self._resource_metadata_for = resource_metadata_for
+
+    async def __call__(self, scope, receive, send):
+        rt = runtime()
+        if rt is None or scope["type"] != "http" or scope.get("method") != "POST":
+            await self._inner(scope, receive, send)
+            return
+        request = Request(scope)
+        auth_header = request.headers.get("authorization", "")
+        if not auth_header.startswith("Bearer "):
+            await self._inner(scope, receive, send)
+            return
+        thash = token_hash(auth_header[7:])
+        at = rt.token_store.get_interactive_by_hash(thash)
+        if at is None:
+            await self._inner(scope, receive, send)
+            return
+
+        buffered: list[dict] = []
+        body = b""
+        complete = False
+        while len(body) <= _MAX_INSPECT_BODY:
+            msg = await receive()
+            buffered.append(msg)
+            if msg["type"] != "http.request":
+                break
+            body += msg.get("body", b"")
+            if not msg.get("more_body"):
+                complete = True
+                break
+
+        async def replay():
+            if buffered:
+                return buffered.pop(0)
+            return await receive()
+
+        messages: list[dict] = []
+        if complete:
+            try:
+                parsed = json.loads(body or b"null")
+            except ValueError:
+                parsed = None
+            items = parsed if isinstance(parsed, list) else [parsed]
+            messages = [m for m in items if isinstance(m, dict)]
+
+        ip = client_ip(request, rt.trusted_proxies)
+        ua = request.headers.get("user-agent", "")
+        for m in messages:
+            if m.get("method") == "initialize":
+                rt.registry.record(
+                    thash, ClientSessionInfo.from_initialize(
+                        m.get("params"), user_agent=ua, ip=ip,
+                    ),
+                )
+
+        gated = [m for m in messages if m.get("method") in GATED_METHODS]
+        if not gated or not session_lapsed(at, rt.session_ttl):
+            await self._inner(scope, replay, send)
+            return
+
+        info = rt.registry.get(thash)
+        if info is None or not info.can_elicit:
+            meta = self._resource_metadata_for(request)
+            response = JSONResponse(
+                {"error": "invalid_token",
+                 "error_description": "BeaconMCP session expired, sign in again"},
+                status_code=401,
+                headers={"WWW-Authenticate": (
+                    f'Bearer realm="beaconmcp", error="invalid_token", '
+                    f'resource_metadata="{meta}"'
+                )},
+            )
+            await response(scope, replay, send)
+            return
+
+        reads = [m for m in gated if m.get("method") != "tools/call"]
+        if not reads:
+            await self._inner(scope, replay, send)
+            return
+
+        m = reads[0]
+        params = m.get("params")
+        params = params if isinstance(params, dict) else {}
+        entry, _ = request_reverify(
+            rt, thash=thash, at=at, tool=m["method"], args=params, ip=ip, user_agent=ua,
+        )
+        url = reverify_url(rt.issuer_for(request), entry.id)
+        text = "Your BeaconMCP session expired. Verify it's you, then retry."
+        if info.elicit_url:
+            error = {"code": -32042, "message": text, "data": {"elicitations": [
+                {"mode": "url", "elicitationId": entry.id, "url": url, "message": text},
+            ]}}
+        else:
+            error = {"code": -32001, "message": f"{text} {url}"}
+        response = JSONResponse({"jsonrpc": "2.0", "id": m.get("id"), "error": error})
+        await response(scope, replay, send)
