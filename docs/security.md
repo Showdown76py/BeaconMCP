@@ -70,8 +70,11 @@ refresh tokens disappear with the sign-in they belonged to.
 `clients.json` when it changes on disk, and the revoked client's bearers, refresh tokens and named
 API tokens are refused from its next request on.
 
-`security_end_session` lets a client revoke its own bearer at the end of a task, which is a cheap way
-to shrink the replay window.
+`security_end_session` lets a client close its session at the end of a task, a cheap way to shrink
+the replay window. For an OAuth sign-in it ends the human session and keeps the connection: the next
+call asks for a passkey/TOTP re-verification. With `sign_out=true` (asked to confirm through
+elicitation when the client supports it) it revokes the bearer and its refresh family; API tokens
+are always revoked.
 
 ## TOTP
 

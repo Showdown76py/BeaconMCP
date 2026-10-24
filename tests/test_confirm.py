@@ -101,3 +101,11 @@ async def test_no_ctx_noop() -> None:
 
 def test_default_list() -> None:
     assert "bmc_power_off" in DEFAULT_CONFIRM_TOOLS and "proxmox_vm_stop" not in DEFAULT_CONFIRM_TOOLS
+
+
+async def test_end_session_asks_only_for_full_sign_out() -> None:
+    ctx = Ctx(FORM)
+    await confirm_destructive(ctx, "security_end_session", {})
+    assert ctx.messages == []
+    await confirm_destructive(ctx, "security_end_session", {"sign_out": True})
+    assert "Sign out of BeaconMCP completely?" in ctx.messages[0]

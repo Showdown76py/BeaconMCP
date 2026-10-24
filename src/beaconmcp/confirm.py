@@ -23,6 +23,7 @@ DEFAULT_CONFIRM_TOOLS: tuple[str, ...] = (
     "proxmox_snapshot_delete",
     "proxmox_backup_restore",
     "beaconmcp_self_update",
+    "security_end_session",
 )
 
 
@@ -46,6 +47,8 @@ def _message(tool: str, kw: dict) -> str:
         return f"Restore {kw.get('archive')} over {vm}? This overwrites it."
     if tool == "beaconmcp_self_update":
         return "Update BeaconMCP" + (" and restart the server?" if kw.get("restart", True) else "?")
+    if tool == "security_end_session":
+        return "Sign out of BeaconMCP completely? You will have to authorize this client again."
     return f"Run {tool}?"
 
 
@@ -53,6 +56,9 @@ def _needs_confirmation(tool: str, kw: dict, tools: Collection[str]) -> bool:
     if tool not in tools or kw.get("dry_run"):
         return False
     if tool == "proxmox_backup_restore" and not kw.get("force"):
+        return False
+    # ending the human session is harmless, only a full sign-out is asked
+    if tool == "security_end_session" and not kw.get("sign_out"):
         return False
     return True
 

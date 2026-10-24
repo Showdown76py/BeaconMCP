@@ -94,6 +94,22 @@ def revoke_current_token() -> bool:
     return _active_token_store.revoke(token)
 
 
+def lapse_current_session() -> bool:
+    """End the human session of the in-flight OAuth sign-in, keep its tokens.
+
+    The next data call then asks for a passkey/TOTP re-verification instead
+    of failing with 401. False when the bearer has no human session (named,
+    client_credentials or dashboard bearers) or outside a request.
+    """
+    token = current_bearer_token.get()
+    if not token or _active_token_store is None:
+        return False
+    session = _active_token_store.get_interactive(token)
+    if session is None:
+        return False
+    return _active_token_store.mark_verified(session.key, at=0.0)
+
+
 def current_client_id() -> str | None:
     """Resolve the client_id behind the in-flight request's bearer token.
 

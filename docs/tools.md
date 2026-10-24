@@ -152,7 +152,7 @@ to that device.
 
 | Tool | Description |
 |------|-------------|
-| `security_end_session` | Revoke the bearer token used for the current request, ~8 s after responding. Call it as the last step of a task to shrink the window in which a stolen token can be replayed — never mid-task, or the next call gets a 401. |
+| `security_end_session` | Close the session at the end of a task. For an OAuth sign-in it ends the human session and keeps the connection, so the next call asks for a passkey/TOTP re-verification. `sign_out=true` (confirmed through elicitation when supported) revokes the bearer ~8 s after responding; API tokens are always revoked. |
 
 ## Maintenance (2)
 
