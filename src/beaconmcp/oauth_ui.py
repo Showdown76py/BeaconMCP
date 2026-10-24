@@ -977,3 +977,156 @@ REVERIFY_JS = """
   });
 })();
 """
+
+
+_ICON_EYE = (
+    '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+    'stroke-width="2.2" stroke-linecap="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 '
+    '7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>'
+)
+_ICON_BOLT = (
+    '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+    'stroke-width="2.2" stroke-linecap="round"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>'
+)
+_ICON_POWER = (
+    '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+    'stroke-width="2.2" stroke-linecap="round"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 '
+    '1 1-12.8 0"/></svg>'
+)
+_ICON_TERM = (
+    '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+    'stroke-width="2.2" stroke-linecap="round"><path d="M4 7l5 5-5 5M12 19h8"/></svg>'
+)
+
+
+def capability_kinds(*, proxmox: bool, bmc: bool, ssh: bool) -> list[str]:
+    return [k for k, on in (("Proxmox", proxmox), ("BMC", bmc), ("SSH", ssh)) if on]
+
+
+def permissions_list(kinds: list[str]) -> str:
+    """What access grants, by capability kind only: no counts or hostnames,
+    the page is reachable before 2FA."""
+    def item(icon: str, hot: bool, title: str, note: str) -> str:
+        cls = "ic hot" if hot else "ic"
+        return (
+            f'<li><span class="{cls}">{icon}</span>'
+            f"<div>{title}<small>{note}</small></div></li>"
+        )
+
+    rows = [item(_ICON_EYE, False, "Read infrastructure status", " · ".join(kinds) or "—")]
+    if "Proxmox" in kinds:
+        rows.append(item(_ICON_BOLT, True, "Start, stop, migrate VMs and run commands",
+                         "Logged in the audit trail"))
+    elif "SSH" in kinds:
+        rows.append(item(_ICON_TERM, True, "Run shell commands on your hosts",
+                         "Logged in the audit trail"))
+    if "BMC" in kinds:
+        rows.append(item(_ICON_POWER, True, "Power off or reset physical servers",
+                         "Confirmed in your client when it supports it"))
+    return '<ul class="perms">' + "".join(rows) + "</ul>"
+
+
+def redirect_display(redirect_uri: str) -> str:
+    """Redirect URI with its host in bold, the part people should check."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(redirect_uri)
+    host = parts.hostname or ""
+    if not host or not parts.scheme:
+        return f'<span class="url">{html.escape(redirect_uri)}</span>'
+    netloc = parts.netloc
+    i = netloc.lower().rfind(host.lower())
+    before, after = netloc[:i], netloc[i + len(host):]
+    tail = parts.path + (f"?{parts.query}" if parts.query else "")
+    return (
+        f'<span class="url">{html.escape(parts.scheme)}://{html.escape(before)}'
+        f"<strong>{html.escape(netloc[i:i + len(host)])}</strong>"
+        f"{html.escape(after)}{html.escape(tail)}</span>"
+    )
+
+
+def render_authorize_page(
+    *, host: str, client_id: str, client_name: str, logo_url: str,
+    redirect_uri: str, kinds: list[str], hidden_inputs: str, banner: str,
+    locked: bool, approved: bool, passkeys_on: bool, ticket: str,
+    access_expiry: str, ticket_expiry: str,
+) -> str:
+    """``/oauth/authorize``: connect step, then the post-2FA confirmation.
+
+    ``hidden_inputs`` and ``banner`` are pre-escaped HTML; ``access_expiry``
+    and ``ticket_expiry`` too. Element ids are what ``AUTHORIZE_JS`` binds to.
+    """
+    e = html.escape
+    disabled = " disabled" if locked else ""
+    name = e(client_name)
+    body = f"""<div class="auth-card"
+     data-passkeys="{'true' if passkeys_on else 'false'}"
+     data-client-id="{e(client_id)}">
+  {server_bar(host)}
+  <div class="auth-body">
+  {client_pair(logo_url, client_name)}
+
+  <section id="step-verify"{' hidden' if approved else ''}>
+    <h1>Connect {name}</h1>
+    <p class="sub"><strong>{name}</strong> wants to manage your infrastructure through this BeaconMCP server.</p>
+    {banner}
+    {permissions_list(kinds)}
+    <div class="banner" id="verify-error" hidden></div>
+    <div id="passkey-block" hidden>
+      <button type="button" class="btn-primary" id="passkey-btn"{disabled}>
+        {PASSKEY_ICON}<span class="btn-label">Continue with passkey</span>
+      </button>
+      <div class="alt-divider"><span>or 6-digit code</span></div>
+    </div>
+    <form method="POST" action="/oauth/authorize" id="authorize-form">
+{hidden_inputs}
+      {totp_boxes(locked)}
+      <input type="hidden" name="totp" id="totp" pattern="\\d{{6}}" required>
+      <button type="submit" class="btn-primary" id="verify-btn"{disabled} disabled>
+        <span class="btn-label">Verify and authorize</span>
+        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>
+      </button>
+    </form>
+    <p class="hint" id="passkey-unsupported" hidden>
+      This browser can't use passkeys here &mdash; they require HTTPS (or a
+      localhost address).
+    </p>
+    <div class="foot">
+      <div class="row"><span>Redirects to</span>{redirect_display(redirect_uri)}</div>
+      <div class="row"><span>Client</span><b>{e(client_id)}</b></div>
+    </div>
+  </section>
+
+  <section id="step-done"{'' if approved else ' hidden'}>
+    <div class="success-mark" aria-hidden="true">{CHECK_ICON}</div>
+    <h1>Two-factor confirmed</h1>
+    <p class="sub">You're about to grant <strong>{name}</strong> access to this BeaconMCP server.</p>
+    <div class="banner" id="done-error" hidden></div>
+    <div class="banner banner-success" id="done-ok" hidden></div>
+    <dl class="expiry-card">
+      <div class="expiry-row"><dt>Verify again</dt><dd id="access-expiry">{access_expiry}</dd></div>
+      <div class="expiry-row"><dt>This approval expires</dt><dd id="ticket-expiry">{ticket_expiry}</dd></div>
+    </dl>
+    <p class="hint">After that, {name} sends you a link to confirm it's still you.</p>
+    <div id="passkey-add-block" hidden>
+      <button type="button" class="btn-ghost" id="add-passkey-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="8" r="4"/><path d="M10.9 13.1A6 6 0 0 0 4 19v1h7"/><path d="M18 13v6M15 16h6"/></svg>
+        <span class="btn-label">Add a passkey</span>
+      </button>
+      <p class="hint" id="passkey-add-hint">Register this device so next time you can skip the 2FA code.</p>
+    </div>
+    <p class="hint" id="passkey-add-unsupported" hidden>
+      This browser can't register a passkey here &mdash; they require HTTPS
+      (or a localhost address).
+    </p>
+    <form method="POST" action="/oauth/authorize/finalize" id="finalize-form">
+      <input type="hidden" name="ticket" id="ticket" value="{e(ticket)}">
+      <button type="submit" class="btn-primary" id="finish-btn">
+        <span class="btn-label">Finish signing in</span>
+        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </button>
+    </form>
+  </section>
+  </div>
+</div>"""
+    return page("BeaconMCP · Authorize", body, script=AUTHORIZE_JS)

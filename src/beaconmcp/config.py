@@ -156,6 +156,16 @@ class ServerConfig:
     # session bearers always use the fixed 24 h TTL. The
     # BEACONMCP_NAMED_TOKEN_TTL env var overrides this.
     named_token_ttl: int | None = None
+    # Human-session re-auth (see reauth.py). An authorization_code bearer
+    # lives ``interactive_bearer_ttl`` but only works while the last
+    # passkey/TOTP check is younger than ``human_session_ttl``.
+    human_session_ttl: int = 86400
+    interactive_bearer_ttl: int = 2592000
+    reverify_hold_timeout: int = 300
+    reverify_link_ttl: int = 600
+    # Tools that ask for a confirmation through form elicitation. ``None``
+    # means the built-in list (confirm.DEFAULT_CONFIRM_TOOLS).
+    confirm_tools: list[str] | None = None
 
 
 @dataclass
@@ -556,7 +566,22 @@ class Config:
                 if srv_raw.get("named_token_ttl") is not None
                 else None
             ),
+            human_session_ttl=int(srv_raw.get("human_session_ttl", 86400)),
+            interactive_bearer_ttl=int(srv_raw.get("interactive_bearer_ttl", 2592000)),
+            reverify_hold_timeout=int(srv_raw.get("reverify_hold_timeout", 300)),
+            reverify_link_ttl=int(srv_raw.get("reverify_link_ttl", 600)),
+            confirm_tools=(
+                [str(t) for t in srv_raw["confirm_tools"]]
+                if isinstance(srv_raw.get("confirm_tools"), list)
+                else None
+            ),
         )
+        for key in (
+            "human_session_ttl", "interactive_bearer_ttl",
+            "reverify_hold_timeout", "reverify_link_ttl",
+        ):
+            if getattr(server, key) <= 0:
+                raise ConfigError(f"server.{key}: must be > 0 seconds.")
         if server.named_token_ttl is not None and server.named_token_ttl < 0:
             raise ConfigError(
                 "server.named_token_ttl: must be >= 0 seconds "
@@ -716,6 +741,14 @@ class Config:
                         if self.server.named_token_ttl == 0
                         else self.server.named_token_ttl
                     )
+                ),
+                "human_session_ttl": self.server.human_session_ttl,
+                "interactive_bearer_ttl": self.server.interactive_bearer_ttl,
+                "reverify_hold_timeout": self.server.reverify_hold_timeout,
+                "reverify_link_ttl": self.server.reverify_link_ttl,
+                "confirm_tools": (
+                    "(default list)" if self.server.confirm_tools is None
+                    else self.server.confirm_tools
                 ),
             },
             "proxmox": {

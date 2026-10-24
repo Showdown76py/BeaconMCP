@@ -739,3 +739,36 @@ def test_server_named_token_ttl_zero_and_negative(
     # Negatives are nonsense -- fail fast with the offending key.
     with pytest.raises(ConfigError, match="named_token_ttl"):
         Config.load(config_path=_write(tmp_path / "neg.yaml", base.format(value=-5)))
+
+
+_SSH_ONLY = """
+version: 1
+ssh:
+  hosts:
+    - name: vps1
+      host: 198.51.100.10
+      user: root
+      password: pw
+"""
+
+
+def test_reauth_defaults(tmp_path: Path) -> None:
+    cfg = Config.load(config_path=_write(tmp_path / "b.yaml", _SSH_ONLY))
+    assert cfg.server.human_session_ttl == 86400
+    assert cfg.server.interactive_bearer_ttl == 2592000
+    assert cfg.server.reverify_hold_timeout == 300
+    assert cfg.server.reverify_link_ttl == 600
+    assert cfg.server.confirm_tools is None
+
+
+def test_reauth_overrides(tmp_path: Path) -> None:
+    text = _SSH_ONLY + "server:\n  human_session_ttl: 60\n  confirm_tools: [bmc_power_off]\n"
+    cfg = Config.load(config_path=_write(tmp_path / "b.yaml", text))
+    assert cfg.server.human_session_ttl == 60
+    assert cfg.server.confirm_tools == ["bmc_power_off"]
+
+
+def test_reauth_ttl_must_be_positive(tmp_path: Path) -> None:
+    text = _SSH_ONLY + "server:\n  reverify_link_ttl: 0\n"
+    with pytest.raises(ConfigError, match="reverify_link_ttl"):
+        Config.load(config_path=_write(tmp_path / "b.yaml", text))

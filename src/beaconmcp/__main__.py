@@ -462,6 +462,7 @@ def _run_http(mcp, host: str, port: int):
     from . import audit
     from . import auth
     from . import oauth_ui
+    from .client_identity import LogoResolver, identify
     from .auth import (
         TOTP_REPLAY_MESSAGE,
         ClientStore,
@@ -527,6 +528,7 @@ def _run_http(mcp, host: str, port: int):
     )
     token_store = TokenStore(db_path=tokens_db, named_token_ttl=named_token_ttl)
     code_store = CodeStore()
+    logo_resolver = LogoResolver(clients_path.parent / "logo-cache")
 
     # Shared dashboard SQLite handle. Three features live in it -- sessions,
     # DCR bootstrap slugs and passkeys -- and /oauth/authorize wants the
@@ -772,7 +774,6 @@ def _run_http(mcp, host: str, port: int):
         elif error:
             banner = f'<div class="banner">{html.escape(error)}</div>'
 
-        disabled = "disabled" if locked else ""
         approved = ticket is not None
         passkeys_on = _authorize_passkeys_enabled(request, client_id)
 
@@ -783,109 +784,34 @@ def _run_http(mcp, host: str, port: int):
                 _dt.datetime.fromtimestamp(ts).strftime("%d %b %Y at %H:%M")
             )
 
-        page = f"""<!doctype html>
-<html lang="en" data-theme="light">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BeaconMCP &middot; Authorize</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<style>{oauth_ui.AUTH_CSS}</style>
-<script>{oauth_ui.THEME_JS}</script>
-</head>
-<body>
-<div class="auth-card"
-     data-passkeys="{'true' if passkeys_on else 'false'}"
-     data-client-id="{html.escape(client_id)}">
-  <div class="auth-brand"><span class="name">BeaconMCP</span></div>
-
-  <section id="step-verify"{' hidden' if approved else ''}>
-    <h1>Authorize access</h1>
-    <p class="sub">Enter the 6-digit code from your authenticator to grant access to <strong>{html.escape(client_name)}</strong>.</p>
-    {banner}
-    <div class="toast-banner">
-      <span class="dot"></span>
-      Client: <b>{html.escape(client_id)}</b>
-    </div>
-    <div class="banner" id="verify-error" hidden></div>
-    <form method="POST" action="/oauth/authorize" id="authorize-form">
-{hidden}
-      <div class="totp-inputs" id="totp-inputs">
-        <input maxlength="1" inputmode="numeric" aria-label="Digit 1" {disabled}>
-        <input maxlength="1" inputmode="numeric" aria-label="Digit 2" {disabled}>
-        <input maxlength="1" inputmode="numeric" aria-label="Digit 3" {disabled}>
-        <input maxlength="1" inputmode="numeric" aria-label="Digit 4" {disabled}>
-        <input maxlength="1" inputmode="numeric" aria-label="Digit 5" {disabled}>
-        <input maxlength="1" inputmode="numeric" aria-label="Digit 6" {disabled}>
-      </div>
-      <input type="hidden" name="totp" id="totp" pattern="\\d{{6}}" required>
-      <button type="submit" class="btn-primary" id="verify-btn" {disabled} disabled>
-        <span class="btn-label">Verify and authorize</span>
-        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>
-      </button>
-    </form>
-    <div id="passkey-block" hidden>
-      <div class="alt-divider"><span>or</span></div>
-      <button type="button" class="btn-ghost" id="passkey-btn" {disabled}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="8" r="4"/><path d="M10.9 13.1A6 6 0 0 0 4 19v1h7"/><path d="M17.5 12a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z"/><path d="M17.5 17v4l1.5-1.2 1.5 1.2v-4"/></svg>
-        <span class="btn-label">Use a passkey instead</span>
-      </button>
-      <p class="hint">Skip the 6-digit code with a passkey registered on this device.</p>
-    </div>
-    <p class="hint" id="passkey-unsupported" hidden>
-      This browser can't use passkeys here &mdash; they require HTTPS (or a
-      localhost address).
-    </p>
-  </section>
-
-  <section id="step-done"{'' if approved else ' hidden'}>
-    <div class="success-mark" aria-hidden="true">
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>
-    </div>
-    <h1>Two-factor confirmed</h1>
-    <p class="sub">You're about to grant <strong>{html.escape(client_name)}</strong> access to this BeaconMCP server.</p>
-    <div class="banner" id="done-error" hidden></div>
-    <div class="banner banner-success" id="done-ok" hidden></div>
-
-    <dl class="expiry-card">
-      <div class="expiry-row">
-        <dt>Access expires</dt>
-        <dd id="access-expiry">{_fmt(access_expires_at)}</dd>
-      </div>
-      <div class="expiry-row">
-        <dt>This approval expires</dt>
-        <dd id="ticket-expiry">{_fmt(ticket_expires_at)}</dd>
-      </div>
-    </dl>
-    <p class="hint">The client will have to go through two-factor again once its access expires.</p>
-
-    <div id="passkey-add-block" hidden>
-      <button type="button" class="btn-ghost" id="add-passkey-btn">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="8" r="4"/><path d="M10.9 13.1A6 6 0 0 0 4 19v1h7"/><path d="M18 13v6M15 16h6"/></svg>
-        <span class="btn-label">Add a passkey</span>
-      </button>
-      <p class="hint" id="passkey-add-hint">Register this device so next time you can skip the 2FA code.</p>
-    </div>
-    <p class="hint" id="passkey-add-unsupported" hidden>
-      This browser can't register a passkey here &mdash; they require HTTPS
-      (or a localhost address).
-    </p>
-
-    <form method="POST" action="/oauth/authorize/finalize" id="finalize-form">
-      <input type="hidden" name="ticket" id="ticket" value="{html.escape(ticket or '')}">
-      <button type="submit" class="btn-primary" id="finish-btn">
-        <span class="btn-label">Finish signing in</span>
-        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-      </button>
-    </form>
-  </section>
-</div>
-<script>{oauth_ui.AUTHORIZE_JS}</script>
-</body>
-</html>
-"""
+        redirect_uri = normalized.get("redirect_uri", "")
+        client = client_store.get(client_id)
+        identity = identify(redirect_uri=redirect_uri, registered_name=client_name)
+        logo_url = logo_resolver.url_for(
+            identity,
+            logo_uri=(client.logo_uri or "") if client else "",
+            website_url=(client.client_uri or "") if client else "",
+        )
+        page = oauth_ui.render_authorize_page(
+            host=request.headers.get("x-forwarded-host", request.headers.get("host", "localhost")),
+            client_id=client_id,
+            client_name=identity.name if identity.key else client_name,
+            logo_url=logo_url,
+            redirect_uri=redirect_uri,
+            kinds=oauth_ui.capability_kinds(
+                proxmox=bool(config.pve_nodes),
+                bmc=bool(config.bmc_devices),
+                ssh=bool(config.ssh and config.ssh.hosts),
+            ),
+            hidden_inputs=hidden,
+            banner=banner,
+            locked=locked,
+            approved=approved,
+            passkeys_on=passkeys_on,
+            ticket=ticket or "",
+            access_expiry=_fmt(access_expires_at),
+            ticket_expiry=_fmt(ticket_expires_at),
+        )
         return HTMLResponse(page)
 
     def _authorize_redirect(normalized: dict[str, str]) -> Response:
@@ -915,7 +841,7 @@ def _run_http(mcp, host: str, port: int):
         client remembered to send the mode header.
         """
         ticket, ticket_expires_at = _issue_pending(normalized)
-        access_expires_at = time.time() + TokenStore.TOKEN_TTL
+        access_expires_at = time.time() + config.server.human_session_ttl
         if as_json or _wants_json_authorize(request):
             return JSONResponse({
                 "ok": True,
