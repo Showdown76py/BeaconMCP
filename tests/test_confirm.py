@@ -112,3 +112,12 @@ async def test_client_capabilities_property_preferred() -> None:
     ctx.request_context = SimpleNamespace(session=Session())
     await confirm_destructive(ctx, "bmc_power_reset", {"device_id": "x"})
     assert ctx.messages == ["Hard reset x via its BMC?"]
+
+
+async def test_elicitation_failure_gives_clear_error() -> None:
+    class Broken(Ctx):
+        async def elicit(self, message, schema):
+            raise TimeoutError("no answer")
+
+    with pytest.raises(ToolError, match="could not show it .*Nothing was run"):
+        await confirm_destructive(Broken(FORM), "bmc_power_off", {})

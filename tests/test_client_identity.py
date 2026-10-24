@@ -5,14 +5,15 @@ from __future__ import annotations
 from beaconmcp.client_identity import ClientIdentity, identify
 
 
-def test_identify_by_client_info() -> None:
-    assert identify(client_info_name="claude-code") == ClientIdentity("claude-code", "Claude Code")
-    assert identify(client_info_name="codex-mcp-client").key == "codex"
+def test_identify_by_registered_name() -> None:
+    assert identify(registered_name="claude-code") == ClientIdentity("claude-code", "Claude Code")
+    assert identify(registered_name="codex-mcp-client").key == "codex"
 
 
-def test_client_info_wins_over_registered_name() -> None:
-    got = identify(client_info_name="claude-code", registered_name="ChatGPT connector")
-    assert got.key == "claude-code"
+def test_hosted_redirect_wins_over_registered_name() -> None:
+    got = identify(redirect_uri="https://claude.ai/api/mcp/auth_callback",
+                   registered_name="ChatGPT connector")
+    assert got.key == "claude"
 
 
 def test_identify_by_redirect_claude_ai() -> None:
@@ -37,4 +38,4 @@ def test_localhost_redirect_falls_back_to_registered_name() -> None:
 
 def test_unknown_client_generic() -> None:
     assert identify() == ClientIdentity(None, "Unknown client")
-    assert identify(client_info_name="GitHub Copilot") == ClientIdentity(None, "GitHub Copilot")
+    assert identify(registered_name="GitHub Copilot") == ClientIdentity(None, "GitHub Copilot")

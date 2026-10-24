@@ -77,9 +77,11 @@ def register_maintenance_tools(
         return value says so explicitly. After the restart, a watchdog rolls
         back to the previous revision if ``/health`` does not answer.
 
-        Requires ``confirm=True``. Call ``beaconmcp_check_update`` first and
-        show the user what is about to change — including any new config
-        variables — before asking them to confirm.
+        Call ``beaconmcp_check_update`` first and show the user what is
+        about to change — including any new config variables. When the
+        client supports elicitation, the user confirms in a dialog that this
+        call opens: call it directly, without asking in chat first. Other
+        clients need ``confirm=True``, passed once the user agreed in chat.
 
         Refuses to run when the checkout has uncommitted changes, or when
         this is not a git install; ``beaconmcp_check_update`` reports those

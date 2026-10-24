@@ -89,7 +89,14 @@ async def confirm_destructive(
         return kwargs
     if not _supports_form(ctx):
         return kwargs
-    result = await ctx.elicit(message=_message(tool, kwargs), schema=_Confirm)
+    try:
+        result = await ctx.elicit(message=_message(tool, kwargs), schema=_Confirm)
+    except Exception as exc:  # noqa: BLE001 -- transport, timeout, client error
+        audit.emit("tool.confirm.unavailable", tool=tool, error=str(exc)[:200])
+        raise ToolError(
+            f"{tool} needs a confirmation but the client could not show it "
+            f"({exc.__class__.__name__}). Nothing was run."
+        ) from exc
     data = getattr(result, "data", None)
     if getattr(result, "action", "") != "accept" or not getattr(data, "confirm", False):
         audit.emit("tool.confirm.declined", tool=tool)

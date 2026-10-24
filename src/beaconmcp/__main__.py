@@ -949,7 +949,7 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             website_url=(client.client_uri or "") if client else "",
         )
         page = oauth_ui.render_authorize_page(
-            host=request.headers.get("x-forwarded-host", request.headers.get("host", "localhost")),
+            host=forwarded_host(request, tuple(config.server.trusted_proxies)),
             client_id=client_id,
             client_name=identity.name if identity.key else client_name,
             logo_url=logo_url,
@@ -1454,7 +1454,7 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         if path.startswith("/oauth/passkey/"):
             return await call_next(request)
 
-        # Client logos shown on the authorize page: public images.
+        # logos on the authorize page, public images
         if path.startswith("/oauth/logo/"):
             return await call_next(request)
 

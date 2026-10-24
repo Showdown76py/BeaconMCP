@@ -7,15 +7,14 @@ registered name), so nothing in this module may feed a security decision.
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
+import functools
 import hashlib
 import ipaddress
 import json
 import re
 import socket
 import time
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -38,7 +37,7 @@ KNOWN_CLIENTS: dict[str, str] = {
     "chatgpt": "ChatGPT",
 }
 
-# clientInfo.name values seen in the wild, normalised (lowercase, alnum only)
+# client names seen in the wild, normalised (lowercase, alnum only)
 _CLIENT_INFO_NAMES: dict[str, str] = {
     "claudecode": "claude-code",
     "claudeai": "claude",
@@ -78,11 +77,9 @@ def _from_name(value: str) -> str | None:
     return None
 
 
-def identify(
-    *, client_info_name: str = "", redirect_uri: str = "", registered_name: str = "",
-) -> ClientIdentity:
-    key = _from_name(client_info_name)
-    if key is None and redirect_uri:
+def identify(*, redirect_uri: str = "", registered_name: str = "") -> ClientIdentity:
+    key = None
+    if redirect_uri:
         parsed = urlparse(redirect_uri)
         host = (parsed.hostname or "").lower()
         for r_host, r_path, r_key in _REDIRECTS:
@@ -93,7 +90,7 @@ def identify(
         key = _from_name(registered_name)
     if key is not None:
         return ClientIdentity(key, KNOWN_CLIENTS[key])
-    return ClientIdentity(None, registered_name or client_info_name or "Unknown client")
+    return ClientIdentity(None, registered_name or "Unknown client")
 
 
 # --- logos -------------------------------------------------------------------
@@ -224,24 +221,27 @@ async def safe_fetch(url: str) -> tuple[bytes, str]:
     raise UnsafeLogoURL("too many redirects")
 
 
-def _decode_data_uri(uri: str) -> tuple[bytes, str] | None:
-    m = re.match(r"data:image/(png|jpeg|webp|x-icon|vnd\.microsoft\.icon);base64,(.+)$", uri, re.S)
-    if not m:
+@functools.lru_cache(maxsize=64)
+def _render_si(slug: str) -> str | None:
+    """Bundled Simple Icons SVG tinted with its brand colour, None if unknown."""
+    meta = _SI_META.get(slug)
+    path = _SI_DIR / f"{slug}.svg"
+    if meta is None or not re.fullmatch(r"[a-z0-9]+", slug) or not path.is_file():
         return None
-    try:
-        data = base64.b64decode(m.group(2), validate=True)
-    except (ValueError, binascii.Error):
-        return None
-    ext = _sniff(data)
-    if ext is None or len(data) > _MAX_LOGO_BYTES:
-        return None
-    return data, ext
+    hexcolor = meta.get("hex", "888888")
+    r, g, b = (int(hexcolor[i:i + 2], 16) for i in (0, 2, 4))
+    dark = (0.2126 * r + 0.7152 * g + 0.0722 * b) < 60
+    # near-black brand marks would vanish on the dark card
+    style = f"path{{fill:#{hexcolor}}}" + (
+        "@media (prefers-color-scheme:dark){path{fill:#ececec}}" if dark else ""
+    )
+    return path.read_text().replace("<title>", f"<style>{style}</style><title>", 1)
 
 
 class LogoResolver:
     """Pick a logo URL for a client without ever blocking on the network.
 
-    Order: known client, client-declared icon / DCR ``logo_uri``, bundled
+    Order: known client, DCR ``logo_uri``, bundled
     Simple Icons by name, favicon of the client's site, generic. Remote
     candidates are fetched in the background and served from a disk cache
     so the browser never talks to a third party.
@@ -278,8 +278,14 @@ class LogoResolver:
         if self._cache_dir is None:
             return None
         self._cache_dir.mkdir(parents=True, exist_ok=True)
-        files = sorted(self._cache_dir.iterdir(), key=lambda p: p.stat().st_mtime)
-        for stale in files[: max(0, len(files) - _MAX_CACHED_LOGOS + 1)]:
+        aged: list[tuple[float, Path]] = []
+        for path in self._cache_dir.iterdir():
+            try:
+                aged.append((path.stat().st_mtime, path))
+            except FileNotFoundError:  # another fill pruned it meanwhile
+                continue
+        aged.sort()
+        for _, stale in aged[: max(0, len(aged) - _MAX_CACHED_LOGOS + 1)]:
             stale.unlink(missing_ok=True)
         key = self._key(url)
         (self._cache_dir / f"{key}.{ext}").write_bytes(data)
@@ -287,12 +293,6 @@ class LogoResolver:
 
     def _remote(self, url: str) -> str | None:
         """Cached URL for ``url`` now, or None after scheduling a fetch."""
-        if url.startswith("data:"):
-            cached = self._cached(url)
-            if cached:
-                return cached
-            decoded = _decode_data_uri(url)
-            return self._store(url, *decoded) if decoded else None
         if not url.startswith("https://") or self._cache_dir is None:
             return None
         cached = self._cached(url)
@@ -327,8 +327,7 @@ class LogoResolver:
             await asyncio.gather(*list(self._tasks), return_exceptions=True)
 
     def url_for(
-        self, identity: ClientIdentity, *, declared_icons: Iterable[str] = (),
-        logo_uri: str = "", website_url: str = "",
+        self, identity: ClientIdentity, *, logo_uri: str = "", website_url: str = "",
     ) -> str:
         sites: list[str] = []
         if identity.key in _KNOWN_LOGOS:
@@ -336,11 +335,10 @@ class LogoResolver:
             if kind == "si":
                 return f"/oauth/logo/si/{value}"
             sites.append(value)
-        for candidate in [*declared_icons, logo_uri]:
-            if candidate:
-                got = self._remote(candidate)
-                if got:
-                    return got
+        if logo_uri:
+            got = self._remote(logo_uri)
+            if got:
+                return got
         slug = simple_icons_slug(identity.name)
         if slug:
             return f"/oauth/logo/si/{slug}"
@@ -362,20 +360,9 @@ class LogoResolver:
         }
 
         async def si(request: Request) -> Response:
-            slug = request.path_params["slug"]
-            meta = _SI_META.get(slug)
-            path = _SI_DIR / f"{slug}.svg"
-            if meta is None or not re.fullmatch(r"[a-z0-9]+", slug) or not path.is_file():
+            svg = _render_si(request.path_params["slug"])
+            if svg is None:
                 return Response(status_code=404)
-            svg = path.read_text()
-            hexcolor = meta.get("hex", "888888")
-            r, g, b = (int(hexcolor[i:i + 2], 16) for i in (0, 2, 4))
-            dark = (0.2126 * r + 0.7152 * g + 0.0722 * b) < 60
-            # near-black brand marks would vanish on the dark card
-            style = f"path{{fill:#{hexcolor}}}" + (
-                "@media (prefers-color-scheme:dark){path{fill:#ececec}}" if dark else ""
-            )
-            svg = svg.replace("<title>", f"<style>{style}</style><title>", 1)
             return Response(svg, media_type="image/svg+xml", headers=headers)
 
         async def generic(_request: Request) -> Response:

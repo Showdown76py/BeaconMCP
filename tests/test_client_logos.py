@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 from pathlib import Path
 
 import pytest
@@ -42,10 +41,10 @@ async def test_declared_icon_cached_then_served(tmp_path: Path) -> None:
     fetch = FakeFetch()
     r = LogoResolver(tmp_path, fetch=fetch)
     ident = ClientIdentity(None, "oh-my-pi")
-    first = r.url_for(ident, declared_icons=["https://ohmypi.dev/icon.png"])
+    first = r.url_for(ident, logo_uri="https://ohmypi.dev/icon.png")
     assert first == "/oauth/logo/generic"
     await r.drain()
-    second = r.url_for(ident, declared_icons=["https://ohmypi.dev/icon.png"])
+    second = r.url_for(ident, logo_uri="https://ohmypi.dev/icon.png")
     assert second.startswith("/oauth/logo/cached/") and second.endswith(".png")
     assert fetch.calls == ["https://ohmypi.dev/icon.png"]
 
@@ -58,7 +57,7 @@ async def test_declared_icon_cached_then_served(tmp_path: Path) -> None:
 
 async def test_uncached_declared_icon_falls_through_without_blocking(tmp_path: Path) -> None:
     r = LogoResolver(tmp_path, fetch=FakeFetch())
-    got = r.url_for(ClientIdentity(None, "GitHub Copilot"), declared_icons=["https://x.dev/i.png"])
+    got = r.url_for(ClientIdentity(None, "GitHub Copilot"), logo_uri="https://x.dev/i.png")
     assert got == "/oauth/logo/si/githubcopilot"
     await r.drain()
 
@@ -72,19 +71,6 @@ async def test_failed_fetch_negative_cached(tmp_path: Path) -> None:
     r.url_for(ident, logo_uri="https://x.dev/i.png")
     await r.drain()
     assert len(fetch.calls) == 1
-
-
-def test_data_uri_icon_used_directly(tmp_path: Path) -> None:
-    r = LogoResolver(tmp_path, fetch=FakeFetch())
-    uri = "data:image/png;base64," + base64.b64encode(PNG).decode()
-    got = r.url_for(ClientIdentity(None, "x"), declared_icons=[uri])
-    assert got.startswith("/oauth/logo/cached/")
-
-
-def test_data_uri_svg_refused(tmp_path: Path) -> None:
-    r = LogoResolver(tmp_path, fetch=FakeFetch())
-    uri = "data:image/svg+xml;base64," + base64.b64encode(b"<svg onload=x>").decode()
-    assert r.url_for(ClientIdentity(None, "x"), declared_icons=[uri]) == "/oauth/logo/generic"
 
 
 def test_simple_icons_slug_normalisation() -> None:
@@ -165,6 +151,23 @@ def test_cache_is_bounded(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(ci, "_MAX_CACHED_LOGOS", 3)
     r = LogoResolver(tmp_path)
     for i in range(6):
-        uri = "data:image/png;base64," + base64.b64encode(PNG + bytes([i])).decode()
-        r.url_for(ClientIdentity(None, "x"), declared_icons=[uri])
+        r._store(f"https://x.dev/{i}.png", PNG, "png")
     assert len(list(tmp_path.iterdir())) == 3
+
+
+def test_prune_tolerates_file_removed_meanwhile(tmp_path: Path, monkeypatch) -> None:
+    import beaconmcp.client_identity as ci
+
+    monkeypatch.setattr(ci, "_MAX_CACHED_LOGOS", 2)
+    r = LogoResolver(tmp_path)
+    r._store("https://x.dev/a.png", PNG, "png")
+    real_iterdir = Path.iterdir
+
+    def racing_iterdir(self):
+        paths = list(real_iterdir(self))
+        for p in paths:
+            p.unlink()  # another fill pruned them between listing and stat
+        return iter(paths)
+
+    monkeypatch.setattr(Path, "iterdir", racing_iterdir)
+    assert r._store("https://x.dev/b.png", PNG, "png")
