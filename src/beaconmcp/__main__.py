@@ -1469,11 +1469,19 @@ def _run_http(mcp, host: str, port: int):
                 status_code=400,
             )
 
+        def _https_meta(key: str) -> str | None:
+            value = body.get(key) if isinstance(body, dict) else None
+            if isinstance(value, str) and value.startswith("https://") and len(value) <= 2048:
+                return value
+            return None
+
         try:
             new_client_id, new_client_secret = client_store.create_dynamic(
                 owner_client_id=row.owner_client_id,
                 name=f"{row.label} ({client_name})"[:120],
                 registration_source=f"chatgpt:{slug}",
+                logo_uri=_https_meta("logo_uri"),
+                client_uri=_https_meta("client_uri"),
             )
         except ValueError:
             return JSONResponse({"error": "invalid_client_metadata"}, status_code=400)

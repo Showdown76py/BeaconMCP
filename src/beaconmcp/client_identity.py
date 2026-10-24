@@ -6,9 +6,23 @@ registered name), so nothing in this module may feed a security decision.
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import binascii
+import hashlib
+import ipaddress
+import json
 import re
+import socket
+import time
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from urllib.parse import urlparse
+from pathlib import Path
+from urllib.parse import urljoin, urlparse
+
+from starlette.requests import Request
+from starlette.responses import Response
+from starlette.routing import Route
 
 
 @dataclass(frozen=True)
@@ -80,3 +94,302 @@ def identify(
     if key is not None:
         return ClientIdentity(key, KNOWN_CLIENTS[key])
     return ClientIdentity(None, registered_name or client_info_name or "Unknown client")
+
+
+# --- logos -------------------------------------------------------------------
+
+_ASSETS = Path(__file__).parent / "assets" / "client_logos"
+_SI_DIR = _ASSETS / "simpleicons"
+
+# known clients: bundled Simple Icons slug, or a site whose favicon is fetched
+_KNOWN_LOGOS: dict[str, tuple[str, str]] = {
+    "claude-code": ("si", "claude"),
+    "claude": ("si", "claude"),
+    "codex": ("site", "https://chatgpt.com"),
+    "chatgpt": ("site", "https://chatgpt.com"),
+}
+
+# names that don't normalise straight to their Simple Icons slug
+_SI_ALIASES: dict[str, str] = {
+    "copilot": "githubcopilot",
+    "githubcopilotchat": "githubcopilot",
+    "vscodecopilot": "githubcopilot",
+    "gemini": "googlegemini",
+    "geminicli": "googlegemini",
+    "zed": "zedindustries",
+    "mistral": "mistralai",
+    "lechat": "mistralai",
+    "windsurfeditor": "windsurf",
+    "huggingchat": "huggingface",
+}
+
+_MAX_LOGO_BYTES = 256 * 1024
+_CACHE_TTL = 7 * 86400
+_NEGATIVE_TTL = 3600
+_RASTER_TYPES = {
+    "png": "image/png", "jpg": "image/jpeg", "webp": "image/webp", "ico": "image/x-icon",
+}
+
+
+def _load_si_meta() -> dict[str, dict]:
+    try:
+        return json.loads((_SI_DIR / "_meta.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+_SI_META = _load_si_meta()
+
+
+def simple_icons_slug(name: str) -> str | None:
+    n = _norm(name)
+    if not n:
+        return None
+    # "Foo connector", "Claude Code (laptop)" -> try the bare product name too
+    stripped = re.sub(r"\(.*?\)", "", name)
+    candidates = [n, _norm(stripped), _norm(re.sub(r"\bconnector\b", "", stripped, flags=re.I))]
+    for c in candidates:
+        slug = _SI_ALIASES.get(c, c)
+        if slug and slug in _SI_META and (_SI_DIR / f"{slug}.svg").is_file():
+            return slug
+    return None
+
+
+def _sniff(data: bytes) -> str | None:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    if data[:4] == b"\x00\x00\x01\x00":
+        return "ico"
+    return None
+
+
+class UnsafeLogoURL(ValueError):
+    pass
+
+
+async def _public_host(host: str) -> None:
+    """Refuse hosts that resolve to anything but public addresses (SSRF)."""
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise UnsafeLogoURL(f"cannot resolve {host}") from exc
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if not ip.is_global or ip.is_multicast:
+            raise UnsafeLogoURL(f"{host} resolves to a non-public address")
+
+
+async def safe_fetch(url: str) -> tuple[bytes, str]:
+    """Fetch a remote raster logo. Returns ``(bytes, ext)``.
+
+    HTTPS only, public hosts only, same-host redirects only, size-capped,
+    and the bytes must sniff as PNG/JPEG/WebP/ICO (never SVG).
+    """
+    import httpx
+
+    for _ in range(3):
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise UnsafeLogoURL("logo URL must be https")
+        # httpx resolves again, so dns rebinding can slip past this check: the
+        # worst case is a blind GET whose answer must still sniff as an image
+        await _public_host(parsed.hostname)
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+            async with client.stream("GET", url, headers={"Accept": "image/*"}) as res:
+                if res.status_code in (301, 302, 303, 307, 308):
+                    target = urljoin(url, res.headers.get("location", ""))
+                    if urlparse(target).hostname != parsed.hostname:
+                        raise UnsafeLogoURL("cross-host redirect")
+                    url = target
+                    continue
+                if res.status_code != 200:
+                    raise UnsafeLogoURL(f"HTTP {res.status_code}")
+                data = b""
+                async for chunk in res.aiter_bytes():
+                    data += chunk
+                    if len(data) > _MAX_LOGO_BYTES:
+                        raise UnsafeLogoURL("logo too large")
+        ext = _sniff(data)
+        if ext is None:
+            raise UnsafeLogoURL("not a PNG/JPEG/WebP/ICO image")
+        return data, ext
+    raise UnsafeLogoURL("too many redirects")
+
+
+def _decode_data_uri(uri: str) -> tuple[bytes, str] | None:
+    m = re.match(r"data:image/(png|jpeg|webp|x-icon|vnd\.microsoft\.icon);base64,(.+)$", uri, re.S)
+    if not m:
+        return None
+    try:
+        data = base64.b64decode(m.group(2), validate=True)
+    except (ValueError, binascii.Error):
+        return None
+    ext = _sniff(data)
+    if ext is None or len(data) > _MAX_LOGO_BYTES:
+        return None
+    return data, ext
+
+
+class LogoResolver:
+    """Pick a logo URL for a client without ever blocking on the network.
+
+    Order: known client, client-declared icon / DCR ``logo_uri``, bundled
+    Simple Icons by name, favicon of the client's site, generic. Remote
+    candidates are fetched in the background and served from a disk cache
+    so the browser never talks to a third party.
+    """
+
+    def __init__(
+        self, cache_dir: Path | None,
+        fetch: Callable[[str], Awaitable[tuple[bytes, str]]] = safe_fetch,
+    ) -> None:
+        self._cache_dir = cache_dir
+        self._fetch = fetch
+        self._failed: dict[str, float] = {}
+        self._inflight: set[str] = set()
+        self._tasks: set[asyncio.Task] = set()
+
+    @staticmethod
+    def _key(url: str) -> str:
+        return hashlib.sha256(url.encode()).hexdigest()[:32]
+
+    def _cached(self, url: str) -> str | None:
+        if self._cache_dir is None:
+            return None
+        key = self._key(url)
+        for ext in _RASTER_TYPES:
+            path = self._cache_dir / f"{key}.{ext}"
+            try:
+                if time.time() - path.stat().st_mtime < _CACHE_TTL:
+                    return f"/oauth/logo/cached/{key}.{ext}"
+            except OSError:
+                continue
+        return None
+
+    def _store(self, url: str, data: bytes, ext: str) -> str | None:
+        if self._cache_dir is None:
+            return None
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
+        key = self._key(url)
+        (self._cache_dir / f"{key}.{ext}").write_bytes(data)
+        return f"/oauth/logo/cached/{key}.{ext}"
+
+    def _remote(self, url: str) -> str | None:
+        """Cached URL for ``url`` now, or None after scheduling a fetch."""
+        if url.startswith("data:"):
+            cached = self._cached(url)
+            if cached:
+                return cached
+            decoded = _decode_data_uri(url)
+            return self._store(url, *decoded) if decoded else None
+        if not url.startswith("https://") or self._cache_dir is None:
+            return None
+        cached = self._cached(url)
+        if cached:
+            return cached
+        if time.time() - self._failed.get(url, 0) < _NEGATIVE_TTL or url in self._inflight:
+            return None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        self._inflight.add(url)
+        task = loop.create_task(self._fill(url))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return None
+
+    async def _fill(self, url: str) -> None:
+        try:
+            data, ext = await self._fetch(url)
+            self._store(url, data, ext)
+        except Exception:  # noqa: BLE001 -- any failure just means "no logo"
+            self._failed[url] = time.time()
+        finally:
+            self._inflight.discard(url)
+
+    async def drain(self) -> None:
+        """Wait for background fetches (tests)."""
+        while self._tasks:
+            await asyncio.gather(*list(self._tasks), return_exceptions=True)
+
+    def url_for(
+        self, identity: ClientIdentity, *, declared_icons: Iterable[str] = (),
+        logo_uri: str = "", website_url: str = "",
+    ) -> str:
+        sites: list[str] = []
+        if identity.key in _KNOWN_LOGOS:
+            kind, value = _KNOWN_LOGOS[identity.key]
+            if kind == "si":
+                return f"/oauth/logo/si/{value}"
+            sites.append(value)
+        for candidate in [*declared_icons, logo_uri]:
+            if candidate:
+                got = self._remote(candidate)
+                if got:
+                    return got
+        slug = simple_icons_slug(identity.name)
+        if slug:
+            return f"/oauth/logo/si/{slug}"
+        if website_url:
+            sites.append(website_url)
+        for site in sites:
+            parsed = urlparse(site)
+            if parsed.scheme == "https" and parsed.hostname:
+                got = self._remote(f"https://{parsed.hostname}/favicon.ico")
+                if got:
+                    return got
+        return "/oauth/logo/generic"
+
+    def routes(self) -> list[Route]:
+        headers = {
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "public, max-age=86400",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
+        }
+
+        async def si(request: Request) -> Response:
+            slug = request.path_params["slug"]
+            meta = _SI_META.get(slug)
+            path = _SI_DIR / f"{slug}.svg"
+            if meta is None or not re.fullmatch(r"[a-z0-9]+", slug) or not path.is_file():
+                return Response(status_code=404)
+            svg = path.read_text()
+            hexcolor = meta.get("hex", "888888")
+            r, g, b = (int(hexcolor[i:i + 2], 16) for i in (0, 2, 4))
+            dark = (0.2126 * r + 0.7152 * g + 0.0722 * b) < 60
+            # near-black brand marks would vanish on the dark card
+            style = f"path{{fill:#{hexcolor}}}" + (
+                "@media (prefers-color-scheme:dark){path{fill:#ececec}}" if dark else ""
+            )
+            svg = svg.replace("<title>", f"<style>{style}</style><title>", 1)
+            return Response(svg, media_type="image/svg+xml", headers=headers)
+
+        async def generic(_request: Request) -> Response:
+            return Response(
+                (_ASSETS / "generic.svg").read_text(), media_type="image/svg+xml",
+                headers=headers,
+            )
+
+        async def cached(request: Request) -> Response:
+            name = request.path_params["name"]
+            m = re.fullmatch(r"([0-9a-f]{32})\.(png|jpg|webp|ico)", name)
+            if not m or self._cache_dir is None:
+                return Response(status_code=404)
+            path = self._cache_dir / name
+            if not path.is_file():
+                return Response(status_code=404)
+            return Response(
+                path.read_bytes(), media_type=_RASTER_TYPES[m.group(2)], headers=headers,
+            )
+
+        return [
+            Route("/oauth/logo/si/{slug}", si),
+            Route("/oauth/logo/generic", generic),
+            Route("/oauth/logo/cached/{name}", cached),
+        ]
