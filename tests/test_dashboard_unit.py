@@ -405,7 +405,7 @@ def test_mcp_tool_to_declaration_passes_input_schema():
     class FakeMCPTool:
         name = "proxmox_list_vms"
         description = "List VMs on a Proxmox node"
-        inputSchema = {
+        input_schema = {
             "type": "object",
             "properties": {"node": {"type": "string"}},
             "required": ["node"],
@@ -425,7 +425,7 @@ def test_mcp_tool_to_declaration_defaults_schema_when_missing():
     class FakeMCPTool:
         name = "ping"
         description = ""
-        inputSchema = None
+        input_schema = None
 
     decl = _mcp_tool_to_declaration(FakeMCPTool(), types)
     # Gemini rejects empty/missing schemas; helper must substitute an
@@ -515,8 +515,8 @@ def test_mcp_call_result_to_response_flattens_text_content():
 
     class FakeResult:
         content = [FakeText()]
-        isError = False
-        structuredContent = None
+        is_error = False
+        structured_content = None
 
     payload = _mcp_call_result_to_response(FakeResult())
     assert payload == {"content": [{"type": "text", "text": "hello"}]}
@@ -530,8 +530,8 @@ def test_mcp_call_result_to_response_marks_error():
 
     class FakeResult:
         content = [FakeText()]
-        isError = True
-        structuredContent = None
+        is_error = True
+        structured_content = None
 
     payload = _mcp_call_result_to_response(FakeResult())
     assert payload["error"] is True

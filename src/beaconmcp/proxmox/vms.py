@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from ..utils import filter_fields
 from .client import ProxmoxClient
@@ -64,7 +64,7 @@ def _detect_backup_type(client: ProxmoxClient, node: str, archive: str) -> str |
     return None
 
 
-def register_vm_tools(mcp: FastMCP, client: ProxmoxClient) -> None:
+def register_vm_tools(mcp: MCPServer, client: ProxmoxClient) -> None:
     """Register all Proxmox VM/CT lifecycle management tools."""
 
     @mcp.tool()

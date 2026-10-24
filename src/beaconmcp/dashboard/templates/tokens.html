@@ -57,7 +57,7 @@
       <p>Add the origins you plan to use to <code>beaconmcp.yaml</code>:</p>
 <pre><code>server:
   allowed_origins:
-    - https://assistant.ai
+    - https://claude.ai
     - https://chatgpt.com
     - https://chat.mistral.ai
     - https://www.perplexity.ai
@@ -346,7 +346,7 @@
           <div class="sub-panel" data-sub="assistant-web">
             <ol class="steps">
               <li>On the server:<pre><code>beaconmcp auth create --name "Assistant Web"</code></pre></li>
-              <li>assistant.ai or iOS/Android app → <em>Settings → Integrations → Add custom connector</em>.</li>
+              <li>claude.ai or iOS/Android app → <em>Settings → Integrations → Add custom connector</em>.</li>
               <li>URL: <code>{{ mcp_url }}</code>. Paste <code>client_id</code> / <code>client_secret</code>.</li>
               <li>Type your TOTP on the authorization page when Assistant redirects you.</li>
             </ol>

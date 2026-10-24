@@ -1,8 +1,9 @@
 # Updates
 
-BeaconMCP publishes no releases and no PyPI package: the canonical install is a `git clone` at
-`/opt/beaconmcp` with a venv and a systemd unit. So "is there an update?" means **is this checkout
-behind the upstream default branch?**
+BeaconMCP publishes no PyPI package: the canonical install is a `git clone` at `/opt/beaconmcp` with
+a venv and a systemd unit. So "is there an update?" means **is this checkout behind the upstream
+default branch?** (or, on the `release` channel, **behind the newest `vX.Y.Z` tag?**, see
+[Channels and signatures](#channels-and-signatures)).
 
 The server answers that question itself, tells signed-in operators, and can apply the update.
 
@@ -35,10 +36,19 @@ Detection is not a guess about how you *should* have installed it:
 
 | Detected | What you are told |
 |----------|-------------------|
-| git checkout | `cd <root>` → `git pull --ff-only` → `<venv>/bin/pip install -e .` (the real venv path, when there is one) → `systemctl restart beaconmcp` if a unit file exists |
+| git checkout | `cd <root>` → `git pull --ff-only` (release channel: `git fetch --tags origin` → `git merge --ff-only <tag>`; the tool itself mirrors the tags into `refs/beaconmcp/tags/`, so a re-pointed upstream tag never blocks it) → `<venv>/bin/pip install -e . -c constraints.txt` (the real venv path, when there is one) → `systemctl restart beaconmcp` if a unit file exists |
 | container | `docker compose pull` → `docker compose up -d` |
 | pip distribution | `pip install --upgrade 'beaconmcp @ git+https://github.com/Showdown76py/BeaconMCP.git'` |
 | unknown | Re-run `deploy/install.sh` from a checkout |
+
+## Upgrading to the mcp 2.x SDK
+
+This release moves the SDK dependency to `mcp>=2.3,<3` (the server now builds on `MCPServer`).
+
+1. Git checkout: `beaconmcp_self_update` handles it (the pip step reinstalls with the new `constraints.txt`, the startup gate runs under mcp 2.x before the restart). By hand: `<venv>/bin/pip install -e . -c constraints.txt`, then `systemctl restart beaconmcp`.
+2. Docker: `docker compose pull` then `docker compose up -d`, or rebuild the image if you build it yourself.
+3. Run `beaconmcp check-startup`: your `beaconmcp.yaml` needs no edit, and this proves the server starts with it.
+4. Roll back by checking out the previous commit (or tag) and reinstalling with `-c constraints.txt`, then restart.
 
 ## MCP tools
 
@@ -55,18 +65,78 @@ new settings back to you before touching anything.
 
 In order, stopping at the first failure:
 
-1. **Preflight** — refuses on a non-git install, and refuses when the checkout has uncommitted
+1. **Preflight**: refuses on a non-git install, and refuses when the checkout has uncommitted
    changes. Local edits are never discarded.
-2. **`git pull --ff-only`** — a fast-forward or nothing. No merges, no rebases.
-3. **Reinstall** — `pip install -e .` in the detected venv, so new or bumped dependencies land.
-4. **Validate the config** — runs `beaconmcp validate-config` in a subprocess, so the *new* code
-   parses your *actual* configuration.
-5. **Restart** — `systemctl restart`, deferred a few seconds so the response reaches you first.
+2. **Fetch and resolve the target**: the tip of the default branch, or the newest release tag.
+3. **Verify the signature** (only with `require_signed: true`): an unsigned or untrusted target is
+   refused before anything changes.
+4. **Fast-forward** to that exact commit (`git merge --ff-only <sha>`). No merges, no rebases, and
+   not whatever the remote points at a second later.
+5. **Reinstall**: `pip install -e . -c constraints.txt` in the detected venv. `constraints.txt` pins
+   every dependency, direct or not, to the set CI tested, so an update never pulls a library
+   release nobody has run.
+6. **Check startup**: runs `beaconmcp check-startup` in a subprocess. The *new* code loads your
+   *actual* configuration, imports every module, builds the HTTP app and answers `/health`, against
+   scratch copies of the token store and dashboard database.
+7. **Restart**: `systemctl restart`, deferred a few seconds so the response reaches you first.
+   Only when the server actually runs under the unit: a `beaconmcp serve` started by hand is told
+   to restart itself instead.
 
-Step 4 is a hard gate, and it is the reason this is safe to run unattended. If the new revision
-cannot load your config — a setting was renamed, a new one is now required — the checkout is reset
-to exactly where it started, dependencies are restored, **nothing is restarted**, and the error from
-the validator is handed back to you. An update that bricks the server is worse than no update.
+Step 6 is a hard gate before the restart. If the new revision cannot start with your config (a
+setting was renamed, a new one is required, an import is broken) the checkout is reset to exactly
+where it started, dependencies are restored, **nothing is restarted**, and the error is handed back
+to you. An update that bricks the server is worse than no update.
+
+### After the restart
+
+Some failures only show once the real process runs (a port, a permission, a dependency that only
+breaks at runtime). So the restart itself is done by a watchdog, started as its own transient unit
+with `systemd-run` (a plain child would be killed with the service's cgroup). It:
+
+1. restarts the service;
+2. waits up to 90 seconds for `/health` to answer, then requires it to keep answering for 30
+   seconds with the same main PID and restart count (a process that crashes and is restarted by
+   systemd every few seconds can answer every single probe);
+3. otherwise runs `git reset --hard <previous revision>`, reinstalls the previous pinned
+   dependencies and restarts again.
+
+The outcome (`healthy`, `rolled_back`, `rollback_unhealthy`, `rollback_failed`, or `superseded`
+when another update moved the checkout in the meantime, which the watchdog then leaves alone) is
+written to `.beaconmcp-update.json` at the root of the checkout, and `beaconmcp_check_update`
+reports it as `last_update`. While that file still says `pending` (the watchdog is waiting), a new
+update is refused; a `pending` older than the watchdog's longest run no longer blocks. If
+`systemd-run` is missing or refuses the unit, the restart still happens, but unwatched, and the
+status says `unwatched`.
+
+### Channels and signatures
+
+> **What the defaults trust.** With `channel: branch` and `require_signed: false`, an update installs
+> whatever is on the upstream default branch, and the shipped unit runs the service as `root`. Anyone
+> who can push to that branch (or take over the account that can) can run code on this host the next
+> time someone clicks **Update now**. On a host that matters, use `release` with
+> `require_signed: true`, or `allow_self_update: false` and update by hand.
+
+```yaml
+features:
+  updates:
+    channel: branch        # or: release
+    require_signed: false  # true: refuse unsigned targets
+```
+
+- `branch` (default) follows every change merged to the default branch.
+- `release` follows only `vX.Y.Z` tags (pre-release tags such as `v2.1.0-rc1` are skipped). No
+  release has been tagged yet, so this channel reports "no release tag" until the first one is
+  published; `branch` stays the default until then.
+- `require_signed: true` makes `git verify-tag` (release) or `git verify-commit` (branch) a hard
+  gate. Git checks the signature against the keys the service user trusts: import the maintainers'
+  GPG keys, or for SSH signatures set `gpg.ssh.allowedSignersFile` in that user's git config.
+  **Every** public key in that user's keyring is accepted, trusted or not, so keep it to the
+  maintainers' keys (or point `GNUPGHOME` at a dedicated keyring in the unit). A release tag must
+  also carry its own name: a signed `v2.1.0-rc1` republished as `v2.1.0` is refused.
+  On the branch channel this needs a signed tip commit; merges made through GitHub's web UI are
+  signed by GitHub's key, which you then have to trust. That key signs every web-UI commit of every
+  GitHub user, so on the branch channel the gate only proves the commit went through github.com:
+  it does not stop anyone who can push or merge to the branch.
 
 Only one update runs at a time. The dashboard button and the MCP tool reach the same code, and two
 `git pull` / `pip install` runs in one checkout would fight over `index.lock`. A second caller is
@@ -118,4 +188,6 @@ Every attempt is logged (see [security.md](security.md#audit-trail)):
 | `maintenance.self_update.start` / `maintenance.self_update.finish` | Update applied over MCP |
 
 The `finish` events carry `ok`, `from_ref`, `to_ref` and `rolled_back`, so a rollback is visible in
-the log without reading the tool output.
+the log without reading the tool output. A rollback done by the post-restart watchdog happens after
+the server answered, so it lands in `.beaconmcp-update.json` and in the journal of its transient
+unit (`journalctl -u 'beaconmcp-update-*'`) instead.

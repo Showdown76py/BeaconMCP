@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
+import ssl
 import threading
 import time
 from typing import Any
 
 from proxmoxer import ProxmoxAPI
-from requests.exceptions import ConnectionError, Timeout
+from requests.adapters import HTTPAdapter
+from requests.exceptions import ConnectionError, ConnectTimeout, Timeout
+from urllib3.exceptions import ConnectTimeoutError, NewConnectionError
 
 from ..config import Config
 
@@ -57,6 +61,52 @@ _RETRY_ATTEMPTS = 2
 _RETRY_BACKOFF_SECONDS = 0.5
 
 
+class _CABundleAdapter(HTTPAdapter):
+    """HTTPS adapter verifying against one CA bundle without X.509 strict mode.
+
+    On Python 3.13+, urllib3 turns on ``VERIFY_X509_STRICT``, which rejects a
+    CA certificate that has no keyUsage extension. The CA every Proxmox
+    cluster generates (``/etc/pve/pve-root-ca.pem``) has none, so verifying
+    against it would always fail with "CA cert does not include key usage
+    extension". Chain and hostname checks are unchanged.
+    """
+
+    def __init__(self, ca_path: str) -> None:
+        if os.path.isdir(ca_path):
+            ctx = ssl.create_default_context(capath=ca_path)
+        else:
+            ctx = ssl.create_default_context(cafile=ca_path)
+        ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+        self._ssl_context = ctx
+        super().__init__()
+
+    def init_poolmanager(self, *args: Any, **kwargs: Any) -> None:
+        kwargs["ssl_context"] = self._ssl_context
+        super().init_poolmanager(*args, **kwargs)
+
+
+def _trust_ca_bundle(conn: ProxmoxAPI, ca_path: str) -> None:
+    """Make ``conn`` verify the API certificate against ``ca_path``.
+
+    proxmoxer already hands the path to requests as ``verify``; this only
+    swaps in an SSL context that accepts the Proxmox CA (see
+    :class:`_CABundleAdapter`).
+    """
+    session = getattr(conn, "_store", {}).get("session")
+    if session is None:  # pragma: no cover - proxmoxer internals changed
+        _logger.warning("could not install the Proxmox CA adapter; using requests defaults")
+        return
+    session.mount("https://", _CABundleAdapter(ca_path))
+
+
+def _never_sent(exc: Exception) -> bool:
+    """True when the TCP connection itself failed, so no request went out."""
+    if isinstance(exc, ConnectTimeout):
+        return True
+    reason = getattr(exc.args[0], "reason", None) if exc.args else None
+    return isinstance(reason, (NewConnectionError, ConnectTimeoutError))
+
+
 class ProxmoxClient:
     """Manages connections to one or more Proxmox VE nodes via API tokens."""
 
@@ -95,6 +145,8 @@ class ProxmoxClient:
             token_value=pve_node.token_secret,
             verify_ssl=self._config.verify_ssl,
         )
+        if isinstance(self._config.verify_ssl, str):
+            _trust_ca_bundle(conn, self._config.verify_ssl)
         cache[node_name] = conn
         return conn
 
@@ -123,6 +175,20 @@ class ProxmoxClient:
                 raise
             except (ConnectionError, Timeout) as e:
                 last_exc = e
+                # A GET is safe to send twice. Anything else is retried only
+                # when the request provably never reached the node: a read
+                # timeout on vm_clone or snapshot_create may mean the task is
+                # already running, and a second POST would start it again.
+                if method != "get" and not _never_sent(e):
+                    self._cache().pop(node_name, None)
+                    what = "did not answer in time" if isinstance(e, Timeout) else (
+                        "dropped the connection mid-request"
+                    )
+                    return {
+                        "error": f"Node '{node_name}' {what}: {e}. "
+                        "The request may still have been applied; check "
+                        "proxmox_get_tasks before retrying."
+                    }
                 # Drop this thread's cached connection so the retry rebuilds
                 # TLS state rather than re-using a half-broken socket. Other
                 # threads keep their own healthy sessions.

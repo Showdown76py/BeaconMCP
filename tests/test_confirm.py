@@ -5,7 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ElicitationCapability, FormElicitationCapability, UrlElicitationCapability
 
 from beaconmcp.confirm import DEFAULT_CONFIRM_TOOLS, confirm_destructive

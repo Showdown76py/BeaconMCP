@@ -114,6 +114,8 @@ def test_legitimate_paths_are_not_rejected() -> None:
         # (~/.ssh/authorized_keys, /etc/cron.d/...).
         ("proxmox_write_file", {"node": "pve1", "vmid": 100, "path": "/x", "content": "y"}),
         ("proxmox_upload_file", {"source": "a", "dest": "/b"}),
+        ("proxmox_upload_link", {"node": "pve1", "vmid": 100, "dest": "/b"}),
+        ("proxmox_fetch_url", {"node": "pve1", "vmid": 100, "url": "https://x", "dest": "/b"}),
         ("proxmox_run", {"node": "pve1", "vmid": 100, "command": "id"}),
         ("ssh_run", {"host": "pve1", "command": "id"}),
         # Destructive / irreversible.
@@ -146,6 +148,8 @@ def test_dangerous_tools_require_confirmation(name: str, args: dict) -> None:
         # Polling an already-approved exec session is read-only.
         ("proxmox_run", {"exec_id": "abc123"}),
         ("ssh_run", {"exec_id": "abc123"}),
+        # Reading an upload link's state mints and writes nothing.
+        ("proxmox_upload_link", {"link_id": "abc123"}),
         # dry_run tools only describe what they would do.
         ("proxmox_snapshot_delete", {"node": "pve1", "vmid": 1, "snapname": "s", "dry_run": True}),
     ],
@@ -174,7 +178,7 @@ def test_read_only_calls_do_not_require_confirmation(name: str, args: dict) -> N
 def test_dry_run_does_not_bypass_gate_on_tools_lacking_it(name: str, args: dict) -> None:
     """A stray ``dry_run`` must not talk a tool past the modal.
 
-    None of these tools declare ``dry_run``, and FastMCP validates
+    None of these tools declare ``dry_run``, and the MCP SDK validates
     arguments with a plain pydantic model, so the extra key is dropped
     server-side and the call runs for real. Trusting the argument would
     make the gate bypassable by adding one word to an injected

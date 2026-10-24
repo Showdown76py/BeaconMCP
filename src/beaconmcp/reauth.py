@@ -17,13 +17,13 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import anyio
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from . import audit
-from .auth import AccessToken, token_hash
+from .auth import HumanSession, token_hash
 from .ratelimit import client_ip
 
 _logger = logging.getLogger(__name__)
@@ -83,29 +83,33 @@ class ClientSessionInfo:
 
 
 class ClientInfoRegistry:
-    """Latest ``initialize`` info per interactive bearer (keyed by token hash)."""
+    """Latest ``initialize`` info per sign-in (keyed by session key).
+
+    Keyed by sign-in rather than bearer: clients refresh their access token
+    without re-initializing, and the capabilities must survive that.
+    """
 
     def __init__(self) -> None:
-        self._by_hash: dict[str, ClientSessionInfo] = {}
+        self._by_key: dict[str, ClientSessionInfo] = {}
 
-    def record(self, thash: str, info: ClientSessionInfo) -> None:
-        self._by_hash[thash] = info
+    def record(self, key: str, info: ClientSessionInfo) -> None:
+        self._by_key[key] = info
 
-    def get(self, thash: str) -> ClientSessionInfo | None:
-        return self._by_hash.get(thash)
+    def get(self, key: str) -> ClientSessionInfo | None:
+        return self._by_key.get(key)
 
 
-def session_lapsed(at: AccessToken, ttl: int, now: float | None = None) -> bool:
-    if not at.interactive:
+def session_lapsed(session: HumanSession, ttl: int, now: float | None = None) -> bool:
+    if not session.interactive:
         return False
     now = time.time() if now is None else now
-    return now - at.verified_at > ttl
+    return now - session.verified_at > ttl
 
 
 @dataclass
 class PendingReverify:
     id: str
-    token_hash: str
+    session_key: str
     client_id: str
     tool: str
     args: dict
@@ -138,17 +142,17 @@ class PendingReverifyStore:
             del self._entries[pid]
 
     def get_or_create(
-        self, *, token_hash: str, client_id: str, tool: str, args: dict,
+        self, *, session_key: str, client_id: str, tool: str, args: dict,
         ip: str, user_agent: str, client_label: str,
         bearer_issued_at: float, last_verified_at: float,
     ) -> tuple[PendingReverify, bool]:
         self._prune()
         for entry in self._entries.values():
-            if entry.token_hash == token_hash and entry.live:
+            if entry.session_key == session_key and entry.live:
                 return entry, False
         now = time.time()
         entry = PendingReverify(
-            id=secrets.token_urlsafe(24), token_hash=token_hash,
+            id=secrets.token_urlsafe(24), session_key=session_key,
             client_id=client_id, tool=tool, args=dict(args),
             created_at=now, expires_at=now + self.link_ttl,
             ip=ip, user_agent=user_agent, client_label=client_label,
@@ -169,10 +173,10 @@ class PendingReverifyStore:
         entry.event.set()
         return entry
 
-    def revoke_token(self, thash: str) -> int:
+    def revoke_token(self, session_key: str) -> int:
         n = 0
         for entry in self._entries.values():
-            if entry.token_hash == thash and entry.live:
+            if entry.session_key == session_key and entry.live:
                 entry.revoked = True
                 entry.event.set()
                 n += 1
@@ -222,19 +226,19 @@ def reverify_url(issuer: str, pid: str) -> str:
 
 
 def request_reverify(
-    rt: ReauthRuntime, *, thash: str, at: AccessToken, tool: str, args: dict,
+    rt: ReauthRuntime, *, session: HumanSession, tool: str, args: dict,
     ip: str, user_agent: str,
 ) -> tuple[PendingReverify, bool]:
-    info = rt.registry.get(thash)
+    info = rt.registry.get(session.key)
     entry, created = rt.pending.get_or_create(
-        token_hash=thash, client_id=at.client_id, tool=tool,
+        session_key=session.key, client_id=session.client_id, tool=tool,
         args=audit.compact_args(args), ip=ip, user_agent=user_agent,
-        client_label=rt.label_for(at.client_id, info),
-        bearer_issued_at=at.created_at, last_verified_at=at.verified_at,
+        client_label=rt.label_for(session.client_id, info),
+        bearer_issued_at=session.created_at, last_verified_at=session.verified_at,
     )
     if created:
         audit.emit(
-            "auth.reverify.requested", client_id=at.client_id, tool=tool, ip=ip,
+            "auth.reverify.requested", client_id=session.client_id, tool=tool, ip=ip,
         )
     return entry, created
 
@@ -245,10 +249,16 @@ class _Verified(BaseModel):
 
 def elicit_modes(ctx: Any, info: ClientSessionInfo | None) -> tuple[bool, bool]:
     """(form, url) support for this session, from its initialize params."""
+    elicitation = None
     try:
-        elicitation = ctx.request_context.session.client_params.capabilities.elicitation
+        session = ctx.request_context.session
+        # mcp 2.x: client_capabilities also covers stateless 2026-07-28 clients
+        caps = getattr(session, "client_capabilities", None)
+        if caps is None:
+            caps = session.client_params.capabilities
+        elicitation = caps.elicitation
     except (AttributeError, ValueError, LookupError):
-        elicitation = None
+        pass
     if elicitation is None:
         if info is not None:
             return info.elicit_form, info.elicit_url
@@ -279,14 +289,13 @@ async def gate_tool_call(ctx: Any, tool: str, args: dict) -> None:
     auth_header = request.headers.get("authorization", "")
     if not auth_header.startswith("Bearer "):
         return
-    thash = token_hash(auth_header[7:])
-    at = rt.token_store.get_interactive_by_hash(thash)
-    if at is None or not session_lapsed(at, rt.session_ttl):
+    session = rt.token_store.get_interactive_by_hash(token_hash(auth_header[7:]))
+    if session is None or not session_lapsed(session, rt.session_ttl):
         return
 
-    form, url_mode = elicit_modes(ctx, rt.registry.get(thash))
+    form, url_mode = elicit_modes(ctx, rt.registry.get(session.key))
     entry, _ = request_reverify(
-        rt, thash=thash, at=at, tool=tool, args=args,
+        rt, session=session, tool=tool, args=args,
         ip=client_ip(request, rt.trusted_proxies),
         user_agent=request.headers.get("user-agent", ""),
     )
@@ -324,7 +333,7 @@ async def gate_tool_call(ctx: Any, tool: str, args: dict) -> None:
         if url_mode:
             try:
                 await ctx.request_context.session.send_elicit_complete(
-                    entry.id, related_request_id=ctx.request_id,
+                    entry.id, related_request_id=ctx.request_context.request_id,
                 )
             except Exception:  # noqa: BLE001
                 _logger.debug("elicitation complete notification failed", exc_info=True)
@@ -361,9 +370,8 @@ class McpGateApp:
         if not auth_header.startswith("Bearer "):
             await self._inner(scope, receive, send)
             return
-        thash = token_hash(auth_header[7:])
-        at = rt.token_store.get_interactive_by_hash(thash)
-        if at is None:
+        session = rt.token_store.get_interactive_by_hash(token_hash(auth_header[7:]))
+        if session is None:
             await self._inner(scope, receive, send)
             return
 
@@ -399,12 +407,12 @@ class McpGateApp:
         for m in messages:
             if m.get("method") == "initialize":
                 rt.registry.record(
-                    thash, ClientSessionInfo.from_initialize(
+                    session.key, ClientSessionInfo.from_initialize(
                         m.get("params"), user_agent=ua, ip=ip,
                     ),
                 )
 
-        lapsed = session_lapsed(at, rt.session_ttl)
+        lapsed = session_lapsed(session, rt.session_ttl)
         gated = [m for m in messages if m.get("method") in GATED_METHODS]
         # a body we couldn't inspect (too big, not JSON) can't be cleared
         uninspected = not complete or (body.strip() and not messages)
@@ -412,7 +420,7 @@ class McpGateApp:
             await self._inner(scope, replay, send)
             return
 
-        info = rt.registry.get(thash)
+        info = rt.registry.get(session.key)
         if uninspected or info is None or not info.can_elicit:
             meta = self._resource_metadata_for(request)
             response = JSONResponse(
@@ -436,7 +444,7 @@ class McpGateApp:
         params = m.get("params")
         params = params if isinstance(params, dict) else {}
         entry, _ = request_reverify(
-            rt, thash=thash, at=at, tool=m["method"], args=params, ip=ip, user_agent=ua,
+            rt, session=session, tool=m["method"], args=params, ip=ip, user_agent=ua,
         )
         url = reverify_url(rt.issuer_for(request), entry.id)
         text = "Your BeaconMCP session expired. Verify it's you, then retry."

@@ -9,7 +9,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from beaconmcp import reauth
-from beaconmcp.auth import TokenStore, token_hash
+from beaconmcp.auth import TokenStore
 from beaconmcp.reauth import (
     ClientInfoRegistry,
     ClientSessionInfo,
@@ -17,6 +17,10 @@ from beaconmcp.reauth import (
     PendingReverifyStore,
     ReauthRuntime,
 )
+
+def _sign_in(store, client_id="c1"):
+    return store.issue_oauth(client_id, refresh=True).access_token
+
 
 META = "https://beacon.test/.well-known/oauth-protected-resource"
 
@@ -68,17 +72,17 @@ def _init(caps: dict) -> dict:
 
 def test_initialize_records_capabilities(env) -> None:
     client, store, rt = env
-    token, _ = store.issue_interactive("c1")
+    token = _sign_in(store)
     res = _post(client, token, _init({"elicitation": {"url": {}}}))
     assert res.status_code == 200
-    info = rt.registry.get(token_hash(token))
+    info = rt.registry.get(store.get_interactive(token).key)
     assert info.elicit_url and info.name == "claude-code"
     assert info.user_agent == "claude-code/2.1"
 
 
 def test_lapsed_without_elicitation_gets_401_with_header(env) -> None:
     client, store, _ = env
-    token, _ = store.issue_interactive("c1")
+    token = _sign_in(store)
     _post(client, token, _init({}))
     _lapse(store, token)
     res = _post(client, token, _rpc("tools/call", {"name": "x"}))
@@ -89,14 +93,14 @@ def test_lapsed_without_elicitation_gets_401_with_header(env) -> None:
 
 def test_lapsed_unknown_capabilities_gets_401(env) -> None:
     client, store, _ = env
-    token, _ = store.issue_interactive("c1")
+    token = _sign_in(store)
     _lapse(store, token)
     assert _post(client, token, _rpc("tools/call", {"name": "x"})).status_code == 401
 
 
 def test_lapsed_tools_call_with_url_passes_through(env) -> None:
     client, store, _ = env
-    token, _ = store.issue_interactive("c1")
+    token = _sign_in(store)
     _post(client, token, _init({"elicitation": {"url": {}}}))
     _lapse(store, token)
     res = _post(client, token, _rpc("tools/call", {"name": "x"}))
@@ -105,7 +109,7 @@ def test_lapsed_tools_call_with_url_passes_through(env) -> None:
 
 def test_lapsed_resources_read_url_gets_32042(env) -> None:
     client, store, rt = env
-    token, _ = store.issue_interactive("c1")
+    token = _sign_in(store)
     _post(client, token, _init({"elicitation": {"url": {}, "form": {}}}))
     _lapse(store, token)
     res = _post(client, token, _rpc("resources/read", {"uri": "beaconmcp://infrastructure"}, rid=7))
@@ -120,7 +124,7 @@ def test_lapsed_resources_read_url_gets_32042(env) -> None:
 
 def test_lapsed_resources_read_form_only_gets_link_error(env) -> None:
     client, store, _ = env
-    token, _ = store.issue_interactive("c1")
+    token = _sign_in(store)
     _post(client, token, _init({"elicitation": {}}))
     _lapse(store, token)
     body = _post(client, token, _rpc("prompts/get", {"name": "p"})).json()
@@ -130,7 +134,7 @@ def test_lapsed_resources_read_form_only_gets_link_error(env) -> None:
 
 def test_fresh_session_untouched(env) -> None:
     client, store, _ = env
-    token, _ = store.issue_interactive("c1")
+    token = _sign_in(store)
     res = _post(client, token, _rpc("tools/call", {"name": "x"}))
     assert res.status_code == 200 and "echo" in res.json()
 
@@ -144,23 +148,23 @@ def test_named_token_never_gated(env) -> None:
 
 def test_lapsed_list_methods_allowed(env) -> None:
     client, store, _ = env
-    token, _ = store.issue_interactive("c1")
+    token = _sign_in(store)
     _lapse(store, token)
     assert _post(client, token, _rpc("tools/list")).status_code == 200
 
 
 def test_capabilities_recorded_on_reinitialize(env) -> None:
     client, store, rt = env
-    token, _ = store.issue_interactive("c1")
+    token = _sign_in(store)
     _post(client, token, _init({}))
-    assert not rt.registry.get(token_hash(token)).elicit_url
+    assert not rt.registry.get(store.get_interactive(token).key).elicit_url
     _post(client, token, _init({"elicitation": {"url": {}}}))
-    assert rt.registry.get(token_hash(token)).elicit_url
+    assert rt.registry.get(store.get_interactive(token).key).elicit_url
 
 
 def test_body_replayed_intact(env) -> None:
     client, store, _ = env
-    token, _ = store.issue_interactive("c1")
+    token = _sign_in(store)
     payload = _rpc("tools/call", {"name": "x", "arguments": {"a": "é" * 50}})
     res = _post(client, token, payload)
     assert json.loads(res.json()["echo"]) == payload
@@ -168,7 +172,7 @@ def test_body_replayed_intact(env) -> None:
 
 def test_batch_with_gated_method(env) -> None:
     client, store, _ = env
-    token, _ = store.issue_interactive("c1")
+    token = _sign_in(store)
     _lapse(store, token)
     res = _post(client, token, [_rpc("tools/list"), _rpc("tools/call", {"name": "x"}, 2)])
     assert res.status_code == 401
@@ -177,7 +181,7 @@ def test_batch_with_gated_method(env) -> None:
 def test_no_runtime_passthrough(env) -> None:
     client, store, _ = env
     reauth.configure(None)
-    token, _ = store.issue_interactive("c1")
+    token = _sign_in(store)
     _lapse(store, token)
     assert _post(client, token, _rpc("tools/call")).status_code == 200
 
@@ -209,7 +213,7 @@ def _chunked(token: str, chunks: list[bytes]):
 
 def test_oversized_body_on_lapsed_session_fails_closed(env) -> None:
     _, store, _ = env
-    token, _ = store.issue_interactive("c1")
+    token = _sign_in(store)
     _lapse(store, token)
     rpc = json.dumps(_rpc("resources/read", {"uri": "beaconmcp://infrastructure"})).encode()
     padded = rpc + b" " * (2 * 1024 * 1024)
@@ -219,14 +223,14 @@ def test_oversized_body_on_lapsed_session_fails_closed(env) -> None:
 
 def test_oversized_body_on_fresh_session_passes(env) -> None:
     _, store, _ = env
-    token, _ = store.issue_interactive("c1")
+    token = _sign_in(store)
     body = b" " * (2 * 1024 * 1024)
     assert _chunked(token, [body[i:i + 65536] for i in range(0, len(body), 65536)]) == 200
 
 
 def test_unparseable_body_on_lapsed_session_fails_closed(env) -> None:
     client, store, _ = env
-    token, _ = store.issue_interactive("c1")
+    token = _sign_in(store)
     _post(client, token, _init({"elicitation": {"url": {}}}))
     _lapse(store, token)
     res = client.post("/mcp", content=b"{not json", headers={"authorization": f"Bearer {token}"})

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from ..auth import revoke_current_token
 
 
-def register_security_tools(mcp: FastMCP) -> None:
+def register_security_tools(mcp: MCPServer) -> None:
     @mcp.tool()
     def security_end_session() -> dict:
         """Invalidate the current bearer token.

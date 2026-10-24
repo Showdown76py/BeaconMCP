@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 
-from beaconmcp.auth import AccessToken
+from beaconmcp.auth import HumanSession
 from beaconmcp.reauth import (
     ClientSessionInfo,
     PendingReverifyStore,
@@ -15,7 +15,7 @@ from beaconmcp.reauth import (
 
 def _pending_kwargs(thash: str = "h1") -> dict:
     return dict(
-        token_hash=thash, client_id="c1", tool="proxmox_vm_start",
+        session_key=thash, client_id="c1", tool="proxmox_vm_start",
         args={"node": "pve-02", "vmid": 104}, ip="82.64.12.7",
         user_agent="claude-code/2.1", client_label="Claude Code",
         bearer_issued_at=time.time() - 3 * 86400,
@@ -66,11 +66,10 @@ def test_url_only_client() -> None:
 
 def test_session_lapsed_only_for_interactive() -> None:
     now = time.time()
-    fresh = AccessToken(token="", client_id="c", expires_at=now + 99,
-                        interactive=True, verified_at=now - 10)
-    old = AccessToken(token="", client_id="c", expires_at=now + 99,
-                      interactive=True, verified_at=now - 100)
-    plain = AccessToken(token="t", client_id="c", expires_at=now + 99)
+    fresh = HumanSession(key="f", client_id="c", created_at=now, verified_at=now - 10)
+    old = HumanSession(key="f", client_id="c", created_at=now, verified_at=now - 100)
+    plain = HumanSession(key="f", client_id="c", created_at=now, verified_at=0,
+                         interactive=False)
     assert not session_lapsed(fresh, 60, now)
     assert session_lapsed(old, 60, now)
     assert not session_lapsed(plain, 60, now)

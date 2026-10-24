@@ -98,7 +98,7 @@ Gemini 2.5 Flash / Pro and `gemini-3-flash-preview` were retired from the picker
 
 The model's input is untrusted: a log line, a config file, or a web-search result can carry an injected instruction. So two classes of tool **never** run without manual approval from the chat UI.
 
-**Arbitrary code execution** — `ssh_run`, `proxmox_run`, and the primitives that become code execution in one hop (`proxmox_write_file`, `proxmox_upload_file`, `proxmox_download_file`, `proxmox_delete_transfer`). Writing `~/.ssh/authorized_keys` or a file under `/etc/cron.d` is exactly as good as a shell, which is why the file tools sit alongside the exec tools.
+**Arbitrary code execution** — `ssh_run`, `proxmox_run`, and the primitives that become code execution in one hop (`proxmox_write_file`, `proxmox_upload_file`, `proxmox_upload_link`, `proxmox_fetch_url`, `proxmox_download_file`, `proxmox_delete_transfer`). Writing `~/.ssh/authorized_keys` or a file under `/etc/cron.d` is exactly as good as a shell, which is why the file tools sit alongside the exec tools.
 
 **Destructive or irreversible** — `vm_bulk_action`, `proxmox_vm_stop`, `proxmox_vm_restart`, `proxmox_vm_migrate`, `proxmox_snapshot_rollback`, `proxmox_snapshot_delete`, `proxmox_backup_restore`, `bmc_power_off`, `bmc_power_reset`, and `beaconmcp_self_update` with `confirm=True` — which pulls new code, reinstalls dependencies and restarts the service, i.e. replaces the very process enforcing this gate.
 
@@ -121,7 +121,7 @@ The allow-list is hard-coded in `src/beaconmcp/dashboard/chat.py` (`_NEEDS_CONFI
 
 Tools that carry `_meta.ui.resourceUri` — `proxmox_vm_panel`, `proxmox_logs_panel`, `cluster_overview_interactive` — render as a live interface in the chat instead of a block of JSON. The dashboard implements both halves of the [MCP Apps extension](https://modelcontextprotocol.io/extensions/apps/overview): it announces `io.modelcontextprotocol/ui` when it opens its MCP session, and it plays host to the `ui://` document over `postMessage`.
 
-The extension is declared through `ClientCapabilities.extensions`, a field mcp only types in 2.0. The `<2` pin is not in the way: the model accepts extra fields, so the capability serialises under the name the spec gives it and the server reads the same JSON either way (`dashboard/mcp_bridge.py`).
+The extension is declared through `ClientCapabilities.extensions`, a field mcp types from 2.0 on (the project pins `mcp>=2.3,<3`). Even without that typing the model accepts extra fields, so the capability serialises under the name the spec gives it and the server reads the same JSON either way (`dashboard/mcp_bridge.py`).
 
 ### How a panel is isolated
 
@@ -191,7 +191,7 @@ Constants live in `src/beaconmcp/dashboard/usage.py` — update them when Google
 
 ## Internal MCP architecture
 
-The dashboard keeps its own MCP session (`streamablehttp_client` + `ClientSession`) pointed at the local `/mcp` endpoint (`http://127.0.0.1:8420/mcp`). Tools are converted manually into `FunctionDeclaration` objects and the `function_call` / `function_response` loop is orchestrated server-side (AFC SDK disabled via `AutomaticFunctionCallingConfig(disable=True)`). This works around known `google-genai` bugs with Gemini 2.5 Pro + MCP + streaming + thinking.
+The dashboard keeps its own MCP session (`streamable_http_client` + `ClientSession`) pointed at the local `/mcp` endpoint (`http://127.0.0.1:8420/mcp`). Tools are converted manually into `FunctionDeclaration` objects and the `function_call` / `function_response` loop is orchestrated server-side (AFC SDK disabled via `AutomaticFunctionCallingConfig(disable=True)`). This works around known `google-genai` bugs with Gemini 2.5 Pro + MCP + streaming + thinking.
 
 > A remote mode (server-driven `McpServer`) exists but is disabled: requests through Cloudflare Tunnel lose the `Authorization` header, producing systematic 500 INTERNAL responses. Setting `BEACONMCP_DASHBOARD_MCP_MODE=remote` logs a startup warning and returns an actionable error on every chat turn.
 

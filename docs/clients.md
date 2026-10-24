@@ -34,7 +34,6 @@ auth paths the dashboard helps you drive:
 > server:
 >   allowed_origins:
 >     - https://claude.ai
->     - https://assistant.ai
 >     - https://chatgpt.com
 >     - https://chat.mistral.ai
 >     - https://www.perplexity.ai
@@ -99,8 +98,8 @@ phone; the derived client has no TOTP seed of its own.
    - **URL:** paste the `/mcp/c/<slug>` URL.
    - **Authentication:** OAuth.
 4. ChatGPT fetches the OAuth metadata, POSTs to the slug-gated `/oauth/register/c/<slug>` — BeaconMCP consumes the slug atomically and mints a derived client scoped to your account.
-5. ChatGPT then redirects you to BeaconMCP's authorization page. Type your TOTP from your phone. Token lifetime: 24 h.
-6. From now on, ChatGPT auto-refreshes via the authorization code flow. Every 24 h it re-prompts for your TOTP — no re-registration, no new slug.
+5. ChatGPT then redirects you to BeaconMCP's authorization page. Type your TOTP from your phone. Access token lifetime: 24 h.
+6. From now on, ChatGPT renews its access token with the refresh token it received, without prompting you. Every 24 h BeaconMCP asks you to confirm with your TOTP or a passkey again: through a re-verify link if the client supports MCP elicitation, otherwise by sending you back through the authorization page.
 
 **Revocation:** `https://<your-host>/app/connectors` lists every active derived client. Revoke one and ChatGPT loses access immediately. Revoking your human account cascades to every derived client automatically.
 
@@ -342,8 +341,8 @@ the bare `/mcp` URL and it handles the rest.
    - **MCP Server URL:** `https://<your-host>/mcp`
 3. Validate. Le Chat discovers the OAuth metadata and redirects you to
    BeaconMCP's authorization page — type your TOTP from your phone.
-   Token lifetime: 24 h; Le Chat refreshes via the authorization code
-   flow on its own.
+   Access token lifetime: 24 h; Le Chat renews it with its refresh
+   token on its own, and BeaconMCP asks for your TOTP again every 24 h.
 
 Custom connectors are on Le Chat Pro / Enterprise; the free tier may
 hide the panel.

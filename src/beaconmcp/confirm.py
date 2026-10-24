@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Collection
 from typing import Any
 
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, Field
 
 from . import audit

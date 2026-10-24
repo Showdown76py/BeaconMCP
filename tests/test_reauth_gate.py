@@ -7,17 +7,21 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ElicitationCapability, FormElicitationCapability, UrlElicitationCapability
 
 from beaconmcp import reauth
-from beaconmcp.auth import TokenStore, token_hash
+from beaconmcp.auth import TokenStore
 from beaconmcp.reauth import (
     ClientInfoRegistry,
     PendingReverifyStore,
     ReauthRuntime,
     gate_tool_call,
 )
+
+def _sign_in(store, client_id="c1"):
+    return store.issue_oauth(client_id, refresh=True).access_token
+
 
 
 class FakeCtx:
@@ -33,6 +37,7 @@ class FakeCtx:
                 client=SimpleNamespace(host="203.0.113.9"),
             ),
             session=self.session,
+            request_id=7,
         )
         self.request_id = 7
         self.url_calls: list[dict] = []
@@ -72,7 +77,7 @@ def env():
         issuer_for=lambda req: "https://beacon.test",
     )
     reauth.configure(rt)
-    token, _ = store.issue_interactive("c1")
+    token = _sign_in(store)
     yield rt, store, token
     reauth.configure(None)
 
@@ -83,7 +88,7 @@ def _lapse(store, token):
 
 def _verifier(rt, store, token):
     def verify(pid):
-        store.mark_verified(token_hash(token))
+        store.mark_verified(store.get_interactive(token).key)
         rt.pending.complete(pid)
     return verify
 

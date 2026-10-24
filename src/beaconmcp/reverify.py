@@ -165,7 +165,7 @@ def build_reverify_routes(deps: ReverifyDeps) -> list[Route]:
         return request.headers.get("x-beaconmcp-mode", "") == "json"
 
     def _identity(entry: PendingReverify) -> tuple[ClientIdentity, ClientSessionInfo | None, str]:
-        info = deps.registry.get(entry.token_hash)
+        info = deps.registry.get(entry.session_key)
         registered = deps.client_store.get_name(entry.client_id) or entry.client_id
         identity = identify(
             client_info_name=(info.name if info else ""), registered_name=registered,
@@ -208,7 +208,7 @@ def build_reverify_routes(deps: ReverifyDeps) -> list[Route]:
 
     def _succeed(request: Request, entry: PendingReverify, via: str) -> Response:
         now = time.time()
-        deps.token_store.mark_verified(entry.token_hash, at=now)
+        deps.token_store.mark_verified(entry.session_key, at=now)
         deps.pending.complete(entry.id)
         audit.emit(
             "auth.reverify.ok", client_id=entry.client_id, tool=entry.tool, via=via,
@@ -336,8 +336,8 @@ def build_reverify_routes(deps: ReverifyDeps) -> list[Route]:
         entry = deps.pending.get(str(body.get("id") or ""))
         if entry is None:
             return _gone(request)
-        deps.token_store.revoke_hash(entry.token_hash)
-        deps.pending.revoke_token(entry.token_hash)
+        deps.token_store.revoke_session(entry.session_key)
+        deps.pending.revoke_token(entry.session_key)
         audit.emit(
             "auth.reverify.revoked", client_id=entry.client_id, tool=entry.tool,
             ip=client_ip(request, deps.trusted_proxies),

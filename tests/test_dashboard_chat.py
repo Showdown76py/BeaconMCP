@@ -124,9 +124,9 @@ def deps(tmp_path, engine):
         session_store=SessionStore(db, key=os.urandom(32)),
         client_store=FakeClientStore(),
         token_store=FakeTokenStore(),
-        totp_locked=lambda cid: False,
-        totp_record_failure=lambda cid: None,
-        totp_record_success=lambda cid: None,
+        totp_locked=lambda cid, ip=None: False,
+        totp_record_failure=lambda cid, ip=None: None,
+        totp_record_success=lambda cid, ip=None: None,
         conversations=ConversationStore(db),
         engine=engine,
         confirmations=ConfirmationStore(),
@@ -374,9 +374,9 @@ def test_refresh_page_shows_totp_when_token_wiped(tmp_path, engine):
         session_store=SessionStore(db, key=os.urandom(32)),
         client_store=FakeClientStore(),
         token_store=WipedTokenStore(),
-        totp_locked=lambda cid: False,
-        totp_record_failure=lambda cid: None,
-        totp_record_success=lambda cid: None,
+        totp_locked=lambda cid, ip=None: False,
+        totp_record_failure=lambda cid, ip=None: None,
+        totp_record_success=lambda cid, ip=None: None,
         conversations=ConversationStore(db),
         engine=engine,
     )
@@ -404,9 +404,9 @@ def test_chat_page_redirects_to_refresh_when_token_wiped(tmp_path, engine):
         session_store=SessionStore(db, key=os.urandom(32)),
         client_store=FakeClientStore(),
         token_store=WipedTokenStore(),
-        totp_locked=lambda cid: False,
-        totp_record_failure=lambda cid: None,
-        totp_record_success=lambda cid: None,
+        totp_locked=lambda cid, ip=None: False,
+        totp_record_failure=lambda cid, ip=None: None,
+        totp_record_success=lambda cid, ip=None: None,
         conversations=ConversationStore(db),
         engine=engine,
     )
@@ -442,9 +442,9 @@ def test_chat_stream_detects_token_wiped_after_restart(tmp_path, engine):
         session_store=SessionStore(db, key=os.urandom(32)),
         client_store=FakeClientStore(),
         token_store=token_store,
-        totp_locked=lambda cid: False,
-        totp_record_failure=lambda cid: None,
-        totp_record_success=lambda cid: None,
+        totp_locked=lambda cid, ip=None: False,
+        totp_record_failure=lambda cid, ip=None: None,
+        totp_record_success=lambda cid, ip=None: None,
         conversations=ConversationStore(db),
         engine=engine,
     )
@@ -792,9 +792,9 @@ def test_chat_stream_remote_mode_still_routes_public_url(tmp_path, engine):
         session_store=SessionStore(db, key=os.urandom(32)),
         client_store=FakeClientStore(),
         token_store=FakeTokenStore(),
-        totp_locked=lambda cid: False,
-        totp_record_failure=lambda cid: None,
-        totp_record_success=lambda cid: None,
+        totp_locked=lambda cid, ip=None: False,
+        totp_record_failure=lambda cid, ip=None: None,
+        totp_record_success=lambda cid, ip=None: None,
         conversations=ConversationStore(db),
         engine=engine,
         mcp_public_url="https://mcp.example/",
@@ -919,6 +919,35 @@ def test_self_update_needs_confirmation_when_applied():
     assert not _tool_call_requires_confirmation("beaconmcp_check_update", {})
 
 
+def test_vm_create_with_config_needs_confirmation():
+    """A ``config`` dict on vm-create can carry code-execution keys.
+
+    ``proxmox_vm_create`` forwards its ``config`` straight to the PVE API, so
+    an injected instruction could smuggle a ``hookscript`` or raw QEMU
+    ``args`` that runs code on the host. The create-with-config shape must
+    reach the modal, while a bare create (an empty shell VM) stays a plain
+    unattended add like clone/start.
+    """
+    from beaconmcp.dashboard.chat import _tool_call_requires_confirmation
+
+    assert _tool_call_requires_confirmation(
+        "proxmox_vm_create",
+        {"node": "pve1", "vmid": 100, "config": {"hookscript": "local:snippets/x.sh"}},
+    )
+    # A benign config still gets the modal -- we gate on presence, not on
+    # inspecting keys, mirroring the proxmox_vm_config ``updates`` treatment.
+    assert _tool_call_requires_confirmation(
+        "proxmox_vm_create", {"node": "pve1", "vmid": 100, "config": {"cores": 2}},
+    )
+    # No config -> empty shell, nothing to smuggle, no modal.
+    assert not _tool_call_requires_confirmation(
+        "proxmox_vm_create", {"node": "pve1", "vmid": 100},
+    )
+    assert not _tool_call_requires_confirmation(
+        "proxmox_vm_create", {"node": "pve1", "vmid": 100, "config": None},
+    )
+
+
 def test_every_registered_tool_is_gated_or_deliberately_not():
     """Guard against a new tool quietly landing outside the gate.
 
@@ -957,7 +986,7 @@ def test_every_registered_tool_is_gated_or_deliberately_not():
         "proxmox_list_nodes", "proxmox_list_transfers", "proxmox_list_vms",
         "proxmox_logs_panel", "proxmox_network_config", "proxmox_node_status",
         "proxmox_read_file", "proxmox_snapshot_create", "proxmox_snapshot_list",
-        "proxmox_storage_status", "proxmox_vm_clone", "proxmox_vm_create",
+        "proxmox_storage_status", "proxmox_vm_clone",
         "proxmox_vm_panel", "proxmox_vm_start", "proxmox_vm_status",
         "security_end_session", "ssh_list_sessions", "vm_find",
     }

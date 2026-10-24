@@ -15,6 +15,7 @@ front if you need global state.
 from __future__ import annotations
 
 import ipaddress
+import logging
 import threading
 import time
 from collections import deque
@@ -90,6 +91,106 @@ class RateLimiter:
             return max(0, int(self._window - (time.monotonic() - oldest)) + 1)
 
 
+class TotpLockout:
+    """TOTP brute-force lockout keyed on ``(client_id, source IP)``.
+
+    ``client_id`` is not a secret (it travels in authorize URLs, browser
+    history, proxy logs), so a lockout keyed on it alone let anyone who knew
+    it lock the owner out of every 2FA path with a handful of wrong codes.
+    Strikes are counted per source instead: ``per_source`` wrong codes from
+    one IP lock that IP out for that client. A second, higher per-client cap
+    (``per_client`` wrong codes from any mix of IPs) still stops a guesser
+    who spreads attempts over many addresses.
+
+    Every failure pushes the cooldown of its counters forward; a counter
+    whose cooldown has passed starts again from zero. A success clears the
+    caller's own per-source counter only, so a distributed guesser can't
+    reset the per-client cap by having the owner log in.
+
+    A source that entered a valid code recently is exempt from the
+    per-client cap (its own per-source cap still applies). Otherwise
+    anyone with two addresses could spend the per-client budget every
+    cooldown and keep the owner locked out of every TOTP path for good.
+    """
+
+    def __init__(
+        self,
+        *,
+        per_source: int = 5,
+        per_client: int = 10,
+        lockout_seconds: float = 300.0,
+        known_good_seconds: float = 30 * 86400.0,
+    ) -> None:
+        self._per_source = per_source
+        self._per_client = per_client
+        self._lockout = lockout_seconds
+        self._known_good_ttl = known_good_seconds
+        # key -> (failures, cooldown_until). Keys are ("src", client_id, ip)
+        # and ("client", client_id).
+        self._strikes: dict[tuple[str, ...], tuple[int, float]] = {}
+        # ("src", client_id, ip) -> until: sources that passed TOTP lately.
+        self._known_good: dict[tuple[str, ...], float] = {}
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _src_key(client_id: str, ip: str | None) -> tuple[str, ...]:
+        return ("src", client_id, ip or "-")
+
+    def _count_locked(self, key: tuple[str, ...], now: float) -> int:
+        entry = self._strikes.get(key)
+        if entry is None:
+            return 0
+        count, until = entry
+        if now >= until:
+            del self._strikes[key]
+            return 0
+        return count
+
+    def _is_known_good(self, key: tuple[str, ...], now: float) -> bool:
+        until = self._known_good.get(key)
+        if until is None:
+            return False
+        if now >= until:
+            del self._known_good[key]
+            return False
+        return True
+
+    def locked(self, client_id: str, ip: str | None = None) -> bool:
+        now = time.time()
+        src = self._src_key(client_id, ip)
+        with self._lock:
+            if self._count_locked(src, now) >= self._per_source:
+                return True
+            if self._is_known_good(src, now):
+                return False
+            return self._count_locked(("client", client_id), now) >= self._per_client
+
+    def record_failure(self, client_id: str, ip: str | None = None) -> None:
+        now = time.time()
+        until = now + self._lockout
+        with self._lock:
+            for key in (("client", client_id), self._src_key(client_id, ip)):
+                self._strikes[key] = (self._count_locked(key, now) + 1, until)
+            if len(self._strikes) > 4096:
+                for key, (_, key_until) in list(self._strikes.items()):
+                    if now >= key_until:
+                        del self._strikes[key]
+
+    def record_success(self, client_id: str, ip: str | None = None) -> None:
+        now = time.time()
+        src = self._src_key(client_id, ip)
+        with self._lock:
+            self._strikes.pop(src, None)
+            self._known_good[src] = now + self._known_good_ttl
+            if len(self._known_good) > 4096:
+                for key, until in list(self._known_good.items()):
+                    if now >= until:
+                        del self._known_good[key]
+                # Still full: forget the oldest, the cap only bounds memory.
+                while len(self._known_good) > 4096:
+                    del self._known_good[min(self._known_good, key=self._known_good.__getitem__)]
+
+
 def _coerce_ip(value: object) -> str | None:
     raw = str(value).strip()
     if not raw:
@@ -138,6 +239,32 @@ def _is_trusted_proxy(ip_value: str, trusted_proxies: tuple[str, ...]) -> bool:
     return False
 
 
+_forwarding_warned = False
+
+
+def _warn_untrusted_forwarding(forwarded_for: str | None, peer: str | None) -> None:
+    """Say once that a proxy is forwarding but is not in ``trusted_proxies``.
+
+    Behind a reverse proxy every request then comes from the proxy's own
+    address, so the per-IP limits (login, authorize, TOTP lockout) become
+    one budget shared by every visitor, and one attacker can spend it for
+    everyone. Also fires with a non-empty list: a cloudflared tunnel
+    connects from its own LAN address, which ``cloudflare`` (the edge
+    ranges) does not cover.
+    """
+    global _forwarding_warned
+    if _forwarding_warned or not forwarded_for:
+        return
+    _forwarding_warned = True
+    logging.getLogger("beaconmcp").warning(
+        "X-Forwarded-For received from %s, which is not in server.trusted_proxies: "
+        "every client behind that proxy shares one rate-limit and TOTP-lockout "
+        "budget. If %s is your reverse proxy or cloudflared tunnel, add it to "
+        "server.trusted_proxies.",
+        peer or "an unknown peer", peer or "it",
+    )
+
+
 def client_ip(request: object, trusted_proxies: tuple[str, ...] = ()) -> str:
     """Best-effort client IP for a Starlette ``Request``.
 
@@ -151,7 +278,10 @@ def client_ip(request: object, trusted_proxies: tuple[str, ...] = ()) -> str:
     direct_ip = _coerce_ip(direct_peer_raw)
 
     headers = getattr(request, "headers", None)
-    if headers is not None and direct_ip and _is_trusted_proxy(direct_ip, trusted_proxies):
+    peer_trusted = bool(direct_ip) and _is_trusted_proxy(direct_ip, trusted_proxies)
+    if not peer_trusted and headers is not None and hasattr(headers, "get"):
+        _warn_untrusted_forwarding(headers.get("x-forwarded-for"), direct_ip)
+    if headers is not None and peer_trusted:
         fwd = headers.get("x-forwarded-for") if hasattr(headers, "get") else None
         if fwd:
             chain: list[str] = [
@@ -167,3 +297,57 @@ def client_ip(request: object, trusted_proxies: tuple[str, ...] = ()) -> str:
     if direct_peer_raw:
         return direct_peer_raw
     return "unknown"
+
+
+def forwarded_host(
+    request: object,
+    trusted_proxies: tuple[str, ...] = (),
+    *,
+    default: str = "localhost",
+) -> str:
+    """Client-facing Host for a Starlette ``Request``.
+
+    Mirrors :func:`client_ip`'s trust model for the *host* dimension: the
+    ``X-Forwarded-Host`` header is attacker-controlled on a direct request, so
+    it is honored only when the direct peer is a declared trusted proxy.
+    Otherwise the request's own ``Host`` header is used (then ``default``).
+
+    Like :func:`client_ip`, this keys on ``request.client.host`` being the real
+    TCP peer, so the server must run with uvicorn ``proxy_headers=False`` (see
+    ``__main__``): the default ``ProxyHeadersMiddleware`` would rewrite the peer
+    to the ``X-Forwarded-For`` client and the trusted-proxy branch below could
+    never open.
+
+    Kept deliberately narrow -- it does NOT touch the scheme. ``X-Forwarded-
+    Proto`` is still read directly by the callers, because a TLS-terminating
+    edge (Cloudflare tunnel, nginx) legitimately needs it to report https even
+    when ``trusted_proxies`` is unset; gating it would silently downgrade the
+    Secure-cookie flag and the OAuth issuer to http.
+    """
+    headers = getattr(request, "headers", None)
+    has_get = headers is not None and hasattr(headers, "get")
+
+    def _hdr(name: str) -> str | None:
+        return headers.get(name) if has_get else None
+
+    host_header = _hdr("host") or default
+    if not trusted_proxies:
+        return host_header
+
+    client = getattr(request, "client", None)
+    direct_peer = getattr(client, "host", None) if client is not None else None
+    direct_ip = _coerce_ip(str(direct_peer)) if direct_peer is not None else None
+    if direct_ip and _is_trusted_proxy(direct_ip, trusted_proxies):
+        fwd = _hdr("x-forwarded-host")
+        if fwd:
+            # Take the last entry, not the first. A proxy that appends rather
+            # than overwrites puts its own value last, so the last entry is the
+            # one the nearest trusted proxy wrote; returning the first would
+            # hand back a client-supplied prefix. Symmetric with client_ip's
+            # right-to-left walk. Proxies that overwrite (the common case:
+            # nginx ``proxy_set_header X-Forwarded-Host $host``) leave a single
+            # entry, so first and last coincide.
+            parts = [p.strip() for p in fwd.split(",") if p.strip()]
+            if parts:
+                return parts[-1]
+    return host_header

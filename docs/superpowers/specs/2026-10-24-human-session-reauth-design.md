@@ -61,6 +61,8 @@ For bearers issued by the **`authorization_code` grant** only:
 
 All other bearers (named tokens, `client_credentials`, dashboard-internal bearers) have no human-session concept and are unaffected.
 
+*Amended when merging main (#40, OAuth refresh tokens):* the "bearer" is now main's refresh family. The access token still rotates every 24 h through the refresh grant; the family (sign-in) lasts `interactive_bearer_ttl` instead of main's fixed 24 h; `verified_at` is stored per family (`oauth_families` table), so a refresh keeps the human session and its recorded client capabilities. Unset, `refresh_token_ttl` follows the family lifetime.
+
 ### 4.2 What the lapsed session blocks
 
 With a valid bearer but `verified_at` older than 24 h:

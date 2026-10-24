@@ -120,6 +120,12 @@ _CF_LOG_INTERVAL_SECONDS = 300.0
 _cf_log_state = {"last": 0.0, "suppressed": 0}
 _cf_log_lock = threading.Lock()
 
+#: How long a stop waits for in-flight requests before cancelling them.
+#: uvicorn waits forever by default, so one request that never finishes (a
+#: stalled upload, a long tool call) held every restart until systemd's
+#: 90 s stop timeout SIGKILLed the process, skipping the app's shutdown.
+_SHUTDOWN_GRACE_SECONDS = 10
+
 
 def _log_cloudflare_unauthorized(cf_ray: str) -> None:
     now = time.monotonic()
@@ -139,6 +145,23 @@ def _log_cloudflare_unauthorized(cf_ray: str) -> None:
         cf_ray,
         f" ({suppressed} similar suppressed)" if suppressed else "",
     )
+
+
+def _oauth_server_metadata(issuer: str) -> dict:
+    """RFC 8414 authorization-server metadata for the main issuer."""
+    # registration_endpoint is intentionally omitted: dynamic client
+    # registration is disabled, clients must be provisioned via CLI.
+    return {
+        "issuer": issuer,
+        "authorization_endpoint": f"{issuer}/oauth/authorize",
+        "token_endpoint": f"{issuer}/oauth/token",
+        "response_types_supported": ["code"],
+        "grant_types_supported": [
+            "authorization_code", "refresh_token", "client_credentials",
+        ],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["client_secret_post"],
+    }
 
 
 def _build_unauthorized_body(headers, *, error: str) -> dict:
@@ -191,6 +214,17 @@ def main():
         help="Path to beaconmcp.yaml (overrides BEACONMCP_CONFIG and the default search)",
     )
 
+    # --- check-startup (self-update gate) ---
+    check_parser = sub.add_parser(
+        "check-startup",
+        help="Load the config and build the whole server without serving it "
+             "(the gate a self-update must pass before restarting)",
+    )
+    check_parser.add_argument(
+        "--config", type=Path, default=None,
+        help="Path to beaconmcp.yaml (overrides BEACONMCP_CONFIG and the default search)",
+    )
+
     # --- init (interactive TUI wizard) ---
     init_parser = sub.add_parser(
         "init",
@@ -235,6 +269,8 @@ def main():
         _cmd_doctor(args)
     elif args.command == "validate-config":
         _cmd_validate_config(args)
+    elif args.command == "check-startup":
+        _cmd_check_startup(args)
     elif args.command == "init":
         _cmd_init(args)
 
@@ -359,7 +395,83 @@ def _cmd_validate_config(args):
     )
 
 
+def _cmd_check_startup(args):
+    """Import every module and build the HTTP app against this config.
+
+    This is the gate a self-update must pass before it restarts the
+    service: ``validate-config`` only imports ``config.py``, so a broken
+    import anywhere else would sail through it and take the server down.
+    Nothing is served and no live state is touched: the token store, the
+    dashboard database and the audit log point at a scratch directory, and
+    the clients file is a copy.
+    """
+    import shutil
+    import tempfile
+    import traceback
+
+    from .config import Config, ConfigError
+
+    if args.config:
+        os.environ["BEACONMCP_CONFIG"] = str(args.config)
+    try:
+        cfg = Config.load(config_path=args.config)
+    except (ConfigError, FileNotFoundError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    with tempfile.TemporaryDirectory(prefix="beaconmcp-check-") as tmp:
+        scratch = Path(tmp)
+        env_cf = os.environ.get("BEACONMCP_CLIENTS_FILE")
+        clients_src = Path(env_cf) if env_cf else cfg.server.clients_file
+        clients_copy = scratch / "clients.json"
+        if clients_src and Path(clients_src).is_file():
+            shutil.copy2(clients_src, clients_copy)
+        os.environ["BEACONMCP_CLIENTS_FILE"] = str(clients_copy)
+        os.environ["BEACONMCP_TOKENS_DB"] = str(scratch / "tokens.db")
+        os.environ["BEACONMCP_DASHBOARD_DB"] = str(scratch / "dashboard.db")
+        os.environ["BEACONMCP_AUDIT_LOG"] = "-"
+        try:
+            import asyncio
+
+            import httpx
+
+            from .server import mcp
+
+            app = _run_http(mcp, "127.0.0.1", 0, serve=False)
+
+            async def _probe() -> httpx.Response:
+                # Run the app's lifespan too: that is where the MCP session
+                # manager starts, and a failure there is a failed start.
+                async with app.router.lifespan_context(app):
+                    transport = httpx.ASGITransport(app=app)
+                    async with httpx.AsyncClient(
+                        transport=transport, base_url="http://127.0.0.1",
+                    ) as http:
+                        return await http.get("/health")
+
+            response = asyncio.run(_probe())
+            if response.status_code != 200:
+                raise RuntimeError(f"/health answered HTTP {response.status_code}")
+        except Exception:  # noqa: BLE001 -- report whatever broke, then fail
+            traceback.print_exc()
+            print("ERROR: the server does not start with this configuration.", file=sys.stderr)
+            sys.exit(1)
+    print("OK: configuration loads, every module imports and /health answers.")
+
+
+def _local_health_url(host: str, port: int) -> str:
+    """Where a process on this machine reaches our own /health."""
+    if host in ("", "0.0.0.0"):
+        host = "127.0.0.1"
+    elif host == "::":
+        host = "::1"
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"http://{host}:{port}/health"
+
+
 def _cmd_serve(args):
+    from . import updates
     from .server import config, mcp
 
     _configure_audit_log(config.server.audit_log)
@@ -367,6 +479,10 @@ def _cmd_serve(args):
     cli_port = getattr(args, "port", None)
     host = cli_host or os.environ.get("BEACONMCP_HOST") or config.server.host
     port_raw = cli_port or os.environ.get("BEACONMCP_PORT") or config.server.port
+    # Lets a self-update hand its post-restart watchdog the URL to poll.
+    updates.configure(
+        config.features.updates, health_url=_local_health_url(host, int(port_raw)),
+    )
     _run_http(mcp, host, int(port_raw))
 
 
@@ -443,8 +559,12 @@ def _cmd_auth(args):
         sys.exit(1)
 
 
-def _run_http(mcp, host: str, port: int):
-    """Run the MCP server over Streamable HTTP with OAuth client credentials."""
+def _run_http(mcp, host: str, port: int, *, serve: bool = True):
+    """Run the MCP server over Streamable HTTP with OAuth client credentials.
+
+    ``serve=False`` builds and returns the Starlette app without printing
+    the banner or binding a port (``beaconmcp check-startup``).
+    """
     import datetime as _dt
     import html
     import secrets
@@ -464,16 +584,22 @@ def _run_http(mcp, host: str, port: int):
     from . import oauth_ui, reauth
     from .client_identity import LogoResolver, identify
     from .reverify import ReverifyDeps, build_reverify_routes
+    from . import transfers
     from .auth import (
         TOTP_REPLAY_MESSAGE,
         ClientStore,
         CodeStore,
+        RefreshTokenError,
         TokenStore,
         TotpResult,
         current_bearer_token,
     )
-    from .ratelimit import RateLimiter, client_ip
-    from .server import config
+    from .ratelimit import RateLimiter, TotpLockout, client_ip, forwarded_host
+    from .server import config, transport_security
+    # The same list the SDK enforces for CORS, including its built-in default
+    # when beaconmcp.yaml leaves server.allowed_origins empty: OAuth
+    # redirects to claude.ai must keep working out of the box.
+    redirect_origins = list(transport_security.allowed_origins or [])
 
     from .metrics import REGISTRY, auth_events, http_requests
 
@@ -488,6 +614,9 @@ def _run_http(mcp, host: str, port: int):
                 path = "/app"
             elif path.startswith("/static/"):
                 path = "/static"
+            elif path.startswith(transfers.UPLOAD_PATH_PREFIX):
+                # The rest of the path is a live credential.
+                path = transfers.UPLOAD_PATH_PREFIX.rstrip("/")
 
             try:
                 response = await call_next(request)
@@ -527,16 +656,44 @@ def _run_http(mcp, host: str, port: int):
         if env_named_ttl and env_named_ttl.isdigit()
         else config.server.named_token_ttl
     )
+    # Refresh-token idle lifetime: BEACONMCP_REFRESH_TOKEN_TTL env (seconds) >
+    # server.refresh_token_ttl in the YAML > TokenStore default (24 h). The
+    # env path skips the YAML loader, so it gets the same bounds check here:
+    # no sign-in outlives 24 h, and "0 = never" is gone.
+    env_refresh_ttl = os.environ.get("BEACONMCP_REFRESH_TOKEN_TTL")
+    refresh_token_ttl = (
+        int(env_refresh_ttl)
+        if env_refresh_ttl and env_refresh_ttl.isdigit()
+        else config.server.refresh_token_ttl
+    )
+    if refresh_token_ttl is not None and not (
+        0 < refresh_token_ttl <= TokenStore.SESSION_LIFETIME
+    ):
+        print(
+            "ERROR: BEACONMCP_REFRESH_TOKEN_TTL must be between 1 and "
+            f"{TokenStore.SESSION_LIFETIME} seconds (24 h); a sign-in never "
+            "outlives 24 h and 0 (never expires) is not supported.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     token_store = TokenStore(
         db_path=tokens_db,
         named_token_ttl=named_token_ttl,
-        interactive_token_ttl=config.server.interactive_bearer_ttl,
+        refresh_token_ttl=refresh_token_ttl,
+        session_lifetime=config.server.interactive_bearer_ttl,
     )
+    # OAuth tokens now survive restarts: drop those of clients deleted while
+    # the server was down. Skipped when no client loaded at all, so an
+    # unreadable clients.json can't wipe the db.
+    known_clients = {c["client_id"] for c in client_store.list_clients()}
+    if known_clients:
+        token_store.prune_unknown_clients(known_clients)
+    # ...and of clients deleted while it is up: ``beaconmcp auth revoke``
+    # rewrites clients.json from another process, the store notices at the
+    # next lookup and hands us the survivors.
+    client_store.on_clients_removed = token_store.prune_unknown_clients
     code_store = CodeStore()
     logo_resolver = LogoResolver(clients_path.parent / "logo-cache")
-    # `beaconmcp auth revoke` edits clients.json offline: drop the bearers of
-    # clients that no longer exist, as a restart did before they persisted
-    token_store.drop_interactive_unless(client_store.exists)
 
     # Shared dashboard SQLite handle. Three features live in it -- sessions,
     # DCR bootstrap slugs and passkeys -- and /oauth/authorize wants the
@@ -570,52 +727,45 @@ def _run_http(mcp, host: str, port: int):
     # the caller's bearer without an import cycle.
     auth.register_token_store(token_store)
 
-    # In-memory TOTP bruteforce guard: per client_id, (failures, cooldown_until).
-    # 5 failed attempts → 5-minute lockout. Reset on first success.
-    totp_fail_max = 5
-    totp_lockout_seconds = 300
-    totp_failures: dict[str, tuple[int, float]] = {}
+    # In-memory TOTP brute-force guard, keyed on (client_id, source IP): 5
+    # wrong codes from one IP lock that IP out for 5 minutes, and 10 from any
+    # mix of IPs lock the client's TOTP (passkeys stay usable). Keyed on
+    # client_id alone, anyone who knew a client_id could lock its owner out
+    # of every 2FA path.
+    totp_lockout = TotpLockout(per_source=5, per_client=10, lockout_seconds=300)
 
-    def totp_locked(client_id: str) -> bool:
-        entry = totp_failures.get(client_id)
-        if not entry:
-            return False
-        count, until = entry
-        if count < totp_fail_max:
-            return False
-        if time.time() >= until:
-            totp_failures.pop(client_id, None)
-            return False
-        return True
+    # A derived (DCR) client checks codes against its owner's seed, so the
+    # lockout is keyed on the seed owner: otherwise every derived client_id
+    # would get its own guess budget against the same seed.
+    def _seed_owner(client_id: str) -> str:
+        client = client_store.get(client_id)
+        if client is not None and client.owner_client_id:
+            return client.owner_client_id
+        return client_id
 
-    def totp_record_failure(client_id: str) -> None:
-        count, _ = totp_failures.get(client_id, (0, 0.0))
-        count += 1
-        totp_failures[client_id] = (count, time.time() + totp_lockout_seconds)
+    def totp_locked(client_id: str, ip: str | None = None) -> bool:
+        return totp_lockout.locked(_seed_owner(client_id), ip)
 
-    def totp_record_success(client_id: str) -> None:
-        totp_failures.pop(client_id, None)
+    def totp_record_failure(client_id: str, ip: str | None = None) -> None:
+        totp_lockout.record_failure(_seed_owner(client_id), ip)
+
+    def totp_record_success(client_id: str, ip: str | None = None) -> None:
+        totp_lockout.record_success(_seed_owner(client_id), ip)
+
+    def _ip(request: Request) -> str:
+        return client_ip(request, tuple(config.server.trusted_proxies))
 
     def _issuer(request: Request) -> str:
         scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
-        host_header = request.headers.get(
-            "x-forwarded-host", request.headers.get("host", "localhost")
+        # X-Forwarded-Host is only trusted from a declared proxy; otherwise the
+        # request's own Host header wins (see ratelimit.forwarded_host).
+        host_header = forwarded_host(
+            request, tuple(config.server.trusted_proxies),
         )
         return f"{scheme}://{host_header}"
 
     async def oauth_metadata(request: Request) -> Response:
-        issuer = _issuer(request)
-        # registration_endpoint is intentionally omitted: dynamic client
-        # registration is disabled, clients must be provisioned via CLI.
-        return JSONResponse({
-            "issuer": issuer,
-            "authorization_endpoint": f"{issuer}/oauth/authorize",
-            "token_endpoint": f"{issuer}/oauth/token",
-            "response_types_supported": ["code"],
-            "grant_types_supported": ["authorization_code", "client_credentials"],
-            "code_challenge_methods_supported": ["S256"],
-            "token_endpoint_auth_methods_supported": ["client_secret_post"],
-        })
+        return JSONResponse(_oauth_server_metadata(_issuer(request)))
 
     async def protected_resource_metadata(request: Request) -> Response:
         # RFC 9728 - required by the MCP 2025-06-18 spec so that clients
@@ -664,7 +814,7 @@ def _run_http(mcp, host: str, port: int):
         # allowlist. Prevents authorization-code exfiltration via a
         # typo-squat or attacker-controlled client that somehow got a
         # valid client_id.
-        if not auth.is_trusted_redirect_uri(redirect_uri, config.server.allowed_origins):
+        if not auth.is_trusted_redirect_uri(redirect_uri, redirect_origins):
             return {}, JSONResponse(
                 {"error": "invalid_request",
                  "error_description": (
@@ -892,7 +1042,7 @@ def _run_http(mcp, host: str, port: int):
         return _authorize_page(
             normalized,
             request=request,
-            locked=totp_locked(normalized["client_id"]),
+            locked=totp_locked(normalized["client_id"], _ip(request)),
         )
 
     async def oauth_authorize_post(request: Request) -> Response:
@@ -902,8 +1052,21 @@ def _run_http(mcp, host: str, port: int):
         if err is not None:
             return err
 
+        # This endpoint takes a TOTP guess with nothing but a client_id, so
+        # it gets the same per-IP limit as /app/login.
+        ip = _ip(request)
+        if not _login_limiter.check(ip):
+            retry = _login_limiter.retry_after(ip)
+            response = _authorize_failed(
+                request, normalized,
+                f"Too many attempts. Retry in {retry}s.",
+                status=429,
+            )
+            response.headers["Retry-After"] = str(retry)
+            return response
+
         client_id = normalized["client_id"]
-        if totp_locked(client_id):
+        if totp_locked(client_id, ip):
             return _authorize_failed(
                 request, normalized,
                 "Too many attempts. Try again in 5 minutes.",
@@ -916,11 +1079,10 @@ def _run_http(mcp, host: str, port: int):
             # A replayed code is the operator re-submitting one they already
             # spent, not an attack -- it must not count towards the lockout.
             if totp_result is TotpResult.INVALID:
-                totp_record_failure(client_id)
+                totp_record_failure(client_id, ip)
             audit.emit(
                 "auth.authorize.fail", client_id=client_id,
-                reason=totp_result.value,
-                ip=client_ip(request, tuple(config.server.trusted_proxies)),
+                reason=totp_result.value, ip=ip,
             )
             return _authorize_failed(
                 request, normalized,
@@ -929,13 +1091,10 @@ def _run_http(mcp, host: str, port: int):
                     if totp_result is TotpResult.REPLAY
                     else "Incorrect code. Check that your device clock is in sync."
                 ),
-                locked=totp_locked(client_id),
+                locked=totp_locked(client_id, ip),
             )
-        totp_record_success(client_id)
-        audit.emit(
-            "auth.authorize.2fa", client_id=client_id,
-            ip=client_ip(request, tuple(config.server.trusted_proxies)),
-        )
+        totp_record_success(client_id, ip)
+        audit.emit("auth.authorize.2fa", client_id=client_id, ip=ip)
         return _authorize_approved(request, normalized)
 
     async def oauth_authorize_finalize(request: Request) -> Response:
@@ -999,11 +1158,9 @@ def _run_http(mcp, host: str, port: int):
             return JSONResponse(
                 {"ok": False, "error": "Unknown client."}, status_code=400,
             )
-        if totp_locked(client_id):
-            return JSONResponse(
-                {"ok": False, "error": "Too many attempts. Try again in 5 minutes."},
-                status_code=429,
-            )
+        # No TOTP-lockout check on the passkey path: a passkey cannot be
+        # guessed, so it stays the owner's way in while someone burns the
+        # client's TOTP budget. The per-IP guard above still applies.
         try:
             options, state = passkey_service.authentication_options(
                 request, client_id=_passkey_owner(client_id),
@@ -1032,11 +1189,6 @@ def _run_http(mcp, host: str, port: int):
                 status_code=400,
             )
         client_id = normalized["client_id"]
-        if totp_locked(client_id):
-            return JSONResponse(
-                {"ok": False, "error": "Too many attempts. Try again in 5 minutes."},
-                status_code=429,
-            )
         credential = body.get("credential")
         state = str(body.get("state") or "")
         if not isinstance(credential, dict) or not state:
@@ -1062,7 +1214,7 @@ def _run_http(mcp, host: str, port: int):
                 {"ok": False, "error": "This passkey belongs to another client."},
                 status_code=401,
             )
-        totp_record_success(client_id)
+        totp_record_success(client_id, _ip(request))
         audit.emit(
             "auth.authorize.2fa", client_id=client_id, via="passkey",
             ip=client_ip(request, tuple(config.server.trusted_proxies)),
@@ -1155,7 +1307,7 @@ def _run_http(mcp, host: str, port: int):
             # 2FA mandatory on every client_credentials exchange (design choice:
             # no non-interactive escape hatch, the operator must re-type a TOTP
             # code at every 24 h token refresh).
-            if totp_locked(client_id):
+            if totp_locked(client_id, ip):
                 return JSONResponse(
                     {
                         "error": "invalid_grant",
@@ -1168,7 +1320,7 @@ def _run_http(mcp, host: str, port: int):
             if totp_result is not TotpResult.OK:
                 # Replays don't count towards the lockout -- see /authorize.
                 if totp_result is TotpResult.INVALID:
-                    totp_record_failure(client_id)
+                    totp_record_failure(client_id, ip)
                 return JSONResponse(
                     {
                         "error": "invalid_grant",
@@ -1180,14 +1332,16 @@ def _run_http(mcp, host: str, port: int):
                     },
                     status_code=400,
                 )
-            totp_record_success(client_id)
-            token, expires_in = token_store.issue(client_id)
+            totp_record_success(client_id, ip)
+            # No refresh token here: every client_credentials exchange must
+            # carry a fresh TOTP code, a refresh token would bypass that.
+            grant = token_store.issue_oauth(client_id)
             auth_events.inc(kind="token", outcome="ok")
             audit.emit("auth.token.issue", client_id=client_id, grant_type=grant_type)
             return JSONResponse({
-                "access_token": token,
+                "access_token": grant.access_token,
                 "token_type": "bearer",
-                "expires_in": expires_in,
+                "expires_in": grant.expires_in,
             })
 
         if grant_type == "authorization_code":
@@ -1196,11 +1350,45 @@ def _run_http(mcp, host: str, port: int):
             code_verifier = body.get("code_verifier", "")
             if not code_store.consume(code, client_id, redirect_uri, code_verifier):
                 return JSONResponse({"error": "invalid_grant"}, status_code=400)
-            token, expires_in = token_store.issue_interactive(client_id)
+            grant = token_store.issue_oauth(client_id, refresh=True)
+            auth_events.inc(kind="token", outcome="ok")
+            audit.emit("auth.token.issue", client_id=client_id, grant_type=grant_type)
             return JSONResponse({
-                "access_token": token,
+                "access_token": grant.access_token,
                 "token_type": "bearer",
-                "expires_in": expires_in,
+                "expires_in": grant.expires_in,
+                "refresh_token": grant.refresh_token,
+            })
+
+        if grant_type == "refresh_token":
+            presented = body.get("refresh_token", "")
+            family_id = token_store.family_of(presented) if presented else None
+            try:
+                if not presented:
+                    raise RefreshTokenError("invalid")
+                grant = token_store.refresh(presented, client_id)
+            except RefreshTokenError as exc:
+                auth_events.inc(kind="token", outcome=f"refresh_{exc.reason}")
+                if exc.reason == "reused":
+                    audit.emit(
+                        "auth.token.refresh.reuse",
+                        client_id=client_id, family_id=exc.family_id,
+                    )
+                else:
+                    audit.emit(
+                        "auth.token.fail", client_id=client_id,
+                        reason=f"refresh_{exc.reason}", grant_type=grant_type,
+                    )
+                return JSONResponse({"error": "invalid_grant"}, status_code=400)
+            auth_events.inc(kind="token", outcome="ok")
+            audit.emit(
+                "auth.token.refresh", client_id=client_id, family_id=family_id,
+            )
+            return JSONResponse({
+                "access_token": grant.access_token,
+                "token_type": "bearer",
+                "expires_in": grant.expires_in,
+                "refresh_token": grant.refresh_token,
             })
 
         return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
@@ -1254,6 +1442,12 @@ def _run_http(mcp, host: str, port: int):
         ):
             return await call_next(request)
 
+        # One-shot upload links: the token in the path is the credential,
+        # minted by an authenticated proxmox_upload_link call. The handler
+        # rejects unknown, expired and already used tokens.
+        if path.startswith(transfers.UPLOAD_PATH_PREFIX):
+            return await call_next(request)
+
         # Passkey ceremonies for /oauth/authorize. They are part of signing
         # in, so they cannot require a bearer -- there isn't one yet. Their
         # own guards are the WebAuthn signature, the TOTP lockout and the
@@ -1301,6 +1495,11 @@ def _run_http(mcp, host: str, port: int):
 
         bearer = authorization[7:]
         client_id = token_store.validate(bearer)
+        # A bearer of a client revoked from the CLI dies with the client:
+        # ``exists`` re-reads clients.json when it changed on disk, which
+        # also prunes the client's tokens via ``on_clients_removed``.
+        if client_id and not client_store.exists(client_id):
+            client_id = None
         if not client_id:
             return JSONResponse(
                 _build_unauthorized_body(request.headers, error="invalid_token"),
@@ -1313,9 +1512,13 @@ def _run_http(mcp, host: str, port: int):
         # Expose the bearer to downstream MCP tools via ContextVar so
         # security_end_session can revoke it after responding.
         token_var = current_bearer_token.set(bearer)
+        # Lets proxmox_upload_link build an absolute URL when no public_url
+        # is configured.
+        base_var = transfers.current_public_base.set(issuer)
         try:
             return await call_next(request)
         finally:
+            transfers.current_public_base.reset(base_var)
             current_bearer_token.reset(token_var)
 
     # OAuth Dynamic Client Registration plumbing. Only engaged when both
@@ -1359,7 +1562,7 @@ def _run_http(mcp, host: str, port: int):
             "token_endpoint": f"{issuer}/oauth/token",
             "registration_endpoint": f"{issuer}/oauth/register/c/{slug}",
             "response_types_supported": ["code"],
-            "grant_types_supported": ["authorization_code"],
+            "grant_types_supported": ["authorization_code", "refresh_token"],
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": ["client_secret_post"],
         })
@@ -1401,7 +1604,7 @@ def _run_http(mcp, host: str, port: int):
                 status_code=400,
             )
         bad = [u for u in redirect_uris_raw
-               if not auth.is_trusted_redirect_uri(u, config.server.allowed_origins)]
+               if not auth.is_trusted_redirect_uri(u, redirect_origins)]
         if bad:
             return JSONResponse(
                 {"error": "invalid_redirect_uri",
@@ -1450,7 +1653,7 @@ def _run_http(mcp, host: str, port: int):
             "client_secret": new_client_secret,
             "client_id_issued_at": int(row.created_at),
             "token_endpoint_auth_method": "client_secret_post",
-            "grant_types": ["authorization_code"],
+            "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
             "redirect_uris": redirect_uris_raw,
         }, status_code=201)
@@ -1486,17 +1689,19 @@ def _run_http(mcp, host: str, port: int):
             return f"{issuer}/.well-known/oauth-protected-resource{request.url.path}"
         return f"{issuer}/.well-known/oauth-protected-resource"
 
-    slug_app = _McpSlugRewriteApp(mcp.streamable_http_app())
+    slug_app = _McpSlugRewriteApp(
+        mcp.streamable_http_app(transport_security=transport_security)
+    )
     mcp_app = reauth.McpGateApp(slug_app, resource_metadata_for=_resource_metadata_for)
 
-    # The MCP streamable-HTTP app starts its session manager task group in its
-    # own lifespan. When we Mount it under a parent Starlette, only the parent
-    # app's lifespan runs — so we forward the child's lifespan explicitly,
-    # otherwise requests fail with "Task group is not initialized".
-    inner_mcp = slug_app._inner
+    # The MCP streamable-HTTP app starts its session manager in its own
+    # lifespan. Mount does not run a child's lifespan, so the parent
+    # Starlette's lifespan must start the StreamableHTTP session manager
+    # itself; mcp 2.x prescribes ``session_manager.run()`` for that, otherwise
+    # requests fail with "Task group is not initialized".
     @asynccontextmanager
     async def lifespan(_app):
-        async with inner_mcp.router.lifespan_context(_app):
+        async with mcp.session_manager.run():
             yield
 
     dcr_routes: list = []
@@ -1602,6 +1807,11 @@ def _run_http(mcp, host: str, port: int):
             Route("/oauth/register", oauth_register, methods=["POST"]),
             *reverify_routes,
             *logo_resolver.routes(),
+            Route(
+                transfers.UPLOAD_PATH_PREFIX + "{token}",
+                transfers.make_upload_endpoint(tuple(config.server.trusted_proxies)),
+                methods=["PUT", "POST"],
+            ),
             *dcr_routes,
             *dashboard_routes,
             Mount("/", app=mcp_app),
@@ -1612,6 +1822,8 @@ def _run_http(mcp, host: str, port: int):
         ],
         lifespan=lifespan,
     )
+    if not serve:
+        return app
 
     n_clients = len(client_store.list_clients())
     print(f"BeaconMCP starting on {host}:{port}")
@@ -1634,7 +1846,23 @@ def _run_http(mcp, host: str, port: int):
         print(f"Passkeys:  disabled - {passkey_reason}")
     if n_clients == 0:
         print("\nNo clients registered. Create one with: beaconmcp auth create --name 'My Client'")
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    # proxy_headers=False: the app owns its own forwarded-header trust model
+    # end to end -- client_ip walks X-Forwarded-For against trusted_proxies and
+    # forwarded_host does the same for X-Forwarded-Host, both keyed on the real
+    # TCP peer. uvicorn's default ProxyHeadersMiddleware (proxy_headers=True,
+    # forwarded_allow_ips="127.0.0.1") rewrites scope["client"] to the XFF
+    # client before the app runs, which would hide the real peer from both
+    # helpers -- their trusted-proxy branch could never open. Every scheme read
+    # goes through the x-forwarded-proto header directly, so nothing else needs
+    # uvicorn to interpret the forwarded headers for us.
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_level="info",
+        proxy_headers=False,
+        timeout_graceful_shutdown=_SHUTDOWN_GRACE_SECONDS,
+    )
 
 
 def _build_dashboard_routes(client_store, token_store, totp_locked,

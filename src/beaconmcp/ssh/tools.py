@@ -4,7 +4,7 @@ import asyncio
 import time
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from .client import SSHClient, SSHHostResolutionError, SSHNotConfiguredError
 
@@ -32,7 +32,7 @@ def _session_to_result(exec_id: str, session) -> dict[str, Any]:
     }
 
 
-def register_ssh_tools(mcp: FastMCP, ssh_client: SSHClient) -> None:
+def register_ssh_tools(mcp: MCPServer, ssh_client: SSHClient) -> None:
     """Register SSH command execution tools."""
 
     @mcp.tool()

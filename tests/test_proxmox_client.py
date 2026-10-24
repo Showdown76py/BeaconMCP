@@ -180,3 +180,55 @@ def test_transient_error_evicts_only_the_calling_thread(
     # The worker's connection survived the main thread's eviction.
     assert len(seen) == 2
     assert seen[1] is seen[0]
+
+
+class _Endpoint:
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+        self.calls = 0
+
+    def _raise(self, **kwargs: object) -> object:
+        self.calls += 1
+        raise self.exc
+
+    get = post = _raise
+
+
+def _client_with(monkeypatch: pytest.MonkeyPatch, endpoint: _Endpoint) -> ProxmoxClient:
+    c = ProxmoxClient(_FakeConfig(["pve1"]))
+    monkeypatch.setattr(c, "_get_connection", lambda name: type("C", (), {"nodes": endpoint})())
+    monkeypatch.setattr(client_mod, "_RETRY_BACKOFF_SECONDS", 0)
+    return c
+
+
+def test_post_is_not_resent_after_a_read_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The node may already be cloning: a second POST would start it twice.
+    from requests.exceptions import ReadTimeout
+
+    ep = _Endpoint(ReadTimeout("read timed out"))
+    result = _client_with(monkeypatch, ep).post("pve1", "nodes")
+    assert ep.calls == 1
+    assert "proxmox_get_tasks" in result["error"]
+
+
+def test_post_is_retried_when_the_connection_never_opened(monkeypatch: pytest.MonkeyPatch) -> None:
+    from requests.exceptions import ConnectTimeout
+
+    ep = _Endpoint(ConnectTimeout("connect timed out"))
+    _client_with(monkeypatch, ep).post("pve1", "nodes")
+    assert ep.calls == 2
+
+
+def test_get_is_retried_after_a_read_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    from requests.exceptions import ReadTimeout
+
+    ep = _Endpoint(ReadTimeout("read timed out"))
+    _client_with(monkeypatch, ep).get("pve1", "nodes")
+    assert ep.calls == 2
+
+
+def test_a_dropped_write_is_not_called_a_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    ep = _Endpoint(RequestsConnectionError("Connection aborted: RemoteDisconnected"))
+    result = _client_with(monkeypatch, ep).post("pve1", "nodes")
+    assert ep.calls == 1
+    assert "dropped the connection mid-request" in result["error"]

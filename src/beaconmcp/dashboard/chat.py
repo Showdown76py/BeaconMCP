@@ -20,6 +20,7 @@ import logging
 import sys
 import time
 import traceback
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Protocol, runtime_checkable
 
@@ -171,6 +172,9 @@ _NEEDS_CONFIRMATION: frozenset[str] = frozenset({
     "proxmox_upload_file",
     "proxmox_download_file",
     "proxmox_delete_transfer",
+    # Mints a URL that writes into a guest; fetches arbitrary URLs into one.
+    "proxmox_upload_link",
+    "proxmox_fetch_url",
     # --- destructive / irreversible -----------------------------------
     "vm_bulk_action",
     "proxmox_vm_stop",
@@ -203,9 +207,19 @@ _NEEDS_CONFIRMATION: frozenset[str] = frozenset({
 # ``confirm`` is a parameter the tool actually declares, so what we read is
 # what the tool will act on. The trap that note describes is an argument the
 # tool does *not* declare, which pydantic drops during validation.
+#
+# ``proxmox_vm_create`` is here for the same reason: a bare create is a
+# harmless empty shell, but a ``config`` dict can carry code-execution keys
+# -- ``hookscript`` (a script PVE runs on VM lifecycle events) or raw QEMU
+# ``args`` -- which an injected instruction could set to run code on the PVE
+# host. ``config`` is a declared parameter of the tool, so reading it is
+# sound; the gate is on a *non-empty* ``config`` (the check below is
+# ``bool(args.get(...))``), so a bare create -- no ``config`` or an empty
+# ``{}`` -- carries no code-execution keys and stays ungated.
 _CONFIRM_WHEN_ARG_PRESENT: dict[str, str] = {
     "proxmox_vm_config": "updates",
     "beaconmcp_self_update": "confirm",
+    "proxmox_vm_create": "config",
 }
 
 # Tools that actually implement a ``dry_run`` parameter and return a
@@ -213,7 +227,7 @@ _CONFIRM_WHEN_ARG_PRESENT: dict[str, str] = {
 # the modal on ``dry_run=True``.
 #
 # This list must stay exhaustive, and honouring dry_run cannot be assumed
-# from the argument alone: FastMCP validates tool arguments with a plain
+# from the argument alone: the MCP SDK validates tool arguments with a plain
 # pydantic model, so pydantic's default ``extra='ignore'`` silently drops
 # any argument the tool does not declare. A trusting
 # ``args.get("dry_run") is True`` check would therefore let
@@ -253,6 +267,10 @@ def _tool_call_requires_confirmation(name: str, args: Any) -> bool:
             command = args.get("command")
             if exec_id and not command:
                 return False
+        # With link_id the tool only reports a link's state and ignores
+        # every other argument, so nothing is minted or written.
+        if name == "proxmox_upload_link" and args.get("link_id"):
+            return False
         if name in _DRY_RUN_AWARE and args.get("dry_run") is True:
             return False
     return True
@@ -657,13 +675,9 @@ class GeminiChatEngine:
         # ``session.call_tool()``, and feed the results back in a new
         # ``generate_content_stream`` call until no function_call remains.
         try:
-            from mcp.client.streamable_http import (  # type: ignore
-                streamablehttp_client,
-            )
-
             from .mcp_bridge import (
-                AppsClientSession,
                 call_result_to_wire,
+                open_session,
                 ui_resource_uri,
                 ui_resource_uris_by_tool,
             )
@@ -676,36 +690,39 @@ class GeminiChatEngine:
             turn.model, turn.effort, turn.mcp_url,
         )
 
-        # ``streamablehttp_client`` (no underscore) is the variant that
-        # actually threads the ``headers`` dict through every request.
-        # Previously we used ``streamable_http_client(http_client=...)``
-        # and relied on httpx default-headers propagation, but the MCP
-        # client builds fresh requests that don't inherit the defaults,
-        # so the Authorization header was being dropped -- producing a
-        # hard 401 on /mcp even when calling loopback.
-        async with streamablehttp_client(
-            turn.mcp_url,
-            headers={"Authorization": f"Bearer {turn.bearer}"},
-            timeout=30,
-            sse_read_timeout=300,
-        ) as (read_stream, write_stream, _get_session_id):
-            # Apps-aware session: it declares io.modelcontextprotocol/ui at
-            # initialize, which is what lets the dashboard render the ui://
-            # panels its own tools point at instead of showing their JSON.
-            async with AppsClientSession(read_stream, write_stream) as session:
-                    try:
-                        init_result = await session.initialize()
-                    except Exception as e:  # noqa: BLE001
-                        yield ErrorEvent(
-                            code="mcp_init_failed",
-                            message=(
-                                f"Cannot connect to MCP ({turn.mcp_url}): {e}. "
-                                "Make sure BEACONMCP_DASHBOARD_PUBLIC_URL is "
-                                "not set when running in local mode."
-                            ),
-                        )
-                        return
+        # ``open_session`` carries the bearer and timeouts on its httpx2
+        # client and declares io.modelcontextprotocol/ui at initialize,
+        # which is what lets the dashboard render the ui:// panels its own
+        # tools point at instead of showing their JSON. It initializes
+        # before yielding, so handshake failures surface when entering it;
+        # the stack keeps them reportable as an ErrorEvent.
+        stack = AsyncExitStack()
+        try:
+            session = await stack.enter_async_context(
+                open_session(
+                    turn.mcp_url,
+                    turn.bearer,
+                    timeout=30,
+                    sse_read_timeout=300,
+                )
+            )
+            # Already initialized: returns the cached handshake result.
+            init_result = await session.initialize()
+        except Exception as e:  # noqa: BLE001
+            # Whatever was entered before the failure is released here, we
+            # don't reach the ``async with stack`` below.
+            await stack.aclose()
+            yield ErrorEvent(
+                code="mcp_init_failed",
+                message=(
+                    f"Cannot connect to MCP ({turn.mcp_url}): {e}. "
+                    "Make sure BEACONMCP_DASHBOARD_PUBLIC_URL is "
+                    "not set when running in local mode."
+                ),
+            )
+            return
 
+        async with stack:
                     # The MCP server ships a dynamic ``instructions`` string
                     # describing which capabilities are currently active
                     # (Proxmox N nodes / SSH N hosts / BMC N devices). Pass
@@ -1005,7 +1022,7 @@ class GeminiChatEngine:
                                 payload = _mcp_call_result_to_response(result)
                                 status = (
                                     "error"
-                                    if getattr(result, "isError", False)
+                                    if result.is_error
                                     else "ok"
                                 )
                                 # A result-level _meta.ui wins over the one
@@ -1131,13 +1148,13 @@ def _iter_parts(chunk: Any):
 def _mcp_tool_to_declaration(tool: Any, types_mod: Any) -> Any:
     """Convert an MCP ``Tool`` into a Gemini ``FunctionDeclaration``.
 
-    MCP exposes ``inputSchema`` as a JSON Schema dict which the SDK's
+    MCP exposes ``input_schema`` as a JSON Schema dict which the SDK's
     ``parameters_json_schema`` field accepts directly -- no manual
     translation to ``types.Schema`` needed.
     """
     name = getattr(tool, "name", "")
     description = getattr(tool, "description", "") or ""
-    schema = getattr(tool, "inputSchema", None)
+    schema = tool.input_schema
     if not isinstance(schema, dict) or not schema:
         # Gemini requires an object schema. Default to an empty object so
         # tools without declared parameters still validate.
@@ -1164,16 +1181,16 @@ def _mcp_call_result_to_response(result: Any) -> dict:
             content_items.append({"type": "text", "text": text})
             continue
         data = getattr(c, "data", None)
-        mime = getattr(c, "mimeType", None)
+        mime = getattr(c, "mime_type", None)
         if data is not None:
             content_items.append({
                 "type": "binary",
                 "mimeType": mime or "application/octet-stream",
             })
     out["content"] = content_items
-    if getattr(result, "isError", False):
+    if result.is_error:
         out["error"] = True
-    structured = getattr(result, "structuredContent", None)
+    structured = result.structured_content
     if structured is not None:
         out["structured"] = structured
     return out

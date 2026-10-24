@@ -9,9 +9,13 @@ import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
-from beaconmcp.auth import TokenStore, TotpResult, token_hash
+from beaconmcp.auth import TokenStore, TotpResult
 from beaconmcp.reauth import ClientInfoRegistry, ClientSessionInfo, PendingReverifyStore
 from beaconmcp.reverify import ReverifyDeps, build_reverify_routes
+
+def _sign_in(store, client_id="c1"):
+    return store.issue_oauth(client_id, refresh=True).access_token
+
 
 JSON = {"X-BeaconMCP-Mode": "json"}
 
@@ -44,14 +48,14 @@ class FakePasskeys:
 @pytest.fixture()
 def env():
     store = TokenStore()
-    token, _ = store.issue_interactive("c1")
-    thash = token_hash(token)
+    token = _sign_in(store)
+    thash = store.get_interactive(token).key
     store.get_interactive(token).verified_at = time.time() - 90000
     pending = PendingReverifyStore()
     registry = ClientInfoRegistry()
     registry.record(thash, ClientSessionInfo(elicit_url=True, name="claude-code", version="2.1.3"))
     entry, _ = pending.get_or_create(
-        token_hash=thash, client_id="c1", tool="proxmox_vm_start",
+        session_key=thash, client_id="c1", tool="proxmox_vm_start",
         args={"node": "pve-02", "vmid": 104}, ip="82.64.12.7", user_agent="ua",
         client_label="Claude Code", bearer_issued_at=time.time() - 3 * 86400,
         last_verified_at=time.time() - 90000,
@@ -87,7 +91,7 @@ def test_get_shows_tool_args_origin_and_last_verified(env) -> None:
 
 def test_get_escapes_args(env) -> None:
     entry, _ = env.pending.get_or_create(
-        token_hash="other", client_id="c1", tool="x", args={"cmd": "<script>alert(1)</script>"},
+        session_key="other", client_id="c1", tool="x", args={"cmd": "<script>alert(1)</script>"},
         ip="1.1.1.1", user_agent="<b>", client_label="x", bearer_issued_at=0, last_verified_at=0,
     )
     page = env.client.get(f"/oauth/reverify?id={entry.id}").text

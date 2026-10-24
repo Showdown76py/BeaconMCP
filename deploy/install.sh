@@ -39,7 +39,8 @@ fi
 # 4. Install Python dependencies
 echo "[*] Installing Python dependencies..."
 "$VENV_DIR/bin/pip" install --upgrade pip --quiet
-"$VENV_DIR/bin/pip" install -e . --quiet
+# constraints.txt pins every dependency to the set CI tested.
+"$VENV_DIR/bin/pip" install -e . -c constraints.txt --quiet
 
 # 5. .env file
 if [ ! -f "$INSTALL_DIR/.env" ]; then

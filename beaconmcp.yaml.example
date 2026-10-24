@@ -34,14 +34,18 @@ server:
   # clients (Assistant Desktop, Gemini CLI, Cursor, VS Code, Mistral Vibe,
   # OpenCode, ...) are NOT browser-based and don't need an entry.
   allowed_origins:
-    - https://assistant.ai
+    - https://claude.ai
     - https://chatgpt.com
     - https://chat.openai.com
     - https://chat.mistral.ai
     - https://www.perplexity.ai
     - https://gemini.google.com
 
-  # Trust X-Forwarded-For only from direct peers you operate.
+  # Direct peers you operate whose forwarded headers are trusted. Governs both
+  # X-Forwarded-For (auth rate-limit client IP) and X-Forwarded-Host (the host
+  # advertised in the OAuth issuer and the "paste this MCP URL" strings). When
+  # empty, both fall back to the request's own peer / Host and forwarded values
+  # from any peer are ignored.
   # IPs and CIDRs are accepted.
   # - Keep loopback entries when your reverse proxy runs on the same host.
   # - Add `cloudflare` to auto-expand to Cloudflare's published proxy CIDRs.
@@ -87,6 +91,16 @@ server:
   # sure you trust every client you paste one into). The
   # BEACONMCP_NAMED_TOKEN_TTL env var overrides this.
   # named_token_ttl: 2592000
+  # Idle lifetime (seconds) of OAuth refresh tokens handed to
+  # authorization_code clients (claude.ai, ChatGPT, Le Chat...). Each
+  # refresh rotates the token and restarts this clock; replaying a
+  # rotated-out token revokes the whole chain. Unset, it lasts as long as
+  # the sign-in (interactive_bearer_ttl below), so a client can come back
+  # the next day and get a re-verify link instead of a full sign-in. An
+  # explicit value (max 86400) adds an idle timeout: past it the client has
+  # to go through the authorization page again. 0 (never) is refused. The
+  # BEACONMCP_REFRESH_TOKEN_TTL env var overrides this.
+  # refresh_token_ttl: 86400
 
   # Human session for OAuth (authorization_code) clients such as Claude Code.
   # Their bearer lives interactive_bearer_ttl, but every human_session_ttl the
@@ -119,6 +133,11 @@ server:
 # fully remote node, declare it explicitly under `ssh.hosts[]` with its
 # real SSH address (Tailscale IP, VPN tunnel, bastion…).
 proxmox:
+  # TLS verification of the Proxmox API: false (skip), true (system CAs),
+  # or the path of a CA bundle. For the default self-signed cluster cert,
+  # copy /etc/pve/pve-root-ca.pem from a node to this host and use:
+  #   verify_ssl: /etc/beaconmcp/pve-root-ca.pem
+  # The API token is sent on every request, so prefer the CA path.
   verify_ssl: false
   # One entry per Proxmox node. N nodes supported; the first one is not special.
   # Each node needs an API token (Datacenter > Permissions > API Tokens).
@@ -165,11 +184,14 @@ ssh:
   # just works without repeating credentials per node.
   inherit_proxmox_nodes: true
 
-  # Host-key verification. Unset (default) means "accept any key on first
-  # contact" -- fine on a trusted LAN, unsafe over the public internet.
-  # Set `known_hosts` to an OpenSSH-format file to pin keys, or leave it
-  # unset and flip `strict_host_key_checking: true` to use the system
-  # `~/.ssh/known_hosts` instead.
+  # Host-key verification. Unset (default): trust on first use. The first
+  # connection to a host records its key in `ssh_known_hosts` next to
+  # clients_file; a different key later is refused (if the host was
+  # reinstalled: ssh-keygen -R <host> -f <that file>).
+  # Set `known_hosts` to an OpenSSH-format file to pin keys yourself,
+  # `strict_host_key_checking: true` to only accept the system
+  # `~/.ssh/known_hosts`, or `strict_host_key_checking: false` to accept
+  # any key (trusted lab networks only).
   # known_hosts: /etc/beaconmcp/known_hosts
   # strict_host_key_checking: true
 
@@ -182,10 +204,9 @@ ssh:
       # Per-host host-key overrides; unset fields inherit the global
       # `ssh.known_hosts` / `ssh.strict_host_key_checking` above. Handy to
       # enforce strict checking on one public-internet host while
-      # trusted-LAN nodes stay permissive. Note: overrides only *tighten* —
-      # once a global `known_hosts` file is set, a per-host
-      # `strict_host_key_checking: false` cannot loosen back to
-      # accept-any-key.
+      # other nodes keep the default. Note: once a global `known_hosts` file
+      # is set, a per-host `strict_host_key_checking: false` cannot loosen
+      # back to accept-any-key.
       # known_hosts: /etc/beaconmcp/vps1_known_hosts
       # strict_host_key_checking: true
 
@@ -260,6 +281,16 @@ features:
     # the dashboard or over MCP -- appropriate when updates go through a
     # deployment pipeline. Manual instructions are still shown.
     allow_self_update: true
+    # What an update moves to. "branch" (default): the tip of the upstream
+    # default branch, i.e. every merged change. "release": the newest
+    # vX.Y.Z tag only. No release has been tagged yet, so "release" reports
+    # "no release tag" until the first one is published.
+    channel: branch
+    # Refuse an update whose target is not signed by a key this host trusts
+    # (git verify-tag for a release, git verify-commit for the branch tip).
+    # Trust comes from the service user's git setup: a GPG keyring, or
+    # gpg.format=ssh with gpg.ssh.allowedSignersFile.
+    require_signed: false
 
 # Free-form infrastructure context exposed as an MCP resource. Edit freely:
 # the LLM reads this to understand your topology, naming conventions, and

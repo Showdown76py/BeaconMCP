@@ -27,6 +27,12 @@ import yaml
 
 _logger = logging.getLogger("beaconmcp.config")
 
+# Upper bound for ``server.refresh_token_ttl``: an OAuth sign-in never
+# outlives 24 h (``auth.TokenStore.SESSION_LIFETIME``), so a longer refresh
+# token would be a lie. Kept here, not imported, so the loader stays free of
+# the auth module.
+MAX_REFRESH_TOKEN_TTL = 3600 * 24
+
 
 # --- Dataclasses -----------------------------------------------------------
 
@@ -108,15 +114,14 @@ class SSHConfig:
     inherit_proxmox_nodes: bool = False
     # Path to an OpenSSH-style known_hosts file. When set, asyncssh verifies
     # every connection's host key against this file and refuses unknown
-    # keys (no TOFU). Default (None) preserves the previous behaviour of
-    # accepting any key -- appropriate for a trusted LAN but not for
-    # anything reachable over the public internet.
+    # keys (no TOFU).
     known_hosts: str | None = None
-    # When ``known_hosts`` is unset but this is true, still refuse unknown
-    # keys by asking asyncssh to build an in-memory known_hosts from the
-    # user's ``~/.ssh/known_hosts``. Kept separate from ``known_hosts`` so
-    # the YAML can opt into strict mode without naming a file.
-    strict_host_key_checking: bool = False
+    # Tri-state, see ssh.client.host_key_policy:
+    # * None (unset): trust on first use. A new host's key is recorded in a
+    #   managed known_hosts file beside clients.json; a changed key is refused.
+    # * True: only keys already in ``~/.ssh/known_hosts``.
+    # * False: accept any key (explicit opt-out, trusted lab networks only).
+    strict_host_key_checking: bool | None = None
 
 
 @dataclass
@@ -166,6 +171,13 @@ class ServerConfig:
     # Tools that ask for a confirmation through form elicitation. ``None``
     # means the built-in list (confirm.DEFAULT_CONFIRM_TOOLS).
     confirm_tools: list[str] | None = None
+    # Idle lifetime, in seconds, of OAuth refresh tokens (``authorization_code``
+    # clients such as claude.ai). Each refresh rotates the token and restarts
+    # this clock, but no sign-in outlives 24 h (``auth.TokenStore.
+    # SESSION_LIFETIME``), so the value is capped there. ``None`` means the
+    # default (24 h); ``0`` (never expires) is rejected. The
+    # BEACONMCP_REFRESH_TOKEN_TTL env var overrides this.
+    refresh_token_ttl: int | None = None
 
 
 @dataclass
@@ -191,6 +203,17 @@ class UpdatesConfig:
 
     enabled: bool = True
     allow_self_update: bool = True
+    #: What an update moves to. "branch": the tip of the remote default
+    #: branch (every merged PR). "release": the newest ``vX.Y.Z`` tag.
+    channel: str = "branch"
+    #: Refuse an update whose target is not signed by a key this host
+    #: trusts: ``git verify-tag`` on the release tag, or ``git
+    #: verify-commit`` on the branch tip. Trust comes from the service
+    #: user's git/GPG setup (keyring or ``gpg.ssh.allowedSignersFile``).
+    require_signed: bool = False
+
+
+UPDATE_CHANNELS = ("branch", "release")
 
 
 @dataclass
@@ -207,7 +230,9 @@ class Config:
     bmc_devices: list[BMCDevice]
     ssh: SSHConfig | None
     features: FeaturesConfig
-    verify_ssl: bool
+    #: ``True`` / ``False``, or the path of a CA bundle used to verify the
+    #: Proxmox API certificate (handed to requests' ``verify`` as is).
+    verify_ssl: bool | str
     infrastructure: dict
     #: YAML file this config was loaded from, or ``None`` on the legacy
     #: env-var path. The self-update flow needs it to re-validate the
@@ -527,8 +552,9 @@ class Config:
                 defaults=defaults,
                 inherit_proxmox_nodes=inherit_flag,
                 known_hosts=ssh_raw.get("known_hosts") or None,
-                strict_host_key_checking=_bool(
-                    ssh_raw.get("strict_host_key_checking", False)
+                strict_host_key_checking=(
+                    None if ssh_raw.get("strict_host_key_checking") is None
+                    else _bool(ssh_raw["strict_host_key_checking"])
                 ),
             )
 
@@ -575,6 +601,11 @@ class Config:
                 if isinstance(srv_raw.get("confirm_tools"), list)
                 else None
             ),
+            refresh_token_ttl=(
+                int(srv_raw["refresh_token_ttl"])
+                if srv_raw.get("refresh_token_ttl") is not None
+                else None
+            ),
         )
         for key in (
             "human_session_ttl", "interactive_bearer_ttl",
@@ -586,6 +617,14 @@ class Config:
             raise ConfigError(
                 "server.named_token_ttl: must be >= 0 seconds "
                 "(0 = named tokens never expire, revoke-only)."
+            )
+        if server.refresh_token_ttl is not None and not (
+            0 < server.refresh_token_ttl <= MAX_REFRESH_TOKEN_TTL
+        ):
+            raise ConfigError(
+                "server.refresh_token_ttl: must be between 1 and "
+                f"{MAX_REFRESH_TOKEN_TTL} seconds (24 h). A sign-in never outlives "
+                "24 h; 0 (never expires) is not supported."
             )
 
         feat_raw = raw.get("features") or {}
@@ -600,12 +639,20 @@ class Config:
             mcp_mode=(dash_raw.get("mcp_mode") or "local").strip().lower(),
         )
         updates_raw = feat_raw.get("updates") or {}
+        update_channel = str(updates_raw.get("channel") or "branch").strip().lower()
+        if update_channel not in UPDATE_CHANNELS:
+            raise ConfigError(
+                f"features.updates.channel: expected one of {', '.join(UPDATE_CHANNELS)}, "
+                f"got {updates_raw.get('channel')!r}."
+            )
         features = FeaturesConfig(
             dashboard=dashboard,
             ssh_enabled=_bool((feat_raw.get("ssh") or {}).get("enabled", True)),
             updates=UpdatesConfig(
                 enabled=_bool(updates_raw.get("enabled", True)),
                 allow_self_update=_bool(updates_raw.get("allow_self_update", True)),
+                channel=update_channel,
+                require_signed=_bool(updates_raw.get("require_signed", False)),
             ),
         )
 
@@ -645,7 +692,7 @@ class Config:
             bmc_devices=bmc_devices,
             ssh=ssh,
             features=features,
-            verify_ssl=_bool(proxmox_raw.get("verify_ssl", False)),
+            verify_ssl=_verify_ssl(proxmox_raw.get("verify_ssl", False)),
             infrastructure=raw.get("infrastructure") or {},
             source_path=source_path,
         )
@@ -750,6 +797,11 @@ class Config:
                     "(default list)" if self.server.confirm_tools is None
                     else self.server.confirm_tools
                 ),
+                "refresh_token_ttl": (
+                    "(default: 24 h)"
+                    if self.server.refresh_token_ttl is None
+                    else self.server.refresh_token_ttl
+                ),
             },
             "proxmox": {
                 "verify_ssl": self.verify_ssl,
@@ -810,6 +862,8 @@ class Config:
                 "updates": {
                     "enabled": self.features.updates.enabled,
                     "allow_self_update": self.features.updates.allow_self_update,
+                    "channel": self.features.updates.channel,
+                    "require_signed": self.features.updates.require_signed,
                 },
             },
             "infrastructure": self.infrastructure,
@@ -904,6 +958,35 @@ def _bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+_TRUE_STRINGS = ("1", "true", "yes", "on")
+_FALSE_STRINGS = ("", "0", "false", "no", "off")
+
+
+def _verify_ssl(value: Any) -> bool | str:
+    """Parse ``proxmox.verify_ssl``: a boolean or the path of a CA bundle.
+
+    A path is the way to verify a cluster's self-signed certificate (copy
+    ``/etc/pve/pve-root-ca.pem`` to the BeaconMCP host). Anything else is
+    rejected: silently reading a mistyped path as ``false`` would turn TLS
+    verification off without a word.
+    """
+    if isinstance(value, bool) or value is None:
+        return bool(value)
+    raw = str(value).strip()
+    if raw.lower() in _TRUE_STRINGS:
+        return True
+    if raw.lower() in _FALSE_STRINGS:
+        return False
+    path = os.path.expanduser(raw)
+    if os.path.isfile(path) or os.path.isdir(path):
+        return path
+    raise ConfigError(
+        f"proxmox.verify_ssl: expected true, false or the path of a CA bundle "
+        f"(e.g. a copy of /etc/pve/pve-root-ca.pem); {raw!r} is not an "
+        "existing file."
+    )
 
 
 def _parse_trusted_proxies(value: Any) -> list[str]:

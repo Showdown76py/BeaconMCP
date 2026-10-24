@@ -33,8 +33,10 @@ RUN groupadd --system --gid 10001 beaconmcp \
  && useradd  --system --uid 10001 --gid beaconmcp --home /app --shell /usr/sbin/nologin beaconmcp
 
 COPY --from=builder /dist/*.whl /tmp/
-RUN pip install /tmp/*.whl \
- && rm -f /tmp/*.whl
+# constraints.txt pins every dependency to the set CI tested.
+COPY constraints.txt /tmp/constraints.txt
+RUN pip install /tmp/*.whl -c /tmp/constraints.txt \
+ && rm -f /tmp/*.whl /tmp/constraints.txt
 
 RUN mkdir -p /config /state \
  && chown -R beaconmcp:beaconmcp /config /state

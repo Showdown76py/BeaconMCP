@@ -47,6 +47,29 @@ and revoke it from `/app/tokens` the moment it leaks.
 API tokens survive restarts** — they live in `server.tokens_db`. Revoke them individually from
 `/app/tokens`, or delete `tokens.db` before restarting to kill all of them at once.
 
+OAuth access tokens and refresh tokens also survive restarts. They are stored in the same
+`tokens.db`, hashed with SHA-256, so the file alone does not hand out working credentials. Refresh
+tokens are only issued on the `authorization_code` grant (never on `client_credentials`, which keeps
+its TOTP-on-every-exchange rule). Each refresh rotates the token; replaying an already-used refresh
+token revokes every access and refresh token of that sign-in (`auth.token.refresh.reuse` in the
+audit log), and the client has to go through the authorization page again. The one exception is a
+replay within 60 s of the rotation, which is read as the same client retrying after a network
+timeout and gets the pair the first call minted. Deleting a client, or calling
+`security_end_session`, drops its refresh tokens too.
+
+**A human must confirm every 24 h.** A sign-in (`authorization_code` exchange) lasts
+`server.interactive_bearer_ttl` (30 days by default) and its access token still rotates daily, but
+nothing runs once its last passkey/TOTP check is older than `server.human_session_ttl` (24 h):
+clients that support MCP elicitation get a link to `/oauth/reverify`, where the user confirms with a
+passkey or TOTP and the held call resumes; clients that don't get a 401 and go back through the
+authorization page. The re-verify page shows the waiting request, its IP, device and the age of the
+sign-in, and can revoke it, so a link triggered by a stolen bearer can be spotted. Rotated-out
+refresh tokens disappear with the sign-in they belonged to.
+
+`beaconmcp auth revoke` takes effect immediately, server running or not: the server re-reads
+`clients.json` when it changes on disk, and the revoked client's bearers, refresh tokens and named
+API tokens are refused from its next request on.
+
 `security_end_session` lets a client revoke its own bearer at the end of a task, which is a cheap way
 to shrink the replay window.
 
@@ -100,8 +123,9 @@ Things worth knowing before you enrol:
 - Registrations, revocations and passkey sign-ins are recorded in the audit log
   (`dashboard.passkey.*`, `auth.passkey.*`, and `login`/`authorize` events tagged `via=passkey`).
 
-Passkey ceremonies are rate-limited per IP by the same limiter that guards `/app/login`, and a TOTP
-lockout also blocks the passkey path for that client.
+Passkey ceremonies are rate-limited per IP by the same limiter that guards `/app/login`. A TOTP
+lockout does not block them: a passkey cannot be guessed, so it stays the owner's way in while
+someone burns the client's TOTP budget.
 
 Manage enrolled credentials from `/app/tokens`, or drop them all for a client with:
 

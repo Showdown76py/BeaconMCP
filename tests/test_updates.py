@@ -4,9 +4,11 @@ git operations run for real against throwaway repositories built in
 ``tmp_path``: the whole point of this module is that it drives git
 correctly, and a mocked ``subprocess.run`` would only prove the mock
 agrees with itself. The two genuinely unsafe steps -- ``pip install`` and
-the config validation subprocess -- are the ones we stub, so the tests
-exercise the *orchestration* (pull, validate, roll back) without touching
-the interpreter this suite runs in.
+the ``check-startup`` subprocess -- are the ones we stub, so the tests
+exercise the *orchestration* (fetch, verify, fast-forward, check, roll
+back) without touching the interpreter this suite runs in. The post-restart
+watchdog script runs for real under ``/bin/sh`` with fake ``systemctl``,
+``pip`` and health probe executables.
 
 Run with::
 
@@ -89,6 +91,20 @@ def checkout(tmp_path: Path, upstream: Path) -> Path:
     _run("git", "config", "user.email", "t@example.com", cwd=local)
     _run("git", "config", "user.name", "Test", cwd=local)
     return local
+
+
+@pytest.fixture(autouse=True)
+def _isolated(monkeypatch, tmp_path_factory):
+    """No test inherits update settings, or the developer's git config.
+
+    A global ``commit.gpgsign`` or ``gpg.format`` would otherwise sign the
+    "unsigned" commits these tests build, or change how they are checked.
+    """
+    monkeypatch.setattr(updates, "_runtime", updates._Runtime())
+    empty = tmp_path_factory.mktemp("gitconfig") / "config"
+    empty.write_text("")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 
 def _install(root: Path) -> Installation:
@@ -305,7 +321,7 @@ def test_drift_is_empty_when_nothing_new(checkout, upstream):
 
 @pytest.fixture()
 def stub_side_effects(monkeypatch):
-    """Stub pip + validate-config; git stays real.
+    """Stub pip + check-startup; git stays real.
 
     Returns the recorded command list plus a dict the test mutates to make
     a given step fail.
@@ -317,12 +333,12 @@ def stub_side_effects(monkeypatch):
         recorded.append(list(cmd))
         if "pip" in " ".join(cmd):
             return outcomes["pip"], "pip output"
-        if "validate-config" in cmd:
+        if "check-startup" in cmd:
             return outcomes["validate"], "config error: BEACONMCP_NEW_KEY is required"
         return 0, ""
 
     monkeypatch.setattr(updates, "_run", fake_run)
-    monkeypatch.setattr(updates, "_schedule_restart", lambda service, delay: True)
+    monkeypatch.setattr(updates, "_schedule_restart", lambda service, delay, watchdog=None: "unwatched")
     return recorded, outcomes
 
 
@@ -358,6 +374,7 @@ def test_apply_pulls_installs_validates_and_restarts(
     _advance(upstream, "feat: shiny")
     install = _install(checkout)
     install.service = "beaconmcp"
+    install.under_systemd = True
 
     result = updates.apply_update(install=install, restart_delay=3)
 
@@ -366,7 +383,7 @@ def test_apply_pulls_installs_validates_and_restarts(
     assert result.from_ref != result.to_ref
     names = [s.name for s in result.steps]
     assert names == [
-        "preflight", "git-pull", "pip-install", "validate-config", "restart",
+        "preflight", "fetch", "git-update", "pip-install", "check-startup", "restart",
     ]
     # The pull actually moved the checkout.
     head = subprocess.run(
@@ -376,7 +393,7 @@ def test_apply_pulls_installs_validates_and_restarts(
     assert head.startswith(result.to_ref)
     assert result.restart_scheduled is True
     assert result.restart_in_seconds == 3
-    assert any("validate-config" in c for cmd in recorded for c in cmd)
+    assert any("check-startup" in c for cmd in recorded for c in cmd)
 
 
 def test_apply_rolls_back_when_the_new_code_rejects_the_config(
@@ -394,7 +411,7 @@ def test_apply_rolls_back_when_the_new_code_rejects_the_config(
 
     assert result.ok is False
     assert result.rolled_back is True
-    assert "cannot load your configuration" in result.message
+    assert "does not start with your configuration" in result.message
     assert "was NOT restarted" in result.message
     assert "BEACONMCP_NEW_KEY" in result.message
     after = subprocess.run(
@@ -473,12 +490,12 @@ def test_a_second_update_is_refused_while_one_runs(checkout, upstream, monkeypat
             started.set()
             release.wait(10)
             return 0, "pip output"
-        if "validate-config" in cmd:
+        if "check-startup" in cmd:
             return 0, ""
         return real_run(cmd, cwd, timeout)
 
     monkeypatch.setattr(updates, "_run", blocking_run)
-    monkeypatch.setattr(updates, "_schedule_restart", lambda service, delay: True)
+    monkeypatch.setattr(updates, "_schedule_restart", lambda service, delay, watchdog=None: "unwatched")
 
     install = _install(checkout)
     first: dict[str, object] = {}
@@ -550,14 +567,553 @@ def test_restart_command_passes_values_through_argv(monkeypatch):
         def __init__(self, cmd, **kwargs):
             seen["cmd"] = cmd
 
-    monkeypatch.setattr(updates.shutil, "which", lambda name: "/bin/systemctl")
+    monkeypatch.setattr(
+        updates.shutil, "which", lambda name: "/bin/systemctl" if name == "systemctl" else None,
+    )
     monkeypatch.setattr(updates.subprocess, "Popen", FakePopen)
-    assert updates._schedule_restart("beaconmcp; rm -rf /", 5) is True
+    assert updates._schedule_restart("beaconmcp; rm -rf /", 5) == "unwatched"
     cmd = seen["cmd"]
     # The dangerous string is an argument, never part of the script.
     assert "beaconmcp; rm -rf /" in cmd
     assert "rm -rf" not in cmd[2]
     assert cmd[2] == 'sleep "$1"; systemctl restart "$2"'
+
+
+def _watchdog(tmp_path, python="/opt/venv/bin/python", pip=("/opt/venv/bin/pip",)):
+    return updates._Watchdog(
+        health_url="http://127.0.0.1:8420/health", root=tmp_path,
+        from_sha="a" * 40, to_sha="b" * 40, python=python, pip=list(pip),
+    )
+
+
+def test_restart_with_a_watchdog_runs_as_its_own_transient_unit(monkeypatch, tmp_path):
+    """systemctl restart kills the service's cgroup, children included."""
+    ran = []
+
+    def fake_run(cmd, cwd, timeout):
+        ran.append(cmd)
+        return 0, ""
+
+    class NoPopen:
+        def __init__(self, cmd, **kwargs):
+            raise AssertionError("no unwatched restart when systemd-run worked")
+
+    monkeypatch.setattr(updates.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(updates, "_run", fake_run)
+    monkeypatch.setattr(updates.subprocess, "Popen", NoPopen)
+    assert updates._schedule_restart("beaconmcp", 5, _watchdog(tmp_path)) == "watched"
+    (cmd,) = ran
+    assert cmd[0] == "systemd-run"
+    script_at = cmd.index("-c") + 1
+    # The script is a constant; every value travels as an argument.
+    assert cmd[script_at] == updates._WATCHDOG_SCRIPT
+    assert cmd[script_at + 1:] == [
+        "beaconmcp-update", "5", "beaconmcp", "http://127.0.0.1:8420/health",
+        str(tmp_path), "a" * 40, "b" * 40, "/opt/venv/bin/python",
+        str(tmp_path / updates.STATUS_FILE), str(updates.HEALTH_WAIT_SECONDS), str(updates._SETTLE_SECONDS),
+        "/opt/venv/bin/pip",
+    ]
+
+
+def test_two_restarts_in_the_same_second_get_distinct_units(monkeypatch, tmp_path):
+    units = []
+    monkeypatch.setattr(updates.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        updates, "_run",
+        lambda cmd, cwd, timeout: units.append(next(a for a in cmd if a.startswith("--unit="))) or (0, ""),
+    )
+    updates._schedule_restart("beaconmcp", 5, _watchdog(tmp_path))
+    updates._schedule_restart("beaconmcp", 5, _watchdog(tmp_path))
+    assert len(set(units)) == 2
+
+
+def test_a_refused_systemd_run_falls_back_to_an_unwatched_restart(monkeypatch, tmp_path):
+    seen = {}
+
+    class FakePopen:
+        def __init__(self, cmd, **kwargs):
+            seen["cmd"] = cmd
+
+    monkeypatch.setattr(updates.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(updates, "_run", lambda cmd, cwd, timeout: (1, "Failed to start transient service unit"))
+    monkeypatch.setattr(updates.subprocess, "Popen", FakePopen)
+    assert updates._schedule_restart("beaconmcp", 5, _watchdog(tmp_path)) == "unwatched"
+    assert seen["cmd"][:3] == ["sh", "-c", 'sleep "$1"; systemctl restart "$2"']
+
+
+def test_restart_without_systemd_run_falls_back_to_an_unwatched_restart(monkeypatch, tmp_path):
+    seen = {}
+
+    class FakePopen:
+        def __init__(self, cmd, **kwargs):
+            seen["cmd"] = cmd
+
+    monkeypatch.setattr(
+        updates.shutil, "which", lambda name: "/bin/systemctl" if name == "systemctl" else None,
+    )
+    monkeypatch.setattr(updates.subprocess, "Popen", FakePopen)
+    assert updates._schedule_restart("beaconmcp", 5, _watchdog(tmp_path)) == "unwatched"
+    assert seen["cmd"][:3] == ["sh", "-c", 'sleep "$1"; systemctl restart "$2"']
+
+
+def test_a_new_update_waits_for_the_previous_watchdog(checkout, upstream, stub_side_effects):
+    _advance(upstream, "feat: thing")
+    updates._write_status(checkout, {
+        "at": int(time.time()) - 30, "from": "a" * 40, "to": "b" * 40, "outcome": "pending",
+    })
+    before = _head(checkout)
+    info = updates.check_for_update(install=_install(checkout))
+    assert any("still being checked after its restart" in b for b in info.blockers)
+    result = updates.apply_update(install=_install(checkout))
+    assert result.ok is False
+    assert "still being checked" in result.message
+    assert _head(checkout) == before
+
+
+def test_a_stale_pending_status_does_not_block(checkout, upstream, stub_side_effects):
+    _advance(upstream, "feat: thing")
+    updates._write_status(checkout, {
+        "at": int(time.time()) - updates._WATCHDOG_WINDOW_SECONDS - 1,
+        "from": "a" * 40, "to": "b" * 40, "outcome": "pending",
+    })
+    assert updates.apply_update(install=_install(checkout)).ok is True
+
+
+def test_a_failed_comparison_is_an_error_not_up_to_date(checkout, upstream, stub_side_effects, monkeypatch):
+    _advance(upstream, "feat: thing")
+    monkeypatch.setattr(updates, "_ahead_behind", lambda root, sha: None)
+    info = updates.check_for_update(install=_install(checkout))
+    assert info.available is False and "could not compare" in info.error
+    result = updates.apply_update(install=_install(checkout))
+    assert result.ok is False
+    assert "Already up to date" not in result.message
+    assert "Could not compare" in result.message
+
+
+def test_rollback_reports_a_failed_dependency_reinstall(checkout, upstream, monkeypatch):
+    pip_calls = []
+
+    def fake_run(cmd, cwd, timeout):
+        if "pip" in " ".join(cmd):
+            pip_calls.append(cmd)
+            return (0, "ok") if len(pip_calls) == 1 else (1, "No matching distribution")
+        if "check-startup" in cmd:
+            return 1, "ModuleNotFoundError: nope"
+        return 0, ""
+
+    monkeypatch.setattr(updates, "_run", fake_run)
+    _advance(upstream, "feat: broken")
+    result = updates.apply_update(install=_install(checkout))
+    assert result.rolled_back is True
+    step = next(s for s in result.steps if s.name == "rollback-pip-install")
+    assert step.ok is False and "No matching distribution" in step.detail
+    assert "reinstalling the previous dependencies FAILED" in result.message
+
+
+def test_apply_hands_the_watchdog_both_revisions(checkout, upstream, monkeypatch, stub_side_effects):
+    calls = []
+    monkeypatch.setattr(
+        updates, "_schedule_restart",
+        lambda service, delay, watchdog=None: calls.append(watchdog) or "watched",
+    )
+    monkeypatch.setattr(updates.shutil, "which", lambda name: f"/usr/bin/{name}")
+    updates.configure(UpdatesConfig(), health_url="http://127.0.0.1:8420/health")
+    before = _head(checkout)
+    _advance(upstream, "feat: thing")
+    install = _install(checkout)
+    install.service = "beaconmcp"
+    install.under_systemd = True
+
+    result = updates.apply_update(install=install)
+
+    assert result.ok is True
+    (watchdog,) = calls
+    assert watchdog.from_sha == before
+    assert watchdog.to_sha == _head(checkout) != before
+    assert watchdog.health_url == "http://127.0.0.1:8420/health"
+    assert "rolled back if /health does not answer" in result.steps[-1].detail
+    status = updates.last_update_status(checkout)
+    assert status["outcome"] == "pending" and status["from"] == before
+
+
+def test_pip_install_is_pinned_when_the_tree_has_constraints(tmp_path):
+    install = _install(tmp_path)
+    assert "-c" not in updates._pip_install_command(install, tmp_path)
+    (tmp_path / "constraints.txt").write_text("requests==2.0\n")
+    cmd = updates._pip_install_command(install, tmp_path)
+    assert cmd[-4:] == ["-e", ".", "-c", "constraints.txt"]
+    assert any("-c constraints.txt" in step for step in updates.manual_instructions(install))
+
+
+def test_startup_check_command_passes_the_config(tmp_path):
+    cmd = updates._startup_check_command(_install(tmp_path), tmp_path / "b.yaml")
+    assert cmd == [sys.executable, "-m", "beaconmcp", "check-startup", "--config", str(tmp_path / "b.yaml")]
+
+
+def test_diverged_checkout_is_reported_as_a_blocker(checkout, upstream):
+    _commit(checkout, "local hotfix")
+    _advance(upstream, "feat: thing")
+    info = updates.check_for_update(install=_install(checkout))
+    assert info.available is True
+    assert info.can_self_update is False
+    assert any("cannot be fast-forwarded" in b for b in info.blockers)
+
+
+# ---------------------------------------------------------------------------
+# Release channel and signatures
+# ---------------------------------------------------------------------------
+
+def _head(repo: Path) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=str(repo), capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def _tag(repo: Path, name: str, *, signed: bool = False) -> None:
+    if signed:
+        _run("git", "tag", "-s", "-m", name, name, cwd=repo)
+    else:
+        _run("git", "tag", "-a", "-m", name, name, cwd=repo)
+
+
+RELEASE = UpdatesConfig(channel="release")
+
+
+def test_release_channel_follows_the_newest_version_tag(checkout, upstream, stub_side_effects):
+    for version in ("v1.2.0", "v1.10.0"):
+        _advance(upstream, f"release {version}")
+        _tag(upstream, version)
+    tagged = _head(upstream)
+    _advance(upstream, "release v2.0.0-rc1")
+    _tag(upstream, "v2.0.0-rc1")
+    _advance(upstream, "feat: unreleased work on main")
+
+    info = updates.check_for_update(install=_install(checkout), settings=RELEASE)
+    assert info.channel == "release"
+    # v1.10.0 sorts above v1.2.0 by version, and the rc is skipped.
+    assert info.release_tag == "v1.10.0"
+    assert info.behind == 2
+    assert info.can_self_update is True
+    assert "git merge --ff-only v1.10.0" in info.instructions
+
+    result = updates.apply_update(install=_install(checkout), settings=RELEASE)
+    assert result.ok is True
+    assert _head(checkout) == tagged, "must stop at the tag, not the branch tip"
+
+
+def test_release_channel_survives_a_moved_tag(checkout, upstream, stub_side_effects):
+    _advance(upstream, "release v1.0.0")
+    _tag(upstream, "v1.0.0")
+    _run("git", "fetch", "--quiet", "--tags", "origin", cwd=checkout)
+    assert updates.check_for_update(install=_install(checkout), settings=RELEASE).release_tag == "v1.0.0"
+    # Upstream re-tags v1.0.0 to fix the release, then ships v1.1.0. A plain
+    # `fetch --tags` now exits 1 ("would clobber existing tag") forever.
+    _advance(upstream, "fix the release")
+    _run("git", "tag", "-f", "-a", "-m", "v1.0.0", "v1.0.0", cwd=upstream)
+    _advance(upstream, "release v1.1.0")
+    _tag(upstream, "v1.1.0")
+
+    info = updates.check_for_update(install=_install(checkout), settings=RELEASE)
+    assert info.error is None, info.error
+    assert info.release_tag == "v1.1.0"
+
+
+def test_require_signed_refuses_a_tag_object_under_another_name(
+    checkout, upstream, stub_side_effects, gpg_signer,
+):
+    # A signed pre-release, republished under a release name.
+    _advance(upstream, "release v2.0.0-rc1")
+    _tag(upstream, "v2.0.0-rc1", signed=True)
+    obj = subprocess.run(
+        ["git", "rev-parse", "refs/tags/v2.0.0-rc1"], cwd=str(upstream),
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    _run("git", "update-ref", "refs/tags/v2.0.0", obj, cwd=upstream)
+    before = _head(checkout)
+
+    result = updates.apply_update(install=_install(checkout), settings=SIGNED_RELEASE)
+
+    assert result.ok is False
+    assert "v2.0.0-rc1" in result.steps[-1].detail
+    assert _head(checkout) == before
+
+
+def test_release_channel_without_tags_says_so(checkout, upstream, stub_side_effects):
+    _advance(upstream, "feat: thing")
+    info = updates.check_for_update(install=_install(checkout), settings=RELEASE)
+    assert info.available is False
+    assert "no release tag" in info.error
+    before = _head(checkout)
+    result = updates.apply_update(install=_install(checkout), settings=RELEASE)
+    assert result.ok is False
+    assert "no release tag" in result.message
+    assert _head(checkout) == before
+
+
+def test_unknown_update_channel_is_a_config_error(tmp_path):
+    from beaconmcp.config import Config, ConfigError
+
+    path = tmp_path / "beaconmcp.yaml"
+    base = (
+        "version: 1\nproxmox:\n  nodes:\n    - name: pve1\n      host: 10.0.0.1\n"
+        "      token_id: root@pam!x\n      token_secret: s\n"
+    )
+    path.write_text(base + "features:\n  updates:\n    channel: nightly\n")
+    with pytest.raises(ConfigError, match="features.updates.channel"):
+        Config.load(config_path=path)
+    path.write_text(
+        base + "features:\n  updates:\n    channel: Release\n    require_signed: true\n"
+    )
+    cfg = Config.load(config_path=path)
+    assert cfg.features.updates.channel == "release"
+    assert cfg.features.updates.require_signed is True
+    assert cfg.redacted()["features"]["updates"]["channel"] == "release"
+
+
+@pytest.fixture()
+def gpg_signer(upstream, monkeypatch):
+    """A throwaway GPG key; upstream signs with it and this host trusts it."""
+    if shutil.which("gpg") is None:
+        pytest.skip("gpg is required for signature tests")
+    import tempfile
+
+    # Short path: gpg-agent's socket path has a ~100 character limit.
+    home = tempfile.mkdtemp(prefix="bmg")
+    os.chmod(home, 0o700)
+    monkeypatch.setenv("GNUPGHOME", home)
+    subprocess.run(
+        ["gpg", "--batch", "--passphrase", "", "--quick-gen-key",
+         "Release Bot <release@example.com>", "ed25519", "sign", "never"],
+        check=True, capture_output=True,
+    )
+    out = subprocess.run(
+        ["gpg", "--list-secret-keys", "--with-colons"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    fpr = next(line.split(":")[9] for line in out.splitlines() if line.startswith("fpr"))
+    _run("git", "config", "user.signingkey", fpr, cwd=upstream)
+    yield home
+    subprocess.run(["gpgconf", "--kill", "gpg-agent"], capture_output=True)
+    shutil.rmtree(home, ignore_errors=True)
+
+
+SIGNED_RELEASE = UpdatesConfig(channel="release", require_signed=True)
+
+
+def test_require_signed_refuses_an_unsigned_release(checkout, upstream, stub_side_effects):
+    _advance(upstream, "release v1.0.0")
+    _tag(upstream, "v1.0.0")
+    before = _head(checkout)
+
+    info = updates.check_for_update(install=_install(checkout), settings=SIGNED_RELEASE)
+    assert info.signature_ok is False
+    assert info.can_self_update is False
+    assert any("not signed by a key this host trusts" in b for b in info.blockers)
+
+    result = updates.apply_update(install=_install(checkout), settings=SIGNED_RELEASE)
+    assert result.ok is False
+    assert [s.name for s in result.steps][-1] == "verify-signature"
+    assert _head(checkout) == before, "nothing may change before the signature passes"
+
+
+def test_require_signed_accepts_a_trusted_signed_release(
+    checkout, upstream, stub_side_effects, gpg_signer,
+):
+    _advance(upstream, "release v1.0.0")
+    _tag(upstream, "v1.0.0", signed=True)
+    info = updates.check_for_update(install=_install(checkout), settings=SIGNED_RELEASE)
+    assert info.signature_ok is True and info.can_self_update is True
+    result = updates.apply_update(install=_install(checkout), settings=SIGNED_RELEASE)
+    assert result.ok is True
+    assert any(s.name == "verify-signature" and s.ok for s in result.steps)
+    assert _head(checkout) == _head(upstream)
+
+
+def test_require_signed_refuses_a_signature_from_an_unknown_key(
+    checkout, upstream, stub_side_effects, gpg_signer, monkeypatch, tmp_path,
+):
+    _advance(upstream, "release v1.0.0")
+    _tag(upstream, "v1.0.0", signed=True)
+    # This host's keyring does not hold the release key.
+    import tempfile
+
+    other = tempfile.mkdtemp(prefix="bmo")
+    os.chmod(other, 0o700)
+    monkeypatch.setenv("GNUPGHOME", other)
+    before = _head(checkout)
+    result = updates.apply_update(install=_install(checkout), settings=SIGNED_RELEASE)
+    shutil.rmtree(other, ignore_errors=True)
+    assert result.ok is False
+    assert _head(checkout) == before
+
+
+def test_require_signed_on_the_branch_checks_the_tip_commit(
+    checkout, upstream, stub_side_effects, gpg_signer,
+):
+    signed_branch = UpdatesConfig(require_signed=True)
+    _advance(upstream, "feat: unsigned")
+    result = updates.apply_update(install=_install(checkout), settings=signed_branch)
+    assert result.ok is False and "not signed" in result.message
+    _run("git", "commit", "--allow-empty", "-S", "-m", "feat: signed", cwd=upstream)
+    result = updates.apply_update(install=_install(checkout), settings=signed_branch)
+    assert result.ok is True
+    assert _head(checkout) == _head(upstream)
+
+
+# ---------------------------------------------------------------------------
+# Post-restart watchdog: the real script, under /bin/sh
+# ---------------------------------------------------------------------------
+
+def _exe(path: Path, body: str) -> Path:
+    path.write_text("#!/bin/sh\n" + body)
+    path.chmod(0o755)
+    return path
+
+
+def _run_watchdog(
+    tmp_path, checkout, from_sha, to_sha, probe_body, *, settle="0", show_body="echo 1; echo 0\n",
+):
+    """Run _WATCHDOG_SCRIPT with fake systemctl, pip and health probe.
+
+    ``systemctl show`` (MainPID, NRestarts) answers through ``show_body`` and
+    is left out of the call log; every other systemctl call is logged.
+    """
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    log = tmp_path / "calls.log"
+    _exe(
+        bindir / "systemctl",
+        f'if [ "$1" = show ]; then\n{show_body}exit 0\nfi\necho "systemctl $*" >> {log}\n',
+    )
+    pip = _exe(bindir / "fake-pip", f'echo "pip $* (in $(pwd))" >> {log}\n')
+    # Stands in for "$py -c <probe> <url>": healthy or not, by exit code.
+    probe = _exe(bindir / "fake-python", probe_body)
+    status = checkout / updates.STATUS_FILE
+    proc = subprocess.run(
+        ["/bin/sh", "-c", updates._WATCHDOG_SCRIPT, "beaconmcp-update",
+         "0", "beaconmcp", "http://127.0.0.1:1/health", str(checkout),
+         from_sha, to_sha, str(probe), str(status), "3", settle, str(pip)],
+        capture_output=True, text=True, timeout=60,
+        env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}"},
+    )
+    return proc, log.read_text() if log.exists() else "", updates.last_update_status(checkout)
+
+
+def test_watchdog_keeps_a_healthy_update(tmp_path, checkout, upstream):
+    from_sha = _head(checkout)
+    _advance(upstream, "feat: thing")
+    _run("git", "pull", "--ff-only", cwd=checkout)
+    to_sha = _head(checkout)
+
+    proc, calls, status = _run_watchdog(tmp_path, checkout, from_sha, to_sha, "exit 0\n")
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert calls.splitlines() == ["systemctl restart beaconmcp"]
+    assert status["outcome"] == "healthy" and status["to"] == to_sha
+    assert _head(checkout) == to_sha
+
+
+def test_watchdog_rolls_back_an_update_that_never_answers(tmp_path, checkout, upstream):
+    _advance(upstream, "pins", {"constraints.txt": ""})
+    _run("git", "pull", "--ff-only", cwd=checkout)
+    from_sha = _head(checkout)
+    _advance(upstream, "feat: breaks at runtime")
+    _run("git", "pull", "--ff-only", cwd=checkout)
+    to_sha = _head(checkout)
+
+    # Healthy only once the checkout is back on the old revision.
+    probe = f'[ "$(git -C {checkout} rev-parse HEAD)" = "{from_sha}" ]\n'
+    proc, calls, status = _run_watchdog(tmp_path, checkout, from_sha, to_sha, probe)
+
+    assert proc.returncode == 1
+    assert _head(checkout) == from_sha
+    assert calls.splitlines() == [
+        "systemctl restart beaconmcp",
+        f"pip install -e . -c constraints.txt (in {checkout})",
+        "systemctl restart beaconmcp",
+    ]
+    assert status["outcome"] == "rolled_back"
+    assert "rolling back" in proc.stdout
+
+
+def test_watchdog_reports_a_rollback_that_does_not_help(tmp_path, checkout, upstream):
+    from_sha = _head(checkout)
+    _advance(upstream, "feat: thing")
+    _run("git", "pull", "--ff-only", cwd=checkout)
+    proc, _, status = _run_watchdog(tmp_path, checkout, from_sha, _head(checkout), "exit 1\n")
+    assert proc.returncode == 1
+    assert status["outcome"] == "rollback_unhealthy"
+    assert _head(checkout) == from_sha
+
+
+def test_watchdog_does_not_undo_a_newer_update(tmp_path, checkout, upstream):
+    """If another update moved HEAD past ``to``, rolling back would wipe it."""
+    from_sha = _head(checkout)
+    _advance(upstream, "feat: first")
+    _run("git", "pull", "--ff-only", cwd=checkout)
+    to_sha = _head(checkout)
+    _advance(upstream, "feat: second")
+    _run("git", "pull", "--ff-only", cwd=checkout)
+    newer = _head(checkout)
+
+    proc, _, status = _run_watchdog(tmp_path, checkout, from_sha, to_sha, "exit 1\n")
+
+    assert proc.returncode == 1
+    assert _head(checkout) == newer
+    assert status["outcome"] == "superseded"
+
+
+def test_watchdog_script_survives_systemd_expansion():
+    # PID 1 expands ${VAR} and collapses $$ in a transient unit's ExecStart,
+    # script text included: ${10} once reached sh as an empty settle.
+    assert "${" not in updates._WATCHDOG_SCRIPT
+    assert "$$" not in updates._WATCHDOG_SCRIPT
+
+
+def test_watchdog_rolls_back_a_crash_loop_that_answers_between_restarts(
+    tmp_path, checkout, upstream,
+):
+    from_sha = _head(checkout)
+    _advance(upstream, "feat: dies a few seconds after each start")
+    _run("git", "pull", "--ff-only", cwd=checkout)
+    to_sha = _head(checkout)
+
+    # /health answers every time it is probed, but on the new revision every
+    # probe meets a new MainPID: systemd keeps restarting a crashing process.
+    show = (
+        f'if [ "$(git -C {checkout} rev-parse HEAD)" = "{to_sha}" ]; then '
+        'date +%s%N; else echo 1; fi; echo 0\n'
+    )
+    proc, _, status = _run_watchdog(
+        tmp_path, checkout, from_sha, to_sha, "exit 0\n", settle="2", show_body=show,
+    )
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert status["outcome"] == "rolled_back"
+    assert _head(checkout) == from_sha
+
+
+def test_no_restart_when_the_server_runs_outside_its_unit(checkout, upstream, stub_side_effects):
+    # The unit file exists, but this process was started by hand: restarting
+    # the unit would leave it answering /health for code it never loaded.
+    _advance(upstream, "feat: thing")
+    install = _install(checkout)
+    install.service = "beaconmcp"
+    install.under_systemd = False
+
+    result = updates.apply_update(install=install, restart_delay=3)
+
+    assert result.ok is True
+    assert result.restart_scheduled is False
+    assert "restart" not in [s.name for s in result.steps]
+    assert "Restart the server process" in result.message
+
+
+def test_check_reports_how_the_last_update_ended(checkout):
+    updates._write_status(checkout, {"outcome": "rolled_back", "from": "a", "to": "b"})
+    info = updates.check_for_update(install=_install(checkout))
+    assert info.last_update["outcome"] == "rolled_back"
+    assert info.to_json()["last_update"]["outcome"] == "rolled_back"
 
 
 # ---------------------------------------------------------------------------
@@ -613,9 +1169,9 @@ def _make_client(tmp_path, monkeypatch, **overrides):
         session_store=SessionStore(db, key=os.urandom(32)),
         client_store=FakeClientStore(),
         token_store=FakeTokenStore(),
-        totp_locked=lambda cid: False,
-        totp_record_failure=lambda cid: None,
-        totp_record_success=lambda cid: None,
+        totp_locked=lambda cid, ip=None: False,
+        totp_record_failure=lambda cid, ip=None: None,
+        totp_record_success=lambda cid, ip=None: None,
         **overrides,
     )
     client = TestClient(
@@ -834,7 +1390,7 @@ def test_pages_and_api_are_never_cached(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 class _RecordingMCP:
-    """Minimal stand-in for FastMCP that just collects registrations."""
+    """Minimal stand-in for MCPServer that just collects registrations."""
 
     def __init__(self):
         self.tools: dict[str, object] = {}
@@ -911,3 +1467,4 @@ def test_check_tool_reports_the_self_update_policy(monkeypatch):
     out = mcp.tools["beaconmcp_check_update"]()
     assert out["can_self_update"] is False
     assert any("allow_self_update" in b for b in out["blockers"])
+

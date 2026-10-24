@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
@@ -67,13 +67,13 @@ class _Client:
         return _NOT_FOUND
 
 
-def _server(client: Any) -> FastMCP:
-    mcp = FastMCP("test")
+def _server(client: Any) -> MCPServer:
+    mcp = MCPServer("test")
     register_panel_tools(mcp, client)
     return mcp
 
 
-async def _tool(mcp: FastMCP, name: str) -> Any:
+async def _tool(mcp: MCPServer, name: str) -> Any:
     return next(t for t in await mcp.list_tools() if t.name == name)
 
 
@@ -84,6 +84,8 @@ async def _tool(mcp: FastMCP, name: str) -> Any:
 async def test_tool_points_at_its_panel(name: str, uri: str) -> None:
     tool = await _tool(_server(_Client()), name)
     assert tool.meta == {"ui": {"resourceUri": uri, "visibility": ["model", "app"]}}
+    # 2.x rejects an empty `{}` schema at serialization.
+    assert tool.input_schema["type"] == "object"
 
 
 @pytest.mark.parametrize("name,uri", _PANELS)
@@ -91,7 +93,7 @@ async def test_advertised_resource_resolves_as_an_app(name: str, uri: str) -> No
     """A resourceUri that 404s on resources/read renders as a blank frame."""
     mcp = _server(_Client())
     listed = next(r for r in await mcp.list_resources() if str(r.uri) == uri)
-    assert listed.mimeType == APP_MIME_TYPE
+    assert listed.mime_type == APP_MIME_TYPE
 
     contents = list(await mcp.read_resource(uri))
     assert contents, f"{uri} is advertised but reads back empty"
@@ -218,7 +220,7 @@ async def test_logs_panel_labels_syslog_lines() -> None:
     client = _Client({"syslog": [{"t": "kernel: I/O error"}, {"t": "systemd: Started thing"}]})
     tool = await _server(client).call_tool("proxmox_logs_panel", {"node": "pve1"})
 
-    entries = tool[1]["entries"]
+    entries = tool.structured_content["entries"]
     assert [e["level"] for e in entries] == ["error", "info"]
     assert entries[0]["text"] == "kernel: I/O error"
 
@@ -236,7 +238,7 @@ async def test_logs_panel_flags_failed_tasks() -> None:
     )
 
     # A running task has no status yet and must not be painted as a failure.
-    assert [e["level"] for e in result[1]["entries"]] == ["info", "error", "info"]
+    assert [e["level"] for e in result.structured_content["entries"]] == ["info", "error", "info"]
 
 
 async def test_logs_panel_caps_the_line_count() -> None:
