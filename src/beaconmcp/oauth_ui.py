@@ -292,6 +292,7 @@ h1 { margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015e
   color: var(--fg); text-align: right;
 }
 #passkey-add-block { margin-top: 18px; }
+#totp-block { margin-top: 14px; }
 #finalize-form { margin-top: 20px; }
 """
 
@@ -442,6 +443,13 @@ AUTHORIZE_JS = """
   inputs.forEach(function(inp, i) {
     inp.addEventListener("input", function(e) {
       var v = (e.target.value || "").replace(/\\D/g, "");
+      // autofill / one-time-code suggestions drop the whole code in one box
+      if (v.length > 1) {
+        v.slice(0, inputs.length - i).split("").forEach(function(ch, k) {
+          inputs[i + k].value = ch; inputs[i + k].classList.add("filled");
+        });
+        v = v.slice(0, 1);
+      }
       e.target.value = v.slice(0, 1);
       if (v) {
         e.target.classList.add("filled");
@@ -731,7 +739,7 @@ def client_pair(logo_url: str, client_name: str) -> str:
 def totp_boxes(disabled: bool = False) -> str:
     dis = " disabled" if disabled else ""
     return '<div class="totp-inputs" id="totp-inputs">' + "".join(
-        f'<input maxlength="1" inputmode="numeric" autocomplete="one-time-code" '
+        f'<input maxlength="6" inputmode="numeric" autocomplete="one-time-code" '
         f'aria-label="Digit {i}"{dis}>'
         for i in range(1, 7)
     ) + "</div>"
@@ -876,6 +884,13 @@ REVERIFY_JS = """
   inputs.forEach(function(inp, i) {
     inp.addEventListener("input", function(e) {
       var v = (e.target.value || "").replace(/\\D/g, "");
+      // autofill / one-time-code suggestions drop the whole code in one box
+      if (v.length > 1) {
+        v.slice(0, inputs.length - i).split("").forEach(function(ch, k) {
+          inputs[i + k].value = ch; inputs[i + k].classList.add("filled");
+        });
+        v = v.slice(0, 1);
+      }
       e.target.value = v.slice(0, 1);
       e.target.classList.toggle("filled", !!v);
       if (v && inputs[i + 1]) inputs[i + 1].focus();
