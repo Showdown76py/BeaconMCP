@@ -121,7 +121,29 @@ The two pages don't have the same information, so detection uses what each one h
 - On `/oauth/authorize` there is no MCP session yet, so a `localhost` redirect is ambiguous (Claude Code, Codex and other CLIs all use one). In that case the registered name decides, and if it doesn't match a known client the page shows the registered name with the generic icon rather than guessing.
 - These signals are **self-declared and spoofable**. They are used for display only (icon, name, the "Device" line of §4.4), never for any security decision. *(My call.)*
 - The `clientInfo` seen at `initialize` is remembered per bearer so the re-verify page and the audit log can show it.
-- Logos ship as static assets with the server (no hot-linking), taken from each vendor's official brand resources.
+### 4.7 Resolving the client logo
+
+Any client can show up (GitHub Copilot, oh-my-pi, …), so the logo comes from a resolution chain. First hit wins (user-approved, without CIMD for now):
+
+1. **Known-client table** (§4.6): official logos for Claude Code, Claude, Codex and ChatGPT, bundled with the server from each vendor's brand resources. This guarantees the real Claude Code logo.
+2. **Client-declared icon**:
+   - on the MCP session: `clientInfo.icons` / `websiteUrl` sent at `initialize` (spec 2025-11-25, `Implementation.icons` in the installed SDK). Remembered per bearer with the rest of `clientInfo`.
+   - at registration: DCR `logo_uri` and `client_uri` (RFC 7591). Today `/oauth/register` keeps only `client_name`; it must also store these two.
+3. **Simple Icons** (CC0 brand SVGs, pinned version, bundled, no network): match the client name to a Simple Icons slug after normalising (lowercase, strip spaces and punctuation, drop suffixes like "connector" / "(…)"), plus a small alias table for names that don't normalise to the slug.
+4. **Favicon** of the client's site, from `websiteUrl` or `client_uri`.
+5. **Generic icon** with the registered name.
+
+On `/oauth/authorize` only steps 1 (registered name / redirect), 2 (DCR fields), 3, 4 and 5 are available, since there is no MCP session yet.
+
+Fetching remote images (steps 2 and 4):
+
+- Server-side only, then cached and served by BeaconMCP from its own origin. The browser never loads a third-party URL, so no third party learns that someone is signing in.
+- HTTPS only. Refuse hosts resolving to loopback, private or link-local addresses (SSRF). Short timeout, no redirects to another host, size cap (~256 KB).
+- Raster only: PNG, WebP, JPEG, ICO. **Client-supplied SVG is refused** (it can carry script). Bundled SVGs (steps 1 and 3) are fine. Served with the right `Content-Type`, `X-Content-Type-Options: nosniff`, and rendered with `<img>`.
+- Cache on disk keyed by URL hash, with a TTL (~7 days) and a negative cache for failures.
+- Never block page rendering on a fetch: if the logo isn't cached yet, show the next step's result (usually Simple Icons or generic) and fill the cache in the background.
+
+Logos are display-only like the rest of §4.6: a client can claim any logo. The bold redirect host and the origin block stay the signals that matter.
 
 ## 5. Security notes
 
@@ -160,6 +182,8 @@ Under `server:` in `beaconmcp.yaml`, with defaults *(names are suggestions)*:
 - Manual: Claude Code CLI and Desktop against a dev server with `human_session_ttl` lowered to ~60 s. Cowork if reachable. Record what each client does with the URL elicitation and whether it retries.
 
 ## 9. Later
+
+- Client ID Metadata Documents (CIMD): the client id is an HTTPS URL to a metadata document (name, logo, redirect URIs), so its domain identifies the vendor. Would make step 2 of §4.7 more trustworthy.
 
 - MCP 2026-07-28: the same flow maps to `InputRequiredResult`. Do it with the `mcp` 2.x migration.
 - MCP Tasks for long Proxmox jobs (UPIDs) and async exec.
