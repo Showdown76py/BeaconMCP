@@ -25,7 +25,10 @@ from .ssh.tools import register_ssh_tools
 
 from functools import partial, wraps
 import time
-from . import audit
+
+from mcp.server.fastmcp.exceptions import ToolError
+
+from . import audit, reauth
 from .auth import current_client_id
 from .metrics import tool_calls, tool_latency_ms
 
@@ -143,6 +146,16 @@ mcp = FastMCP(
 # ``@wraps(func)`` preserves the original signature so FastMCP still derives
 # the tool input schema correctly.
 _orig_tool = mcp.tool
+
+
+def _request_ctx():
+    """FastMCP context of the in-flight tool call, or None outside one."""
+    try:
+        ctx = mcp.get_context()
+        ctx.request_context  # raises outside a request
+    except (LookupError, ValueError):
+        return None
+    return ctx
 def _metric_tool(*args, **kwargs):
     def decorator(func):
         tool_name = func.__name__
@@ -153,13 +166,19 @@ def _metric_tool(*args, **kwargs):
             start = time.monotonic()
             status = "ok"
             try:
+                try:
+                    await reauth.gate_tool_call(_request_ctx(), tool_name, f_kwargs)
+                except ToolError:
+                    status = "reauth"
+                    raise
                 if is_coro:
                     return await func(*f_args, **f_kwargs)
                 return await anyio.to_thread.run_sync(
                     partial(func, *f_args, **f_kwargs)
                 )
             except Exception:
-                status = "error"
+                if status == "ok":
+                    status = "error"
                 raise
             finally:
                 latency = (time.monotonic() - start) * 1000

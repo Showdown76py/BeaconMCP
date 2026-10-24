@@ -10,18 +10,23 @@ clients get the plain 401 they always got.
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import anyio
+from mcp.server.fastmcp.exceptions import ToolError
+from pydantic import BaseModel, Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from . import audit
 from .auth import AccessToken, token_hash
 from .ratelimit import client_ip
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -232,6 +237,88 @@ def request_reverify(
             "auth.reverify.requested", client_id=at.client_id, tool=tool, ip=ip,
         )
     return entry, created
+
+
+class _Verified(BaseModel):
+    verified: bool = Field(default=False, description="I've verified in the browser")
+
+
+def _elicit_modes(ctx: Any, info: ClientSessionInfo | None) -> tuple[bool, bool]:
+    """(form, url) support for this session, from its initialize params."""
+    try:
+        elicitation = ctx.request_context.session.client_params.capabilities.elicitation
+    except (AttributeError, ValueError, LookupError):
+        elicitation = None
+    if elicitation is None:
+        if info is not None:
+            return info.elicit_form, info.elicit_url
+        return False, False
+    url = elicitation.url is not None
+    form = elicitation.form is not None or not url
+    return form, url
+
+
+async def gate_tool_call(ctx: Any, tool: str, args: dict) -> None:
+    """Block a tool call while the caller's human session is lapsed.
+
+    Elicits a re-verify link (URL mode, else a form carrying the link) and
+    waits up to ``hold_timeout`` for ``/oauth/reverify`` to complete it.
+    Raises :class:`ToolError` with the link when that doesn't happen.
+    """
+    rt = runtime()
+    if rt is None or ctx is None:
+        return
+    try:
+        request = ctx.request_context.request
+    except (AttributeError, ValueError, LookupError):
+        return
+    if request is None:
+        return
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return
+    thash = token_hash(auth_header[7:])
+    at = rt.token_store.get_interactive_by_hash(thash)
+    if at is None or not session_lapsed(at, rt.session_ttl):
+        return
+
+    form, url_mode = _elicit_modes(ctx, rt.registry.get(thash))
+    entry, created = request_reverify(
+        rt, thash=thash, at=at, tool=tool, args=args,
+        ip=client_ip(request, rt.trusted_proxies),
+        user_agent=request.headers.get("user-agent", ""),
+    )
+    link = reverify_url(rt.issuer_for(request), entry.id)
+    message = f"Your BeaconMCP session expired. Verify it's you to run {tool}."
+
+    async def ask() -> None:
+        try:
+            if url_mode:
+                await ctx.elicit_url(message=message, url=link, elicitation_id=entry.id)
+            else:
+                await ctx.elicit(
+                    message=f"{message}\nOpen {link} then confirm here.",
+                    schema=_Verified,
+                )
+        except Exception:  # noqa: BLE001 -- the wait below still decides
+            _logger.debug("re-verify elicitation failed", exc_info=True)
+
+    verified = False
+    if form or url_mode:
+        async with anyio.create_task_group() as tg:
+            # only the first call of a lapse prompts, the others just wait
+            if created:
+                tg.start_soon(ask)
+            verified = await rt.pending.wait(entry.id, rt.hold_timeout)
+            tg.cancel_scope.cancel()
+    if verified:
+        if url_mode:
+            try:
+                await ctx.request_context.session.send_elicit_complete(entry.id)
+            except Exception:  # noqa: BLE001
+                _logger.debug("elicitation complete notification failed", exc_info=True)
+        return
+    raise ToolError(f"BeaconMCP session expired. Verify at {link} then retry.")
 
 
 # methods that act on data; list/initialize/ping stay open so the client
