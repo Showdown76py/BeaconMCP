@@ -85,6 +85,11 @@ def revoke_current_token() -> bool:
     token = current_bearer_token.get()
     if not token or _active_token_store is None:
         return False
+    from . import reauth  # reauth imports this module
+
+    rt = reauth.runtime()
+    if rt is not None:
+        rt.pending.revoke_token(token_hash(token))
     return _active_token_store.revoke(token)
 
 

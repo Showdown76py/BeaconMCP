@@ -56,7 +56,7 @@ MCP URL-mode elicitation lets the server hand the client a link to open in the b
 
 For bearers issued by the **`authorization_code` grant** only:
 
-- **Bearer**: authenticates the MCP connection. Lifetime 30 days, fixed from issue and not extended by re-verification *(my call: mirrors `NAMED_TOKEN_TTL`)*. Persisted so a restart doesn't drop it, **stored hashed** (SHA-256 of the token as the key) rather than in plain text like named tokens today *(my call)*. When a client completes a new `/oauth/authorize` flow, its previous interactive bearers are revoked *(my call)*.
+- **Bearer**: authenticates the MCP connection. Lifetime 30 days, fixed from issue and not extended by re-verification *(my call: mirrors `NAMED_TOKEN_TTL`)*. Persisted so a restart doesn't drop it, **stored hashed** (SHA-256 of the token as the key) rather than in plain text like named tokens today *(my call)*. Previous interactive bearers are **not** revoked when a client authorizes again: that would sign out a second device sharing the same client (CLI + Desktop), and a lapsed bearer is already useless without a fresh passkey/TOTP. *(Amended during implementation; the first draft revoked them.)*
 - **Human session**: a timestamp `verified_at` stored with the bearer. Valid for 24 h after the last passkey/TOTP check (initial authorize, or a re-verification).
 
 All other bearers (named tokens, `client_credentials`, dashboard-internal bearers) have no human-session concept and are unaffected.

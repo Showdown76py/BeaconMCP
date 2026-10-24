@@ -21,6 +21,11 @@ src/beaconmcp/
   server.py           FastMCP server, registers every tool module
   config.py           YAML loader with ${ENV} resolver + legacy env fallback
   auth.py             OAuth 2.1 client credentials (ClientStore + TokenStore)
+  reauth.py           24 h human session: ASGI gate + tool-call gate via elicitation
+  reverify.py         /oauth/reverify page (passkey/TOTP) for a lapsed session
+  confirm.py          form-elicitation confirmation for destructive tools
+  oauth_ui.py         shared HTML/CSS/JS of the self-contained OAuth pages
+  client_identity.py  client detection + logo resolution chain (display only)
   proxmox/
     client.py         proxmoxer wrapper (API-token auth, N-node aware)
     monitoring.py     6 tools: list_nodes, node_status, list_vms, vm_status, get_logs, get_tasks
@@ -56,6 +61,8 @@ Legacy `PVE*_*`, `ILO_*`, `SSH_*` env vars still work when no YAML is found (dep
 ## Auth
 
 OAuth 2.1 client credentials + mandatory TOTP. Manage with `beaconmcp auth create/list/revoke`.
+
+authorization_code bearers last 30 days but need a passkey/TOTP check every 24 h; elicitation-capable clients get a re-verify link instead of a 401 (spec: `docs/superpowers/specs/2026-10-24-human-session-reauth-design.md`).
 
 ## Design Spec
 

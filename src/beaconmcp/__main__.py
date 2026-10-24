@@ -461,8 +461,9 @@ def _run_http(mcp, host: str, port: int):
 
     from . import audit
     from . import auth
-    from . import oauth_ui
+    from . import oauth_ui, reauth
     from .client_identity import LogoResolver, identify
+    from .reverify import ReverifyDeps, build_reverify_routes
     from .auth import (
         TOTP_REPLAY_MESSAGE,
         ClientStore,
@@ -526,7 +527,11 @@ def _run_http(mcp, host: str, port: int):
         if env_named_ttl and env_named_ttl.isdigit()
         else config.server.named_token_ttl
     )
-    token_store = TokenStore(db_path=tokens_db, named_token_ttl=named_token_ttl)
+    token_store = TokenStore(
+        db_path=tokens_db,
+        named_token_ttl=named_token_ttl,
+        interactive_token_ttl=config.server.interactive_bearer_ttl,
+    )
     code_store = CodeStore()
     logo_resolver = LogoResolver(clients_path.parent / "logo-cache")
 
@@ -1254,6 +1259,16 @@ def _run_http(mcp, host: str, port: int):
         if path.startswith("/oauth/passkey/"):
             return await call_next(request)
 
+        # Re-verification of a lapsed human session: the opaque id in the
+        # link is the capability, the second factor does the rest. Logos are
+        # public images shown on the auth pages.
+        if (
+            path == "/oauth/reverify"
+            or path.startswith("/oauth/reverify/")
+            or path.startswith("/oauth/logo/")
+        ):
+            return await call_next(request)
+
         # Dashboard routes have their own session-based auth.
         if path.startswith("/app/"):
             return await call_next(request)
@@ -1462,13 +1477,20 @@ def _run_http(mcp, host: str, port: int):
                         scope["raw_path"] = new_path.encode("ascii")
             await self._inner(scope, receive, send)
 
-    mcp_app = _McpSlugRewriteApp(mcp.streamable_http_app())
+    def _resource_metadata_for(request: Request) -> str:
+        issuer = _issuer(request)
+        if request.url.path.startswith("/mcp/c/") and dyn_reg_store is not None:
+            return f"{issuer}/.well-known/oauth-protected-resource{request.url.path}"
+        return f"{issuer}/.well-known/oauth-protected-resource"
+
+    slug_app = _McpSlugRewriteApp(mcp.streamable_http_app())
+    mcp_app = reauth.McpGateApp(slug_app, resource_metadata_for=_resource_metadata_for)
 
     # The MCP streamable-HTTP app starts its session manager task group in its
     # own lifespan. When we Mount it under a parent Starlette, only the parent
     # app's lifespan runs — so we forward the child's lifespan explicitly,
     # otherwise requests fail with "Task group is not initialized".
-    inner_mcp = mcp_app._inner
+    inner_mcp = slug_app._inner
     @asynccontextmanager
     async def lifespan(_app):
         async with inner_mcp.router.lifespan_context(_app):
@@ -1487,6 +1509,56 @@ def _run_http(mcp, host: str, port: int):
             ),
             Route("/oauth/register/c/{slug}", dcr_register, methods=["POST"]),
         ]
+
+    def _client_label(client_id: str, info) -> str:
+        return identify(
+            client_info_name=info.name if info else "",
+            registered_name=client_store.get_name(client_id) or client_id,
+        ).name
+
+    reauth_registry = reauth.ClientInfoRegistry()
+    reauth_pending = reauth.PendingReverifyStore(link_ttl=config.server.reverify_link_ttl)
+    reauth.configure(reauth.ReauthRuntime(
+        token_store=token_store,
+        registry=reauth_registry,
+        pending=reauth_pending,
+        session_ttl=config.server.human_session_ttl,
+        hold_timeout=config.server.reverify_hold_timeout,
+        issuer_for=_issuer,
+        trusted_proxies=tuple(config.server.trusted_proxies),
+        label_for=_client_label,
+    ))
+
+    def _reverify_logo(identity, info, client_id: str) -> str:
+        client = client_store.get(client_id)
+        return logo_resolver.url_for(
+            identity,
+            declared_icons=info.icons if info else (),
+            logo_uri=(client.logo_uri or "") if client else "",
+            website_url=(info.website_url if info else "")
+            or ((client.client_uri or "") if client else ""),
+        )
+
+    reverify_routes = build_reverify_routes(ReverifyDeps(
+        client_store=client_store,
+        token_store=token_store,
+        pending=reauth_pending,
+        registry=reauth_registry,
+        session_ttl=config.server.human_session_ttl,
+        totp_locked=totp_locked,
+        totp_record_failure=totp_record_failure,
+        totp_record_success=totp_record_success,
+        passkey_service=passkey_service,
+        passkey_owner=_passkey_owner,
+        passkeys_enabled=lambda req: bool(
+            passkey_service is not None
+            and passkey_service.available
+            and passkeys_mod.is_secure_context(req)
+        ),
+        login_limiter=_login_limiter,
+        logo_url_for=_reverify_logo,
+        trusted_proxies=tuple(config.server.trusted_proxies),
+    ))
 
     # Optional dashboard routes (login + chat panels at /app/*).
     dashboard_routes = _build_dashboard_routes(
@@ -1525,6 +1597,8 @@ def _run_http(mcp, host: str, port: int):
             ),
             Route("/oauth/token", oauth_token, methods=["POST"]),
             Route("/oauth/register", oauth_register, methods=["POST"]),
+            *reverify_routes,
+            *logo_resolver.routes(),
             *dcr_routes,
             *dashboard_routes,
             Mount("/", app=mcp_app),

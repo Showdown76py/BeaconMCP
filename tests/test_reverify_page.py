@@ -64,7 +64,7 @@ def env():
         totp_record_failure=failures.append, totp_record_success=lambda cid: None,
         passkey_service=passkeys, passkey_owner=lambda cid: cid,
         passkeys_enabled=lambda req: True, login_limiter=None,
-        logo_url_for=lambda ident, info: f"/oauth/logo/known/{ident.key}",
+        logo_url_for=lambda ident, info, cid: f"/oauth/logo/known/{ident.key}",
     )
     client = TestClient(Starlette(routes=build_reverify_routes(deps)))
     return SimpleNamespace(client=client, store=store, token=token, thash=thash,

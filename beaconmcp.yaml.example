@@ -88,6 +88,23 @@ server:
   # BEACONMCP_NAMED_TOKEN_TTL env var overrides this.
   # named_token_ttl: 2592000
 
+  # Human session for OAuth (authorization_code) clients such as Claude Code.
+  # Their bearer lives interactive_bearer_ttl, but every human_session_ttl the
+  # user must confirm with a passkey or TOTP. Clients that support MCP
+  # elicitation get a link to /oauth/reverify and the tool call waits up to
+  # reverify_hold_timeout; other clients get a 401 and reconnect.
+  # human_session_ttl: 86400
+  # interactive_bearer_ttl: 2592000
+  # reverify_hold_timeout: 300
+  # reverify_link_ttl: 600
+
+  # Tools that ask "are you sure?" through form elicitation when the client
+  # supports it (they still run on clients that don't). Default:
+  # [bmc_power_off, bmc_power_reset, proxmox_snapshot_rollback,
+  #  proxmox_snapshot_delete, proxmox_backup_restore (force only),
+  #  beaconmcp_self_update]
+  # confirm_tools: [bmc_power_off, bmc_power_reset]
+
 # -------- Proxmox capability (optional) ------------------------------------
 # Delete this section if you have no Proxmox cluster. Tools starting with
 # `proxmox_` won't be registered.

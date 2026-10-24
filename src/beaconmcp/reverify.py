@@ -38,7 +38,7 @@ class ReverifyDeps:
     passkey_owner: Callable[[str], str]
     passkeys_enabled: Callable[[Request], bool]
     login_limiter: Any
-    logo_url_for: Callable[[ClientIdentity, ClientSessionInfo | None], str]
+    logo_url_for: Callable[[ClientIdentity, ClientSessionInfo | None, str], str]
     trusted_proxies: tuple[str, ...] = ()
 
 
@@ -176,7 +176,7 @@ def build_reverify_routes(deps: ReverifyDeps) -> list[Route]:
         identity, info, registered = _identity(entry)
         return HTMLResponse(render_reverify(
             entry, host=_host(request), identity=identity,
-            logo_url=deps.logo_url_for(identity, info), registered_name=registered,
+            logo_url=deps.logo_url_for(identity, info, entry.client_id), registered_name=registered,
             info=info, passkeys_on=deps.passkeys_enabled(request),
             session_ttl=deps.session_ttl, **kw,
         ), status_code=status)
