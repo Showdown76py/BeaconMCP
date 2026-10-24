@@ -213,6 +213,14 @@ class AccessToken:
     # not listed in the external-tokens UI.
     name: str | None = None
     created_at: float = 0.0
+    # authorization_code bearers: long-lived, but only usable while the
+    # human session (last passkey/TOTP check at ``verified_at``) is fresh
+    interactive: bool = False
+    verified_at: float = 0.0
+
+
+def token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -534,14 +542,24 @@ class TokenStore:
     # tokens page). Internal dashboard-session bearers are unlimited
     # because a re-login always revokes the prior one.
     NAMED_TOKEN_CAP = 3
+    INTERACTIVE_TOKEN_TTL = 3600 * 24 * 30  # 30 days
 
     def __init__(
         self,
         db_path: Path | str | None = None,
         *,
         named_token_ttl: int | None = None,
+        interactive_token_ttl: int | None = None,
     ) -> None:
         self._tokens: dict[str, AccessToken] = {}
+        # keyed by token_hash: interactive bearers are persisted hashed, so
+        # after a restart only the hash is known
+        self._interactive: dict[str, AccessToken] = {}
+        self.interactive_token_ttl = (
+            interactive_token_ttl
+            if interactive_token_ttl is not None
+            else self.INTERACTIVE_TOKEN_TTL
+        )
         self._db: sqlite3.Connection | None = None
         # Re-entrant: tools now run on worker threads (see server._metric_tool),
         # so the in-memory dict is touched concurrently. Several methods hold
@@ -590,6 +608,25 @@ class TokenStore:
                 )
             # Drop rows that expired while the process was down.
             conn.execute("DELETE FROM named_tokens WHERE expires_at <= ?", (now,))
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS interactive_tokens ("
+                " token_hash TEXT PRIMARY KEY,"
+                " client_id TEXT NOT NULL,"
+                " expires_at REAL NOT NULL,"
+                " created_at REAL NOT NULL,"
+                " verified_at REAL NOT NULL)"
+            )
+            conn.execute(
+                "DELETE FROM interactive_tokens WHERE expires_at <= ?", (now,),
+            )
+            for row in conn.execute(
+                "SELECT token_hash, client_id, expires_at, created_at, verified_at "
+                "FROM interactive_tokens"
+            ).fetchall():
+                self._interactive[row[0]] = AccessToken(
+                    token="", client_id=row[1], expires_at=row[2],
+                    created_at=row[3], interactive=True, verified_at=row[4],
+                )
             conn.commit()
         except Exception:  # noqa: BLE001 -- persistence must never block startup
             _logger.exception("named-token persistence disabled (db init failed)")
@@ -619,6 +656,87 @@ class TokenStore:
                 self._db.commit()
         except Exception:  # noqa: BLE001
             _logger.exception("failed to delete persisted named token")
+
+    def _persist_interactive(self, thash: str, at: AccessToken) -> None:
+        if self._db is None:
+            return
+        try:
+            with self._lock:
+                self._db.execute(
+                    "INSERT OR REPLACE INTO interactive_tokens "
+                    "(token_hash, client_id, expires_at, created_at, verified_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (thash, at.client_id, at.expires_at, at.created_at, at.verified_at),
+                )
+                self._db.commit()
+        except Exception:  # noqa: BLE001
+            _logger.exception("failed to persist interactive token")
+
+    def _unpersist_interactive(self, thash: str) -> None:
+        if self._db is None:
+            return
+        try:
+            with self._lock:
+                self._db.execute(
+                    "DELETE FROM interactive_tokens WHERE token_hash = ?", (thash,),
+                )
+                self._db.commit()
+        except Exception:  # noqa: BLE001
+            _logger.exception("failed to delete interactive token")
+
+    def issue_interactive(self, client_id: str) -> tuple[str, int]:
+        """Issue an authorization_code bearer. Returns ``(token, expires_in)``.
+
+        The human session starts verified: the caller just passed 2FA.
+        """
+        with self._lock:
+            token = secrets.token_hex(32)
+            now = time.time()
+            ttl = self.interactive_token_ttl
+            at = AccessToken(
+                token="", client_id=client_id, expires_at=now + ttl,
+                created_at=now, interactive=True, verified_at=now,
+            )
+            thash = token_hash(token)
+            self._interactive[thash] = at
+            self._persist_interactive(thash, at)
+            self._cleanup()
+            return token, ttl
+
+    def get_interactive(self, token: str) -> AccessToken | None:
+        return self.get_interactive_by_hash(token_hash(token))
+
+    def get_interactive_by_hash(self, thash: str) -> AccessToken | None:
+        with self._lock:
+            at = self._interactive.get(thash)
+            if at is None:
+                return None
+            if time.time() > at.expires_at:
+                del self._interactive[thash]
+                self._unpersist_interactive(thash)
+                return None
+            return at
+
+    def mark_verified(self, thash: str, at: float | None = None) -> bool:
+        with self._lock:
+            entry = self.get_interactive_by_hash(thash)
+            if entry is None:
+                return False
+            entry.verified_at = time.time() if at is None else at
+            self._persist_interactive(thash, entry)
+            return True
+
+    def revoke_hash(self, thash: str) -> bool:
+        """Revoke an interactive bearer by hash, with the usual grace period."""
+        with self._lock:
+            entry = self._interactive.get(thash)
+            if entry is None:
+                return False
+            deadline = time.time() + self.REVOKE_GRACE_SECONDS
+            if entry.expires_at > deadline:
+                entry.expires_at = deadline
+            self._unpersist_interactive(thash)
+            return True
 
     def issue(
         self, client_id: str, *, name: str | None = None,
@@ -699,7 +817,8 @@ class TokenStore:
         with self._lock:
             access_token = self._tokens.get(token)
             if not access_token:
-                return None
+                interactive = self.get_interactive(token)
+                return interactive.client_id if interactive else None
             if time.time() > access_token.expires_at:
                 if access_token.name is not None:
                     self._unpersist(token)
@@ -724,7 +843,7 @@ class TokenStore:
         with self._lock:
             access_token = self._tokens.get(token)
             if access_token is None:
-                return False
+                return self.revoke_hash(token_hash(token))
             deadline = time.time() + self.REVOKE_GRACE_SECONDS
             if access_token.expires_at > deadline:
                 access_token.expires_at = deadline
@@ -742,6 +861,9 @@ class TokenStore:
                 if self._tokens[t].name is not None:
                     self._unpersist(t)
                 del self._tokens[t]
+            for h in [h for h, at in self._interactive.items() if now > at.expires_at]:
+                self._unpersist_interactive(h)
+                del self._interactive[h]
 
 
 class CodeStore:

@@ -1880,7 +1880,7 @@ def _run_http(mcp, host: str, port: int):
             code_verifier = body.get("code_verifier", "")
             if not code_store.consume(code, client_id, redirect_uri, code_verifier):
                 return JSONResponse({"error": "invalid_grant"}, status_code=400)
-            token, expires_in = token_store.issue(client_id)
+            token, expires_in = token_store.issue_interactive(client_id)
             return JSONResponse({
                 "access_token": token,
                 "token_type": "bearer",
