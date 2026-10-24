@@ -16,8 +16,9 @@ import socket
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 from starlette.requests import Request
 from starlette.responses import Response
@@ -171,20 +172,27 @@ class UnsafeLogoURL(ValueError):
     pass
 
 
-async def _public_host(host: str) -> None:
-    """Refuse hosts that resolve to anything but public addresses (SSRF)."""
+async def _public_ip(host: str, port: int) -> str:
+    """Resolve ``host`` once and return an address to connect to (SSRF).
+
+    Every address must be public. The caller connects to the returned IP
+    itself, so a second lookup can't rebind the name to an internal host.
+    """
     loop = asyncio.get_running_loop()
     try:
-        infos = await loop.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+        infos = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except OSError as exc:
         raise UnsafeLogoURL(f"cannot resolve {host}") from exc
+    if not infos:
+        raise UnsafeLogoURL(f"cannot resolve {host}")
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
         if not ip.is_global or ip.is_multicast:
             raise UnsafeLogoURL(f"{host} resolves to a non-public address")
+    return str(infos[0][4][0])
 
 
-async def safe_fetch(url: str) -> tuple[bytes, str]:
+async def safe_fetch(url: str, *, transport: Any = None) -> tuple[bytes, str]:
     """Fetch a remote raster logo. Returns ``(bytes, ext)``.
 
     HTTPS only, public hosts only, same-host redirects only, size-capped,
@@ -194,13 +202,23 @@ async def safe_fetch(url: str) -> tuple[bytes, str]:
 
     for _ in range(3):
         parsed = urlparse(url)
-        if parsed.scheme != "https" or not parsed.hostname:
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username:
             raise UnsafeLogoURL("logo URL must be https")
-        # httpx resolves again, so dns rebinding can slip past this check: the
-        # worst case is a blind GET whose answer must still sniff as an image
-        await _public_host(parsed.hostname)
-        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
-            async with client.stream("GET", url, headers={"Accept": "image/*"}) as res:
+        host, port = parsed.hostname, parsed.port or 443
+        ip = await _public_ip(host, port)
+        # connect to the checked ip, keep the name for Host, SNI and the cert
+        pinned = parsed._replace(netloc=f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}")
+        headers = {
+            "Accept": "image/*",
+            "Host": host if parsed.port is None else f"{host}:{port}",
+        }
+        async with httpx.AsyncClient(
+            timeout=5.0, follow_redirects=False, transport=transport,
+        ) as client:
+            async with client.stream(
+                "GET", urlunparse(pinned), headers=headers,
+                extensions={"sni_hostname": host},
+            ) as res:
                 if res.status_code in (301, 302, 303, 307, 308):
                     target = urljoin(url, res.headers.get("location", ""))
                     if urlparse(target).hostname != parsed.hostname:

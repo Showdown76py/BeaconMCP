@@ -8,7 +8,12 @@ import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ElicitationCapability, FormElicitationCapability, UrlElicitationCapability
 
-from beaconmcp.confirm import DEFAULT_CONFIRM_TOOLS, confirm_destructive
+from beaconmcp.confirm import (
+    DEFAULT_CONFIRM_TOOLS,
+    ConfirmationDeclined,
+    ConfirmationUnavailable,
+    confirm_destructive,
+)
 
 
 class Ctx:
@@ -44,7 +49,7 @@ async def test_accept_runs() -> None:
 
 
 async def test_decline_raises() -> None:
-    with pytest.raises(ToolError, match="Cancelled"):
+    with pytest.raises(ConfirmationDeclined, match="Cancelled"):
         await confirm_destructive(Ctx(FORM, action="decline"), "bmc_power_reset", {})
 
 
@@ -119,5 +124,11 @@ async def test_elicitation_failure_gives_clear_error() -> None:
         async def elicit(self, message, schema):
             raise TimeoutError("no answer")
 
-    with pytest.raises(ToolError, match="could not show it .*Nothing was run"):
+    with pytest.raises(ConfirmationUnavailable, match="could not show it .*Nothing was run"):
         await confirm_destructive(Broken(FORM), "bmc_power_off", {})
+
+
+def test_declined_and_unavailable_are_distinct_tool_errors() -> None:
+    assert issubclass(ConfirmationDeclined, ToolError)
+    assert issubclass(ConfirmationUnavailable, ToolError)
+    assert not issubclass(ConfirmationUnavailable, ConfirmationDeclined)

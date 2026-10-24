@@ -188,8 +188,11 @@ def _metric_tool(*args, **kwargs):
                     f_kwargs = await confirm.confirm_destructive(
                         ctx, tool_name, f_kwargs, _confirm_tools,
                     )
-                except ToolError:
+                except confirm.ConfirmationDeclined:
                     status = "declined"
+                    raise
+                except confirm.ConfirmationUnavailable:
+                    status = "confirm_unavailable"
                     raise
                 if is_coro:
                     return await func(*f_args, **f_kwargs)

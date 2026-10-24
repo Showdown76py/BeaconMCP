@@ -171,3 +171,75 @@ def test_prune_tolerates_file_removed_meanwhile(tmp_path: Path, monkeypatch) -> 
 
     monkeypatch.setattr(Path, "iterdir", racing_iterdir)
     assert r._store("https://x.dev/b.png", PNG, "png")
+
+
+def _fake_dns(monkeypatch, answers: list[str]) -> list[str]:
+    """Each lookup pops the next answer, like a rebinding DNS server."""
+    import socket
+
+    calls: list[str] = []
+
+    async def getaddrinfo(host, port, type=0):
+        calls.append(host)
+        ip = answers.pop(0)
+        family = socket.AF_INET6 if ":" in ip else socket.AF_INET
+        return [(family, socket.SOCK_STREAM, 6, "", (ip, port))]
+
+    import asyncio
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "getaddrinfo", getaddrinfo)
+    return calls
+
+
+async def test_safe_fetch_connects_to_the_checked_ip(monkeypatch) -> None:
+    import httpx
+
+    # second answer would be the rebinding one, it must never be asked for
+    calls = _fake_dns(monkeypatch, ["93.184.216.34", "127.0.0.1"])
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, content=PNG)
+
+    data, ext = await safe_fetch(
+        "https://logo.example/icon.png", transport=httpx.MockTransport(handler),
+    )
+    assert (data, ext) == (PNG, "png")
+    assert calls == ["logo.example"]
+    req = seen[0]
+    assert req.url.host == "93.184.216.34" and req.url.path == "/icon.png"
+    assert req.headers["host"] == "logo.example"
+    assert req.extensions["sni_hostname"] == "logo.example"
+
+
+async def test_safe_fetch_redirect_hop_is_checked_again(monkeypatch) -> None:
+    import httpx
+
+    _fake_dns(monkeypatch, ["93.184.216.34", "10.0.0.5"])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": "/other.png"})
+
+    with pytest.raises(UnsafeLogoURL, match="non-public"):
+        await safe_fetch("https://logo.example/a.png", transport=httpx.MockTransport(handler))
+
+
+async def test_safe_fetch_ipv6_and_explicit_port(monkeypatch) -> None:
+    import httpx
+
+    _fake_dns(monkeypatch, ["2606:4700::6810:84e5"])
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, content=PNG)
+
+    await safe_fetch("https://logo.example:8443/i.png", transport=httpx.MockTransport(handler))
+    assert seen[0].url.host == "2606:4700::6810:84e5" and seen[0].url.port == 8443
+    assert seen[0].headers["host"] == "logo.example:8443"
+
+
+async def test_safe_fetch_rejects_userinfo() -> None:
+    with pytest.raises(UnsafeLogoURL):
+        await safe_fetch("https://user@logo.example/i.png")

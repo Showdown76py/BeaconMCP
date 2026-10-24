@@ -25,6 +25,14 @@ DEFAULT_CONFIRM_TOOLS: tuple[str, ...] = (
 )
 
 
+class ConfirmationDeclined(ToolError):
+    """The user said no (or dismissed the dialog). Not an error."""
+
+
+class ConfirmationUnavailable(ToolError):
+    """The client declared elicitation but could not show the dialog."""
+
+
 class _Confirm(BaseModel):
     confirm: bool = Field(default=False, description="Yes, do it")
 
@@ -79,7 +87,8 @@ async def confirm_destructive(
 ) -> dict:
     """Ask the user before a destructive tool runs. Returns the kwargs to use.
 
-    Raises :class:`ToolError` when the user declines or cancels.
+    Raises :class:`ConfirmationDeclined` when the user declines or cancels,
+    :class:`ConfirmationUnavailable` when the dialog could not be shown.
     """
     if ctx is None or not _needs_confirmation(tool, kwargs, tools):
         return kwargs
@@ -93,14 +102,14 @@ async def confirm_destructive(
         result = await ctx.elicit(message=_message(tool, kwargs), schema=_Confirm)
     except Exception as exc:  # noqa: BLE001 -- transport, timeout, client error
         audit.emit("tool.confirm.unavailable", tool=tool, error=str(exc)[:200])
-        raise ToolError(
+        raise ConfirmationUnavailable(
             f"{tool} needs a confirmation but the client could not show it "
             f"({exc.__class__.__name__}). Nothing was run."
         ) from exc
     data = getattr(result, "data", None)
     if getattr(result, "action", "") != "accept" or not getattr(data, "confirm", False):
         audit.emit("tool.confirm.declined", tool=tool)
-        raise ToolError("Cancelled by the user.")
+        raise ConfirmationDeclined("Cancelled by the user.")
     audit.emit("tool.confirm.ok", tool=tool)
     if tool == "beaconmcp_self_update":
         # the dialog is the confirmation, no need for the model to pass confirm=True
