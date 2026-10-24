@@ -559,625 +559,6 @@ def _cmd_auth(args):
         sys.exit(1)
 
 
-# ---------------------------------------------------------------------------
-# /oauth/authorize page assets
-#
-# Kept as plain module-level strings rather than inlined in the f-string that
-# builds the page: CSS and JS are brace-dense, and doubling every one of them
-# to survive `str.format` made the block unreadable and easy to break.
-# ---------------------------------------------------------------------------
-
-_AUTHORIZE_CSS = """
-:root {
-  --accent: oklch(0.68 0.17 48);
-  --accent-soft: oklch(0.68 0.17 48 / 0.12);
-  --accent-softer: oklch(0.68 0.17 48 / 0.06);
-  --accent-border: oklch(0.68 0.17 48 / 0.35);
-  --accent-hover: oklch(0.62 0.18 48);
-  --accent-fg: #fff;
-  --bg: oklch(0.99 0.004 70);
-  --bg-soft: oklch(0.975 0.005 70);
-  --bg-elev: #fff;
-  --fg: oklch(0.22 0.01 70);
-  --fg-mid: oklch(0.42 0.008 70);
-  --fg-muted: oklch(0.55 0.008 70);
-  --fg-faint: oklch(0.7 0.006 70);
-  --border: oklch(0.92 0.006 70);
-  --border-strong: oklch(0.86 0.008 70);
-  --border-subtle: oklch(0.95 0.005 70);
-  --danger: oklch(0.58 0.19 25);
-  --danger-soft: oklch(0.58 0.19 25 / 0.1);
-  --success: oklch(0.62 0.12 155);
-  --success-soft: oklch(0.62 0.12 155 / 0.12);
-  --shadow: 0 1px 2px rgba(20,14,8,0.04), 0 4px 20px rgba(20,14,8,0.06);
-  --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
-}
-[data-theme="dark"] {
-  --bg: oklch(0.16 0.008 60);
-  --bg-soft: oklch(0.19 0.008 60);
-  --bg-elev: oklch(0.21 0.009 60);
-  --fg: oklch(0.95 0.006 70);
-  --fg-mid: oklch(0.78 0.008 70);
-  --fg-muted: oklch(0.62 0.01 70);
-  --fg-faint: oklch(0.45 0.008 70);
-  --border: oklch(0.28 0.009 60);
-  --border-strong: oklch(0.36 0.01 60);
-  --border-subtle: oklch(0.24 0.008 60);
-  --accent: oklch(0.75 0.17 50);
-  --accent-soft: oklch(0.75 0.17 50 / 0.16);
-  --accent-softer: oklch(0.75 0.17 50 / 0.08);
-  --accent-border: oklch(0.75 0.17 50 / 0.4);
-  --accent-hover: oklch(0.82 0.17 50);
-  --accent-fg: oklch(0.12 0.008 60);
-  --danger: oklch(0.68 0.19 25);
-  --success: oklch(0.72 0.14 155);
-  --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 4px 20px rgba(0,0,0,0.4);
-}
-* { box-sizing: border-box; }
-html, body {
-  margin: 0; padding: 0;
-  font-family: var(--font);
-  font-size: 15px;
-  color: var(--fg);
-  background: var(--bg);
-  -webkit-font-smoothing: antialiased;
-}
-body {
-  min-height: 100vh;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-}
-.auth-card {
-  width: 100%; max-width: 380px;
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 32px;
-  box-shadow: var(--shadow);
-  animation: rise 400ms var(--ease-out) both;
-}
-@keyframes rise {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-.auth-brand { display: flex; align-items: center; margin-bottom: 26px; }
-.auth-brand .name { font-weight: 600; font-size: 15px; letter-spacing: -0.01em; }
-h1 { margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015em; }
-.sub { margin: 0 0 18px; font-size: 13.5px; color: var(--fg-muted); }
-.sub strong { color: var(--fg); font-weight: 600; }
-.banner {
-  padding: 10px 14px;
-  border-radius: 10px;
-  font-size: 13px;
-  margin: 0 0 14px;
-  background: var(--danger-soft);
-  color: var(--danger);
-  border: 1px solid color-mix(in oklab, var(--danger) 35%, var(--border));
-}
-.banner-success {
-  background: var(--success-soft);
-  color: var(--success);
-  border-color: color-mix(in oklab, var(--success) 35%, var(--border));
-}
-.toast-banner {
-  background: var(--accent-softer);
-  border: 1px solid var(--accent-border);
-  color: var(--fg);
-  border-radius: 10px;
-  padding: 9px 12px;
-  font-size: 12.5px;
-  margin-bottom: 16px;
-  display: flex; align-items: center; gap: 8px;
-}
-.toast-banner .dot {
-  width: 6px; height: 6px;
-  border-radius: 50%; background: var(--accent);
-  flex-shrink: 0;
-}
-.toast-banner b { font-family: var(--font-mono); margin-left: 2px; }
-.totp-inputs {
-  display: flex; gap: 8px; justify-content: space-between;
-  margin: 8px 0 18px;
-}
-.totp-inputs input {
-  width: 100%; aspect-ratio: 1 / 1.15;
-  text-align: center;
-  font-size: 24px; font-weight: 600;
-  font-family: var(--font-mono);
-  background: var(--bg-soft);
-  border: 1px solid var(--border-strong);
-  border-radius: 10px;
-  color: var(--fg);
-  outline: none;
-  transition: border-color 160ms var(--ease-out), box-shadow 160ms var(--ease-out);
-}
-.totp-inputs input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 4px var(--accent-soft);
-}
-.totp-inputs input.filled {
-  background: var(--accent-softer);
-  border-color: var(--accent-border);
-}
-.btn-primary {
-  width: 100%;
-  padding: 12px 16px;
-  border: 0; border-radius: 10px;
-  background: var(--accent); color: var(--accent-fg);
-  font-family: var(--font); font-weight: 600; font-size: 14.5px;
-  cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-  transition: background 180ms var(--ease-out), transform 100ms var(--ease-out);
-  box-shadow: 0 4px 14px oklch(0.68 0.17 48 / 0.28), inset 0 1px 0 rgba(255,255,255,0.2);
-}
-.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
-.btn-primary:active:not(:disabled) { transform: translateY(1px); }
-.btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
-.btn-ghost {
-  width: 100%;
-  padding: 11px 16px;
-  border: 1px solid var(--border-strong);
-  border-radius: 10px;
-  background: var(--bg-soft);
-  color: var(--fg);
-  font-family: var(--font); font-weight: 550; font-size: 14px;
-  cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-  transition: border-color 160ms var(--ease-out), background 160ms var(--ease-out);
-}
-.btn-ghost:hover:not(:disabled) {
-  border-color: var(--accent-border);
-  background: var(--accent-softer);
-}
-.btn-ghost:disabled { opacity: 0.55; cursor: not-allowed; }
-.btn-ghost svg { flex-shrink: 0; }
-.btn-primary.is-loading, .btn-ghost.is-loading {
-  position: relative; overflow: hidden; cursor: progress; opacity: 1;
-}
-.btn-primary.is-loading::after, .btn-ghost.is-loading::after {
-  content: "";
-  position: absolute; inset: 0;
-  background: linear-gradient(100deg, transparent 20%, rgba(255,255,255,0.38) 50%, transparent 80%);
-  transform: translateX(-100%);
-  animation: shimmer-sweep 1150ms var(--ease-out) infinite;
-  pointer-events: none;
-}
-.btn-ghost.is-loading::after {
-  background: linear-gradient(100deg, transparent 20%, var(--accent-soft) 50%, transparent 80%);
-}
-@keyframes shimmer-sweep { to { transform: translateX(100%); } }
-.btn-primary.is-loading .btn-icon { opacity: 0; }
-@media (prefers-reduced-motion: reduce) {
-  .btn-primary.is-loading::after, .btn-ghost.is-loading::after {
-    animation: none; opacity: 0.25;
-  }
-}
-.alt-divider {
-  display: flex; align-items: center; gap: 12px;
-  margin: 18px 0 14px;
-  color: var(--fg-faint);
-  font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;
-}
-.alt-divider::before, .alt-divider::after {
-  content: ""; flex: 1; height: 1px; background: var(--border);
-}
-.hint {
-  margin: 10px 0 0;
-  font-size: 12.5px; line-height: 1.5;
-  color: var(--fg-muted); text-align: center;
-}
-.success-mark {
-  width: 42px; height: 42px;
-  border-radius: 50%;
-  display: grid; place-items: center;
-  margin-bottom: 16px;
-  color: var(--success);
-  background: var(--success-soft);
-  border: 1px solid color-mix(in oklab, var(--success) 35%, var(--border));
-  animation: pop-in 320ms var(--ease-out) both;
-}
-@keyframes pop-in {
-  from { opacity: 0; transform: scale(0.82); }
-  to { opacity: 1; transform: scale(1); }
-}
-.expiry-card {
-  margin: 4px 0 0;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-soft);
-}
-.expiry-row {
-  display: flex; align-items: baseline; justify-content: space-between;
-  gap: 12px; padding: 5px 0;
-}
-.expiry-row + .expiry-row { border-top: 1px solid var(--border-subtle); }
-.expiry-row dt { font-size: 12.5px; color: var(--fg-muted); }
-.expiry-row dd {
-  margin: 0; font-size: 13px; font-weight: 550;
-  color: var(--fg); text-align: right;
-}
-#passkey-add-block { margin-top: 18px; }
-#finalize-form { margin-top: 20px; }
-"""
-
-
-_AUTHORIZE_THEME_JS = """
-(function() {
-  try {
-    var raw = localStorage.getItem("beaconmcp-ui-state");
-    var s = raw ? JSON.parse(raw) : {};
-    var t = s.theme || "auto";
-    var dark = t === "dark" || (t === "auto" && window.matchMedia("(prefers-color-scheme: dark)").matches);
-    document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
-  } catch (e) {}
-})();
-"""
-
-
-# Self-contained: /oauth/authorize is reachable even when the dashboard (and
-# its /app/static bundle) is disabled, so the WebAuthn plumbing is duplicated
-# here rather than imported from static/webauthn.js.
-_AUTHORIZE_JS = """
-(function() {
-  "use strict";
-
-  var card = document.querySelector(".auth-card");
-  var stepVerify = document.getElementById("step-verify");
-  var stepDone = document.getElementById("step-done");
-  var form = document.getElementById("authorize-form");
-  var totpHidden = document.getElementById("totp");
-  var verifyBtn = document.getElementById("verify-btn");
-  var container = document.getElementById("totp-inputs");
-  var inputs = container ? container.querySelectorAll("input") : [];
-  var verifyError = document.getElementById("verify-error");
-  var doneError = document.getElementById("done-error");
-  var doneOk = document.getElementById("done-ok");
-  var passkeyBlock = document.getElementById("passkey-block");
-  var passkeyBtn = document.getElementById("passkey-btn");
-  var passkeyAddBlock = document.getElementById("passkey-add-block");
-  var addPasskeyBtn = document.getElementById("add-passkey-btn");
-  var ticketInput = document.getElementById("ticket");
-  var finalizeForm = document.getElementById("finalize-form");
-  var finishBtn = document.getElementById("finish-btn");
-
-  var passkeysEnabled = card && card.dataset.passkeys === "true";
-  var clientId = card ? card.dataset.clientId : "";
-  var busy = false;
-
-  function b64urlToBuf(value) {
-    var s = String(value).replace(/-/g, "+").replace(/_/g, "/");
-    while (s.length % 4) s += "=";
-    var bin = window.atob(s);
-    var bytes = new Uint8Array(bin.length);
-    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return bytes.buffer;
-  }
-  function bufToB64url(buf) {
-    var bytes = new Uint8Array(buf), bin = "";
-    for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-    return window.btoa(bin).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, "");
-  }
-  function descriptors(list) {
-    return (list || []).map(function(d) {
-      var out = { type: d.type || "public-key", id: b64urlToBuf(d.id) };
-      if (d.transports && d.transports.length) out.transports = d.transports;
-      return out;
-    });
-  }
-  function webauthnSupported() {
-    return !!(window.PublicKeyCredential && navigator.credentials &&
-              navigator.credentials.create && navigator.credentials.get);
-  }
-  function describeError(err) {
-    if (!err) return "Passkey request failed.";
-    if (err.name === "NotAllowedError") return "Passkey prompt cancelled or timed out.";
-    if (err.name === "InvalidStateError") return "This device already has a passkey for this client.";
-    if (err.name === "SecurityError") return "Passkeys need a secure origin (HTTPS or localhost).";
-    return err.message || String(err);
-  }
-  function postJson(url, body) {
-    return fetch(url, {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json", "X-BeaconMCP-Mode": "json" },
-      body: JSON.stringify(body || {})
-    }).then(function(res) {
-      return res.json().catch(function() { return {}; }).then(function(data) {
-        return { ok: res.ok, data: data };
-      });
-    });
-  }
-  function show(el, message) {
-    if (!el) return;
-    el.textContent = message || "";
-    el.hidden = !message;
-  }
-  function setLoading(btn, loading, label) {
-    if (!btn) return;
-    var labelEl = btn.querySelector(".btn-label");
-    if (loading) {
-      if (labelEl && label) {
-        if (!btn.dataset.idleLabel) btn.dataset.idleLabel = labelEl.textContent;
-        labelEl.textContent = label;
-      }
-      btn.classList.add("is-loading");
-      btn.disabled = true;
-    } else {
-      if (labelEl && btn.dataset.idleLabel) {
-        labelEl.textContent = btn.dataset.idleLabel;
-        delete btn.dataset.idleLabel;
-      }
-      btn.classList.remove("is-loading");
-    }
-  }
-  function formatDateTime(epochSeconds) {
-    if (!epochSeconds || !isFinite(epochSeconds)) return "\\u2014";
-    var d = new Date(epochSeconds * 1000);
-    var sameDay = d.toDateString() === new Date().toDateString();
-    var time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-    if (sameDay) return "today at " + time;
-    return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) + " at " + time;
-  }
-  function formatRelative(epochSeconds) {
-    var secs = epochSeconds - (Date.now() / 1000);
-    if (secs <= 0) return "expired";
-    var hours = secs / 3600;
-    if (hours < 1) return "in " + Math.max(1, Math.round(secs / 60)) + " min";
-    if (hours < 48) return "in " + Math.round(hours) + " h";
-    return "in " + Math.round(hours / 24) + " days";
-  }
-
-  // --- TOTP boxes ---
-  function collectTotp() {
-    var s = "";
-    inputs.forEach(function(i) { s += (i.value || "").replace(/\\D/g, ""); });
-    return s;
-  }
-  function refresh() {
-    var v = collectTotp();
-    if (totpHidden) totpHidden.value = v;
-    if (verifyBtn) verifyBtn.disabled = busy || v.length !== 6;
-  }
-  function clearTotp() {
-    inputs.forEach(function(i) { i.value = ""; i.classList.remove("filled"); });
-    refresh();
-    if (inputs[0]) inputs[0].focus();
-  }
-
-  inputs.forEach(function(inp, i) {
-    inp.addEventListener("input", function(e) {
-      var v = (e.target.value || "").replace(/\\D/g, "");
-      e.target.value = v.slice(0, 1);
-      if (v) {
-        e.target.classList.add("filled");
-        if (inputs[i + 1]) inputs[i + 1].focus();
-      } else {
-        e.target.classList.remove("filled");
-      }
-      refresh();
-    });
-    inp.addEventListener("keydown", function(e) {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        refresh();
-        if (!busy && collectTotp().length === 6) submitTotp();
-        return;
-      }
-      if (e.key === "Backspace" && !e.target.value && inputs[i - 1]) {
-        inputs[i - 1].focus();
-        inputs[i - 1].value = "";
-        inputs[i - 1].classList.remove("filled");
-        refresh();
-      }
-    });
-    inp.addEventListener("paste", function(e) {
-      e.preventDefault();
-      var src = e.clipboardData || window.clipboardData;
-      var pasted = ((src && src.getData("text")) || "").replace(/\\D/g, "").slice(0, 6);
-      pasted.split("").forEach(function(ch, k) {
-        if (inputs[k]) { inputs[k].value = ch; inputs[k].classList.add("filled"); }
-      });
-      if (inputs[Math.min(pasted.length, 5)]) inputs[Math.min(pasted.length, 5)].focus();
-      refresh();
-    });
-  });
-
-  // --- approved screen ---
-  function showDone(payload) {
-    if (ticketInput) ticketInput.value = payload.ticket || "";
-    var accessEl = document.getElementById("access-expiry");
-    if (accessEl) {
-      accessEl.textContent = formatDateTime(payload.access_expires_at) +
-        " (" + formatRelative(payload.access_expires_at) + ")";
-    }
-    var ticketEl = document.getElementById("ticket-expiry");
-    if (ticketEl) ticketEl.textContent = formatRelative(payload.ticket_expires_at);
-    if (passkeyAddBlock) {
-      var canAdd = payload.passkeys_enabled && webauthnSupported();
-      passkeyAddBlock.hidden = !canAdd;
-      // Server says passkeys are on but the browser won't expose the API:
-      // that is an insecure origin, and silently hiding the button just
-      // makes people wonder where it went.
-      var addNote = document.getElementById("passkey-add-unsupported");
-      if (addNote) addNote.hidden = canAdd || !payload.passkeys_enabled;
-    }
-    if (stepVerify) stepVerify.hidden = true;
-    if (stepDone) stepDone.hidden = false;
-    if (finishBtn) finishBtn.focus();
-  }
-
-  function submitTotp() {
-    if (busy || !form) return;
-    var code = collectTotp();
-    if (code.length !== 6) return;
-    busy = true;
-    show(verifyError, "");
-    setLoading(verifyBtn, true, "Verifying\\u2026");
-
-    var body = new URLSearchParams(new FormData(form));
-    body.set("totp", code);
-    fetch("/oauth/authorize", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "X-BeaconMCP-Mode": "json"
-      },
-      body: body.toString()
-    }).then(function(res) {
-      return res.json().catch(function() { return {}; }).then(function(data) {
-        return { ok: res.ok, data: data };
-      });
-    }).then(function(res) {
-      busy = false;
-      setLoading(verifyBtn, false);
-      if (res.ok && res.data && res.data.ok) { showDone(res.data); return; }
-      show(verifyError, (res.data && res.data.error) || "Authorization failed.");
-      clearTotp();
-    }).catch(function() {
-      busy = false;
-      setLoading(verifyBtn, false);
-      show(verifyError, "Network error. Try again.");
-      refresh();
-    });
-  }
-
-  if (form) {
-    form.addEventListener("submit", function(e) {
-      e.preventDefault();
-      submitTotp();
-    });
-  }
-
-  // --- passkey instead of a code ---
-  if (passkeyBlock) {
-    var canUse = passkeysEnabled && webauthnSupported();
-    passkeyBlock.hidden = !canUse;
-    var note = document.getElementById("passkey-unsupported");
-    if (note) note.hidden = canUse || !passkeysEnabled;
-  }
-
-  if (passkeyBtn) {
-    passkeyBtn.addEventListener("click", function() {
-      if (busy || !form) return;
-      busy = true;
-      show(verifyError, "");
-      setLoading(passkeyBtn, true, "Waiting for your passkey\\u2026");
-      if (verifyBtn) verifyBtn.disabled = true;
-
-      var params = {};
-      new FormData(form).forEach(function(v, k) { params[k] = v; });
-      postJson("/oauth/passkey/options", { client_id: clientId }).then(function(res) {
-        if (!res.ok || !res.data.ok) {
-          throw new Error(res.data.error || "Passkey sign-in unavailable.");
-        }
-        var options = Object.assign({}, res.data.options);
-        options.challenge = b64urlToBuf(res.data.options.challenge);
-        options.allowCredentials = descriptors(res.data.options.allowCredentials);
-        return navigator.credentials.get({ publicKey: options }).then(function(cred) {
-          if (!cred) throw new Error("No passkey was selected.");
-          return postJson("/oauth/passkey/verify", {
-            state: res.data.state,
-            params: params,
-            credential: {
-              id: cred.id,
-              rawId: bufToB64url(cred.rawId),
-              type: cred.type,
-              clientExtensionResults: cred.getClientExtensionResults ? cred.getClientExtensionResults() : {},
-              response: {
-                clientDataJSON: bufToB64url(cred.response.clientDataJSON),
-                authenticatorData: bufToB64url(cred.response.authenticatorData),
-                signature: bufToB64url(cred.response.signature),
-                userHandle: cred.response.userHandle ? bufToB64url(cred.response.userHandle) : null
-              }
-            }
-          });
-        });
-      }).then(function(res) {
-        busy = false;
-        setLoading(passkeyBtn, false);
-        refresh();
-        if (res.ok && res.data && res.data.ok) { showDone(res.data); return; }
-        show(verifyError, (res.data && res.data.error) || "Passkey rejected.");
-      }).catch(function(err) {
-        busy = false;
-        setLoading(passkeyBtn, false);
-        refresh();
-        show(verifyError, describeError(err));
-      });
-    });
-  }
-
-  // --- enrol a passkey right after approving ---
-  if (addPasskeyBtn) {
-    addPasskeyBtn.addEventListener("click", function() {
-      show(doneError, "");
-      show(doneOk, "");
-      setLoading(addPasskeyBtn, true, "Follow your device prompt\\u2026");
-      var ticket = ticketInput ? ticketInput.value : "";
-
-      postJson("/oauth/passkey/register/options", { ticket: ticket }).then(function(res) {
-        if (!res.ok || !res.data.ok) {
-          throw new Error(res.data.error || "Could not start registration.");
-        }
-        var options = Object.assign({}, res.data.options);
-        options.challenge = b64urlToBuf(res.data.options.challenge);
-        options.user = Object.assign({}, res.data.options.user, {
-          id: b64urlToBuf(res.data.options.user.id)
-        });
-        options.excludeCredentials = descriptors(res.data.options.excludeCredentials);
-        return navigator.credentials.create({ publicKey: options }).then(function(cred) {
-          if (!cred) throw new Error("No credential was created.");
-          var payload = {
-            id: cred.id,
-            rawId: bufToB64url(cred.rawId),
-            type: cred.type,
-            clientExtensionResults: cred.getClientExtensionResults ? cred.getClientExtensionResults() : {},
-            response: {
-              clientDataJSON: bufToB64url(cred.response.clientDataJSON),
-              attestationObject: bufToB64url(cred.response.attestationObject)
-            }
-          };
-          if (cred.response.getTransports) {
-            try { payload.response.transports = cred.response.getTransports(); } catch (e) {}
-          }
-          return postJson("/oauth/passkey/register/verify", {
-            ticket: ticket, state: res.data.state, credential: payload
-          });
-        });
-      }).then(function(res) {
-        setLoading(addPasskeyBtn, false);
-        if (res.ok && res.data && res.data.ok) {
-          show(doneOk, "Passkey \\u201c" + res.data.passkey.label +
-               "\\u201d registered. Next time you can skip the 2FA code.");
-          addPasskeyBtn.disabled = true;
-          var hint = document.getElementById("passkey-add-hint");
-          if (hint) hint.hidden = true;
-          return;
-        }
-        show(doneError, (res.data && res.data.error) || "Registration failed.");
-      }).catch(function(err) {
-        setLoading(addPasskeyBtn, false);
-        show(doneError, describeError(err));
-      });
-    });
-  }
-
-  if (finalizeForm) {
-    finalizeForm.addEventListener("submit", function() {
-      setLoading(finishBtn, true, "Redirecting\\u2026");
-    });
-  }
-
-  if (inputs[0] && !inputs[0].disabled && stepDone && stepDone.hidden) inputs[0].focus();
-})();
-"""
-
-
 def _run_http(mcp, host: str, port: int, *, serve: bool = True):
     """Run the MCP server over Streamable HTTP with OAuth client credentials.
 
@@ -1200,6 +581,8 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
 
     from . import audit
     from . import auth
+    from . import oauth_ui
+    from .client_identity import LogoResolver, identify
     from . import transfers
     from .auth import (
         TOTP_REPLAY_MESSAGE,
@@ -1308,6 +691,7 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
     # next lookup and hands us the survivors.
     client_store.on_clients_removed = token_store.prune_unknown_clients
     code_store = CodeStore()
+    logo_resolver = LogoResolver(clients_path.parent / "logo-cache")
 
     # Shared dashboard SQLite handle. Three features live in it -- sessions,
     # DCR bootstrap slugs and passkeys -- and /oauth/authorize wants the
@@ -1546,7 +930,6 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         elif error:
             banner = f'<div class="banner">{html.escape(error)}</div>'
 
-        disabled = "disabled" if locked else ""
         approved = ticket is not None
         passkeys_on = _authorize_passkeys_enabled(request, client_id)
 
@@ -1557,110 +940,35 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
                 _dt.datetime.fromtimestamp(ts).strftime("%d %b %Y at %H:%M")
             )
 
-        page = f"""<!doctype html>
-<html lang="en" data-theme="light">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BeaconMCP &middot; Authorize</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<style>{_AUTHORIZE_CSS}</style>
-<script>{_AUTHORIZE_THEME_JS}</script>
-</head>
-<body>
-<div class="auth-card"
-     data-passkeys="{'true' if passkeys_on else 'false'}"
-     data-client-id="{html.escape(client_id)}">
-  <div class="auth-brand"><span class="name">BeaconMCP</span></div>
-
-  <section id="step-verify"{' hidden' if approved else ''}>
-    <h1>Authorize access</h1>
-    <p class="sub">Enter the 6-digit code from your authenticator to grant access to <strong>{html.escape(client_name)}</strong>.</p>
-    {banner}
-    <div class="toast-banner">
-      <span class="dot"></span>
-      Client: <b>{html.escape(client_id)}</b>
-    </div>
-    <div class="banner" id="verify-error" hidden></div>
-    <form method="POST" action="/oauth/authorize" id="authorize-form">
-{hidden}
-      <div class="totp-inputs" id="totp-inputs">
-        <input maxlength="1" inputmode="numeric" aria-label="Digit 1" {disabled}>
-        <input maxlength="1" inputmode="numeric" aria-label="Digit 2" {disabled}>
-        <input maxlength="1" inputmode="numeric" aria-label="Digit 3" {disabled}>
-        <input maxlength="1" inputmode="numeric" aria-label="Digit 4" {disabled}>
-        <input maxlength="1" inputmode="numeric" aria-label="Digit 5" {disabled}>
-        <input maxlength="1" inputmode="numeric" aria-label="Digit 6" {disabled}>
-      </div>
-      <input type="hidden" name="totp" id="totp" pattern="\\d{{6}}" required>
-      <button type="submit" class="btn-primary" id="verify-btn" {disabled} disabled>
-        <span class="btn-label">Verify and authorize</span>
-        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>
-      </button>
-    </form>
-    <div id="passkey-block" hidden>
-      <div class="alt-divider"><span>or</span></div>
-      <button type="button" class="btn-ghost" id="passkey-btn" {disabled}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="8" r="4"/><path d="M10.9 13.1A6 6 0 0 0 4 19v1h7"/><path d="M17.5 12a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z"/><path d="M17.5 17v4l1.5-1.2 1.5 1.2v-4"/></svg>
-        <span class="btn-label">Use a passkey instead</span>
-      </button>
-      <p class="hint">Skip the 6-digit code with a passkey registered on this device.</p>
-    </div>
-    <p class="hint" id="passkey-unsupported" hidden>
-      This browser can't use passkeys here &mdash; they require HTTPS (or a
-      localhost address).
-    </p>
-  </section>
-
-  <section id="step-done"{'' if approved else ' hidden'}>
-    <div class="success-mark" aria-hidden="true">
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>
-    </div>
-    <h1>Two-factor confirmed</h1>
-    <p class="sub">You're about to grant <strong>{html.escape(client_name)}</strong> access to this BeaconMCP server.</p>
-    <div class="banner" id="done-error" hidden></div>
-    <div class="banner banner-success" id="done-ok" hidden></div>
-
-    <dl class="expiry-card">
-      <div class="expiry-row">
-        <dt>Access expires</dt>
-        <dd id="access-expiry">{_fmt(access_expires_at)}</dd>
-      </div>
-      <div class="expiry-row">
-        <dt>This approval expires</dt>
-        <dd id="ticket-expiry">{_fmt(ticket_expires_at)}</dd>
-      </div>
-    </dl>
-    <p class="hint">The client will have to go through two-factor again once its access expires.</p>
-
-    <div id="passkey-add-block" hidden>
-      <button type="button" class="btn-ghost" id="add-passkey-btn">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="8" r="4"/><path d="M10.9 13.1A6 6 0 0 0 4 19v1h7"/><path d="M18 13v6M15 16h6"/></svg>
-        <span class="btn-label">Add a passkey</span>
-      </button>
-      <p class="hint" id="passkey-add-hint">Register this device so next time you can skip the 2FA code.</p>
-    </div>
-    <p class="hint" id="passkey-add-unsupported" hidden>
-      This browser can't register a passkey here &mdash; they require HTTPS
-      (or a localhost address).
-    </p>
-
-    <form method="POST" action="/oauth/authorize/finalize" id="finalize-form">
-      <input type="hidden" name="ticket" id="ticket" value="{html.escape(ticket or '')}">
-      <button type="submit" class="btn-primary" id="finish-btn">
-        <span class="btn-label">Finish signing in</span>
-        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-      </button>
-    </form>
-  </section>
-</div>
-<script>{_AUTHORIZE_JS}</script>
-</body>
-</html>
-"""
-        return HTMLResponse(page)
+        redirect_uri = normalized.get("redirect_uri", "")
+        client = client_store.get(client_id)
+        identity = identify(redirect_uri=redirect_uri, registered_name=client_name)
+        logo_url = logo_resolver.url_for(
+            identity,
+            logo_uri=(client.logo_uri or "") if client else "",
+            website_url=(client.client_uri or "") if client else "",
+        )
+        page = oauth_ui.render_authorize_page(
+            host=request.headers.get("x-forwarded-host", request.headers.get("host", "localhost")),
+            client_id=client_id,
+            client_name=identity.name if identity.key else client_name,
+            logo_url=logo_url,
+            redirect_uri=redirect_uri,
+            kinds=oauth_ui.capability_kinds(
+                proxmox=bool(config.pve_nodes),
+                bmc=bool(config.bmc_devices),
+                ssh=bool(config.ssh and config.ssh.hosts),
+            ),
+            hidden_inputs=hidden,
+            banner=banner,
+            locked=locked,
+            approved=approved,
+            passkeys_on=passkeys_on,
+            ticket=ticket or "",
+            access_expiry=_fmt(access_expires_at),
+            ticket_expiry=_fmt(ticket_expires_at),
+        )
+        return HTMLResponse(page, headers=oauth_ui.SECURITY_HEADERS)
 
     def _authorize_redirect(normalized: dict[str, str]) -> Response:
         """Mint the authorization code and bounce back to the OAuth client."""
@@ -2146,6 +1454,10 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         if path.startswith("/oauth/passkey/"):
             return await call_next(request)
 
+        # Client logos shown on the authorize page: public images.
+        if path.startswith("/oauth/logo/"):
+            return await call_next(request)
+
         # Dashboard routes have their own session-based auth.
         if path.startswith("/app/"):
             return await call_next(request)
@@ -2296,11 +1608,19 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
                 status_code=400,
             )
 
+        def _https_meta(key: str) -> str | None:
+            value = body.get(key) if isinstance(body, dict) else None
+            if isinstance(value, str) and value.startswith("https://") and len(value) <= 2048:
+                return value
+            return None
+
         try:
             new_client_id, new_client_secret = client_store.create_dynamic(
                 owner_client_id=row.owner_client_id,
                 name=f"{row.label} ({client_name})"[:120],
                 registration_source=f"chatgpt:{slug}",
+                logo_uri=_https_meta("logo_uri"),
+                client_uri=_https_meta("client_uri"),
             )
         except ValueError:
             return JSONResponse({"error": "invalid_client_metadata"}, status_code=400)
@@ -2425,6 +1745,7 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
                 transfers.make_upload_endpoint(tuple(config.server.trusted_proxies)),
                 methods=["PUT", "POST"],
             ),
+            *logo_resolver.routes(),
             *dcr_routes,
             *dashboard_routes,
             Mount("/", app=mcp_app),

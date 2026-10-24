@@ -200,6 +200,9 @@ class Client:
     # CLI-provisioned clients; ``"chatgpt:<slug>"`` for DCR-created ones.
     # Used by the dashboard to group and revoke derived clients.
     registration_source: str | None = None
+    # RFC 7591 metadata a DCR client may send; display only
+    logo_uri: str | None = None
+    client_uri: str | None = None
 
 
 @dataclass
@@ -403,6 +406,8 @@ class ClientStore:
                     totp_secret=c.get("totp_secret", ""),
                     owner_client_id=c.get("owner_client_id"),
                     registration_source=c.get("registration_source"),
+                    logo_uri=c.get("logo_uri"),
+                    client_uri=c.get("client_uri"),
                 )
             except (KeyError, TypeError):
                 revoked.append(f"{c.get('client_id', '?')} ({c.get('name', '?')})")
@@ -430,6 +435,8 @@ class ClientStore:
                     "totp_secret": c.totp_secret,
                     "owner_client_id": c.owner_client_id,
                     "registration_source": c.registration_source,
+                    **({"logo_uri": c.logo_uri} if c.logo_uri else {}),
+                    **({"client_uri": c.client_uri} if c.client_uri else {}),
                 }
                 for c in self._clients.values()
             ]
@@ -611,6 +618,8 @@ class ClientStore:
         owner_client_id: str,
         name: str,
         registration_source: str,
+        logo_uri: str | None = None,
+        client_uri: str | None = None,
     ) -> tuple[str, str]:
         """Provision a derived OAuth client for DCR.
 
@@ -632,6 +641,8 @@ class ClientStore:
                 totp_secret="",
                 owner_client_id=owner_client_id,
                 registration_source=registration_source,
+                logo_uri=logo_uri,
+                client_uri=client_uri,
             )
             self._save()
         return client_id, client_secret
