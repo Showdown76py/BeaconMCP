@@ -168,6 +168,9 @@ class ServerConfig:
     # default (24 h); ``0`` (never expires) is rejected. The
     # BEACONMCP_REFRESH_TOKEN_TTL env var overrides this.
     refresh_token_ttl: int | None = None
+    # Tools that ask for a yes/no confirmation through form elicitation when
+    # the client supports it. ``None`` means confirm.DEFAULT_CONFIRM_TOOLS.
+    confirm_tools: list[str] | None = None
 
 
 @dataclass
@@ -587,6 +590,11 @@ class Config:
                 if srv_raw.get("refresh_token_ttl") is not None
                 else None
             ),
+            confirm_tools=(
+                [str(t) for t in srv_raw["confirm_tools"]]
+                if isinstance(srv_raw.get("confirm_tools"), list)
+                else None
+            ),
         )
         if server.named_token_ttl is not None and server.named_token_ttl < 0:
             raise ConfigError(
@@ -768,6 +776,10 @@ class Config:
                     "(default: 24 h)"
                     if self.server.refresh_token_ttl is None
                     else self.server.refresh_token_ttl
+                ),
+                "confirm_tools": (
+                    "(default list)" if self.server.confirm_tools is None
+                    else self.server.confirm_tools
                 ),
             },
             "proxmox": {

@@ -102,6 +102,14 @@ server:
   # env var overrides this.
   # refresh_token_ttl: 86400
 
+  # Sensitive tools that ask "are you sure?" through MCP form elicitation
+  # when the client supports it (Claude Code does; claude.ai and Cowork
+  # don't yet, there they run as before). Default:
+  # [bmc_power_off, bmc_power_reset, proxmox_snapshot_rollback,
+  #  proxmox_snapshot_delete, proxmox_backup_restore (force only),
+  #  beaconmcp_self_update]
+  # confirm_tools: [bmc_power_off, bmc_power_reset]
+
 # -------- Proxmox capability (optional) ------------------------------------
 # Delete this section if you have no Proxmox cluster. Tools starting with
 # `proxmox_` won't be registered.

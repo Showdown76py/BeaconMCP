@@ -6,7 +6,7 @@ from pathlib import Path
 
 import anyio
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.shared.exceptions import MCPError
@@ -28,7 +28,7 @@ from .ssh.tools import register_ssh_tools
 
 from functools import partial, wraps
 import time
-from . import audit
+from . import audit, confirm
 from .auth import current_client_id
 from .metrics import tool_calls, tool_latency_ms
 
@@ -161,6 +161,18 @@ mcp = MCPServer(
 # exception becomes a generic "Error executing tool X" and the text stays
 # server-side. We therefore convert unexpected exceptions to ``ToolError``.
 _orig_tool = mcp.tool
+
+# mcp 2.x hands the request Context only to tools that declare a parameter
+# annotated with it; every wrapper declares this hidden one (kept out of the
+# input schema by the SDK) so sensitive tools can ask for a confirmation
+_CTX_KW = "_beacon_ctx"
+
+_confirm_tools = frozenset(
+    config.server.confirm_tools
+    if config.server.confirm_tools is not None
+    else confirm.DEFAULT_CONFIRM_TOOLS
+)
+
 def _metric_tool(*args, **kwargs):
     def decorator(func):
         tool_name = func.__name__
@@ -170,7 +182,15 @@ def _metric_tool(*args, **kwargs):
         async def wrapper(*f_args, **f_kwargs):
             start = time.monotonic()
             status = "ok"
+            ctx = f_kwargs.pop(_CTX_KW, None)
             try:
+                try:
+                    f_kwargs = await confirm.confirm_destructive(
+                        ctx, tool_name, f_kwargs, _confirm_tools,
+                    )
+                except ToolError:
+                    status = "declined"
+                    raise
                 if is_coro:
                     return await func(*f_args, **f_kwargs)
                 return await anyio.to_thread.run_sync(
@@ -180,7 +200,8 @@ def _metric_tool(*args, **kwargs):
                 status = "cancelled"
                 raise
             except (ToolError, MCPError):
-                status = "error"
+                if status == "ok":
+                    status = "error"
                 raise
             except Exception as e:
                 status = "error"
@@ -195,6 +216,7 @@ def _metric_tool(*args, **kwargs):
                     client_id=current_client_id(), args=audit.compact_args(f_kwargs),
                 )
 
+        wrapper.__annotations__ = {**getattr(func, "__annotations__", {}), _CTX_KW: Context}
         return _orig_tool(*args, **kwargs)(wrapper)
     return decorator
 mcp.tool = _metric_tool

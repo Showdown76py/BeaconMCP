@@ -739,3 +739,13 @@ def test_server_named_token_ttl_zero_and_negative(
     # Negatives are nonsense -- fail fast with the offending key.
     with pytest.raises(ConfigError, match="named_token_ttl"):
         Config.load(config_path=_write(tmp_path / "neg.yaml", base.format(value=-5)))
+
+
+def test_confirm_tools_default_and_override(tmp_path: Path) -> None:
+    base = "version: 1\nssh:\n  hosts:\n    - name: v\n      host: 198.51.100.10\n      user: root\n      password: pw\n"
+    cfg = Config.load(config_path=_write(tmp_path / "a.yaml", base))
+    assert cfg.server.confirm_tools is None
+    cfg = Config.load(config_path=_write(
+        tmp_path / "b.yaml", base + "server:\n  confirm_tools: [bmc_power_off]\n",
+    ))
+    assert cfg.server.confirm_tools == ["bmc_power_off"]
