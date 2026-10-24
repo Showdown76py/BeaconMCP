@@ -28,7 +28,7 @@ import time
 
 from mcp.server.fastmcp.exceptions import ToolError
 
-from . import audit, reauth
+from . import audit, confirm, reauth
 from .auth import current_client_id
 from .metrics import tool_calls, tool_latency_ms
 
@@ -148,6 +148,13 @@ mcp = FastMCP(
 _orig_tool = mcp.tool
 
 
+_confirm_tools = frozenset(
+    config.server.confirm_tools
+    if config.server.confirm_tools is not None
+    else confirm.DEFAULT_CONFIRM_TOOLS
+)
+
+
 def _request_ctx():
     """FastMCP context of the in-flight tool call, or None outside one."""
     try:
@@ -166,10 +173,18 @@ def _metric_tool(*args, **kwargs):
             start = time.monotonic()
             status = "ok"
             try:
+                ctx = _request_ctx()
                 try:
-                    await reauth.gate_tool_call(_request_ctx(), tool_name, f_kwargs)
+                    await reauth.gate_tool_call(ctx, tool_name, f_kwargs)
                 except ToolError:
                     status = "reauth"
+                    raise
+                try:
+                    f_kwargs = await confirm.confirm_destructive(
+                        ctx, tool_name, f_kwargs, _confirm_tools,
+                    )
+                except ToolError:
+                    status = "declined"
                     raise
                 if is_coro:
                     return await func(*f_args, **f_kwargs)

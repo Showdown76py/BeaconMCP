@@ -243,7 +243,7 @@ class _Verified(BaseModel):
     verified: bool = Field(default=False, description="I've verified in the browser")
 
 
-def _elicit_modes(ctx: Any, info: ClientSessionInfo | None) -> tuple[bool, bool]:
+def elicit_modes(ctx: Any, info: ClientSessionInfo | None) -> tuple[bool, bool]:
     """(form, url) support for this session, from its initialize params."""
     try:
         elicitation = ctx.request_context.session.client_params.capabilities.elicitation
@@ -282,7 +282,7 @@ async def gate_tool_call(ctx: Any, tool: str, args: dict) -> None:
     if at is None or not session_lapsed(at, rt.session_ttl):
         return
 
-    form, url_mode = _elicit_modes(ctx, rt.registry.get(thash))
+    form, url_mode = elicit_modes(ctx, rt.registry.get(thash))
     entry, created = request_reverify(
         rt, thash=thash, at=at, tool=tool, args=args,
         ip=client_ip(request, rt.trusted_proxies),
