@@ -184,3 +184,50 @@ def test_no_runtime_passthrough(env) -> None:
 
 def test_session_info_dataclass_defaults() -> None:
     assert not ClientSessionInfo().can_elicit
+
+
+def _chunked(token: str, chunks: list[bytes]):
+    """Drive the app directly with a body split like uvicorn does."""
+    import asyncio
+
+    sent: list[dict] = []
+    queue = [{"type": "http.request", "body": c, "more_body": i < len(chunks) - 1}
+             for i, c in enumerate(chunks)]
+
+    async def receive():
+        return queue.pop(0) if queue else {"type": "http.disconnect"}
+
+    async def send(msg):
+        sent.append(msg)
+
+    scope = {"type": "http", "method": "POST", "path": "/mcp", "raw_path": b"/mcp",
+             "query_string": b"", "headers": [(b"authorization", f"Bearer {token}".encode())],
+             "client": ("127.0.0.1", 1), "server": ("t", 80), "scheme": "http"}
+    asyncio.run(McpGateApp(_echo, resource_metadata_for=lambda r: META)(scope, receive, send))
+    return sent[0]["status"]
+
+
+def test_oversized_body_on_lapsed_session_fails_closed(env) -> None:
+    _, store, _ = env
+    token, _ = store.issue_interactive("c1")
+    _lapse(store, token)
+    rpc = json.dumps(_rpc("resources/read", {"uri": "beaconmcp://infrastructure"})).encode()
+    padded = rpc + b" " * (2 * 1024 * 1024)
+    chunks = [padded[i:i + 65536] for i in range(0, len(padded), 65536)]
+    assert _chunked(token, chunks) == 401
+
+
+def test_oversized_body_on_fresh_session_passes(env) -> None:
+    _, store, _ = env
+    token, _ = store.issue_interactive("c1")
+    body = b" " * (2 * 1024 * 1024)
+    assert _chunked(token, [body[i:i + 65536] for i in range(0, len(body), 65536)]) == 200
+
+
+def test_unparseable_body_on_lapsed_session_fails_closed(env) -> None:
+    client, store, _ = env
+    token, _ = store.issue_interactive("c1")
+    _post(client, token, _init({"elicitation": {"url": {}}}))
+    _lapse(store, token)
+    res = client.post("/mcp", content=b"{not json", headers={"authorization": f"Bearer {token}"})
+    assert res.status_code == 401

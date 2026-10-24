@@ -157,3 +157,14 @@ def test_dcr_stores_logo_and_client_uri(tmp_path: Path) -> None:
     reloaded = ClientStore(tmp_path / "clients.json").get(cid)
     assert reloaded.logo_uri == "https://ohmypi.dev/logo.png"
     assert reloaded.client_uri == "https://ohmypi.dev"
+
+
+def test_cache_is_bounded(tmp_path: Path, monkeypatch) -> None:
+    import beaconmcp.client_identity as ci
+
+    monkeypatch.setattr(ci, "_MAX_CACHED_LOGOS", 3)
+    r = LogoResolver(tmp_path)
+    for i in range(6):
+        uri = "data:image/png;base64," + base64.b64encode(PNG + bytes([i])).decode()
+        r.url_for(ClientIdentity(None, "x"), declared_icons=[uri])
+    assert len(list(tmp_path.iterdir())) == 3

@@ -179,7 +179,7 @@ def build_reverify_routes(deps: ReverifyDeps) -> list[Route]:
             logo_url=deps.logo_url_for(identity, info, entry.client_id), registered_name=registered,
             info=info, passkeys_on=deps.passkeys_enabled(request),
             session_ttl=deps.session_ttl, **kw,
-        ), status_code=status)
+        ), status_code=status, headers=oauth_ui.SECURITY_HEADERS)
 
     def _gone(request: Request) -> Response:
         if _wants_json(request):
@@ -187,7 +187,9 @@ def build_reverify_routes(deps: ReverifyDeps) -> list[Route]:
                 {"ok": False, "error": "This link has expired. Retry the request in your client."},
                 status_code=410,
             )
-        return HTMLResponse(_gone_page(_host(request)), status_code=410)
+        return HTMLResponse(
+            _gone_page(_host(request)), status_code=410, headers=oauth_ui.SECURITY_HEADERS,
+        )
 
     def _limited(request: Request) -> Response | None:
         ip = client_ip(request, deps.trusted_proxies)

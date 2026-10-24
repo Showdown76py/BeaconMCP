@@ -171,3 +171,10 @@ def test_passkeys_disabled_hides_button(env) -> None:
     page = env.client.get(f"/oauth/reverify?id={env.entry.id}").text
     assert 'id="passkey-btn" hidden' in page
     assert 'id="totp-block">' in page
+
+
+def test_pages_refuse_framing(env) -> None:
+    for res in (env.client.get(f"/oauth/reverify?id={env.entry.id}"),
+                env.client.get("/oauth/reverify?id=nope")):
+        assert res.headers["x-frame-options"] == "DENY"
+        assert "frame-ancestors 'none'" in res.headers["content-security-policy"]

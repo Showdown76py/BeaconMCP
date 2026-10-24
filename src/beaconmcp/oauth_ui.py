@@ -745,6 +745,16 @@ def totp_boxes(disabled: bool = False) -> str:
     ) + "</div>"
 
 
+# the auth pages must never render inside someone else's frame: a framed
+# reverify page would let a stolen bearer trick its owner into verifying it
+SECURITY_HEADERS = {
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": "frame-ancestors 'none'",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+}
+
+
 def page(title: str, body: str, *, script: str = "") -> str:
     """Full HTML document around ``body`` (already escaped by the caller)."""
     tail = f"<script>{script}</script>" if script else ""

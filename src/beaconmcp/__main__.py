@@ -534,6 +534,9 @@ def _run_http(mcp, host: str, port: int):
     )
     code_store = CodeStore()
     logo_resolver = LogoResolver(clients_path.parent / "logo-cache")
+    # `beaconmcp auth revoke` edits clients.json offline: drop the bearers of
+    # clients that no longer exist, as a restart did before they persisted
+    token_store.drop_interactive_unless(client_store.exists)
 
     # Shared dashboard SQLite handle. Three features live in it -- sessions,
     # DCR bootstrap slugs and passkeys -- and /oauth/authorize wants the
@@ -817,7 +820,7 @@ def _run_http(mcp, host: str, port: int):
             access_expiry=_fmt(access_expires_at),
             ticket_expiry=_fmt(ticket_expires_at),
         )
-        return HTMLResponse(page)
+        return HTMLResponse(page, headers=oauth_ui.SECURITY_HEADERS)
 
     def _authorize_redirect(normalized: dict[str, str]) -> Response:
         """Mint the authorization code and bounce back to the OAuth client."""

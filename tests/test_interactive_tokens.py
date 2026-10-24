@@ -94,3 +94,13 @@ def test_expired_interactive_rejected() -> None:
     store.get_interactive(token).expires_at = time.time() - 1
     assert store.validate(token) is None
     assert store.get_interactive(token) is None
+
+
+def test_drop_interactive_unless(tmp_path: Path) -> None:
+    db = tmp_path / "tokens.db"
+    store = TokenStore(db_path=db)
+    keep, _ = store.issue_interactive("alive")
+    gone, _ = store.issue_interactive("revoked")
+    assert store.drop_interactive_unless(lambda cid: cid == "alive") == 1
+    assert store.validate(gone) is None and store.validate(keep) == "alive"
+    assert TokenStore(db_path=db).validate(gone) is None

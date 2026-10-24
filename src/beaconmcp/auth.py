@@ -25,7 +25,7 @@ import secrets
 import sqlite3
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import Enum
@@ -741,6 +741,15 @@ class TokenStore:
             entry.verified_at = time.time() if at is None else at
             self._persist_interactive(thash, entry)
             return True
+
+    def drop_interactive_unless(self, keep: Callable[[str], bool]) -> int:
+        """Remove interactive bearers whose client fails ``keep``."""
+        with self._lock:
+            gone = [h for h, at in self._interactive.items() if not keep(at.client_id)]
+            for h in gone:
+                del self._interactive[h]
+                self._unpersist_interactive(h)
+            return len(gone)
 
     def revoke_hash(self, thash: str) -> bool:
         """Revoke an interactive bearer by hash, with the usual grace period."""

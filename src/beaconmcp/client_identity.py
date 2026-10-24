@@ -126,6 +126,9 @@ _SI_ALIASES: dict[str, str] = {
 _MAX_LOGO_BYTES = 256 * 1024
 _CACHE_TTL = 7 * 86400
 _NEGATIVE_TTL = 3600
+# anyone with a bearer can make the server cache icons: keep it bounded
+_MAX_CACHED_LOGOS = 200
+_MAX_FAILED = 1000
 _RASTER_TYPES = {
     "png": "image/png", "jpg": "image/jpeg", "webp": "image/webp", "ico": "image/x-icon",
 }
@@ -275,6 +278,9 @@ class LogoResolver:
         if self._cache_dir is None:
             return None
         self._cache_dir.mkdir(parents=True, exist_ok=True)
+        files = sorted(self._cache_dir.iterdir(), key=lambda p: p.stat().st_mtime)
+        for stale in files[: max(0, len(files) - _MAX_CACHED_LOGOS + 1)]:
+            stale.unlink(missing_ok=True)
         key = self._key(url)
         (self._cache_dir / f"{key}.{ext}").write_bytes(data)
         return f"/oauth/logo/cached/{key}.{ext}"
@@ -309,6 +315,8 @@ class LogoResolver:
             data, ext = await self._fetch(url)
             self._store(url, data, ext)
         except Exception:  # noqa: BLE001 -- any failure just means "no logo"
+            if len(self._failed) >= _MAX_FAILED:
+                self._failed.clear()
             self._failed[url] = time.time()
         finally:
             self._inflight.discard(url)

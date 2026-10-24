@@ -34,6 +34,7 @@ class FakeCtx:
             ),
             session=self.session,
         )
+        self.request_id = 7
         self.url_calls: list[dict] = []
         self.form_calls: list[str] = []
         self.completed: list[str] = []
@@ -41,7 +42,7 @@ class FakeCtx:
         self._result = result
 
     async def _complete(self, pid, related_request_id=None):
-        self.completed.append(pid)
+        self.completed.append((pid, related_request_id))
 
     async def elicit_url(self, message, url, elicitation_id):
         self.url_calls.append({"message": message, "url": url, "id": elicitation_id})
@@ -102,7 +103,7 @@ async def test_url_client_elicits_then_runs_after_complete(env) -> None:
     call = ctx.url_calls[0]
     assert call["url"] == f"https://beacon.test/oauth/reverify?id={call['id']}"
     assert "proxmox_vm_start" in call["message"]
-    assert ctx.completed == [call["id"]]
+    assert ctx.completed == [(call["id"], 7)]
     assert ctx.form_calls == []
 
 
@@ -143,10 +144,15 @@ async def test_concurrent_calls_share_pending(env) -> None:
         await asyncio.sleep(0.01)
         if ctx.url_calls:
             break
-    assert len(ctx.url_calls) == 1
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if len(ctx.url_calls) == 2:
+            break
+    # each call prompts, both with the same link
+    assert len(ctx.url_calls) == 2
+    assert ctx.url_calls[0]["id"] == ctx.url_calls[1]["id"]
     _verifier(rt, store, token)(ctx.url_calls[0]["id"])
     await asyncio.gather(first, second)
-    assert len(ctx.url_calls) == 1
 
 
 async def test_late_verify_then_retry_runs(env) -> None:
@@ -161,12 +167,27 @@ async def test_late_verify_then_retry_runs(env) -> None:
     assert retry.url_calls == []
 
 
-async def test_decline_still_waits_then_errors(env) -> None:
+async def test_decline_errors_immediately(env) -> None:
     rt, store, token = env
+    rt.hold_timeout = 5
     _lapse(store, token)
     ctx = FakeCtx(token, URL, result="decline")
+    start = time.monotonic()
+    with pytest.raises(ToolError, match="oauth/reverify"):
+        await gate_tool_call(ctx, "a", {})
+    assert time.monotonic() - start < 1
+
+
+async def test_retry_after_timeout_prompts_again(env) -> None:
+    rt, store, token = env
+    _lapse(store, token)
+    ctx = FakeCtx(token, URL)
     with pytest.raises(ToolError):
         await gate_tool_call(ctx, "a", {})
+    with pytest.raises(ToolError):
+        await gate_tool_call(ctx, "a", {})
+    assert len(ctx.url_calls) == 2
+    assert ctx.url_calls[0]["id"] == ctx.url_calls[1]["id"]
 
 
 async def test_verify_while_elicitation_pending_is_seen(env) -> None:
@@ -195,11 +216,18 @@ async def test_named_token_untouched(env) -> None:
     await gate_tool_call(FakeCtx(named, URL), "a", {})
 
 
-async def test_no_request_context_is_noop(env) -> None:
+async def test_no_request_context_fails_closed(env) -> None:
     class NoReq:
         @property
         def request_context(self):
             raise ValueError("outside request")
 
-    await gate_tool_call(NoReq(), "a", {})
+    with pytest.raises(ToolError):
+        await gate_tool_call(NoReq(), "a", {})
+    with pytest.raises(ToolError):
+        await gate_tool_call(None, "a", {})
+
+
+async def test_no_runtime_is_noop(env) -> None:
+    reauth.configure(None)
     await gate_tool_call(None, "a", {})

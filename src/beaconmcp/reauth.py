@@ -266,14 +266,16 @@ async def gate_tool_call(ctx: Any, tool: str, args: dict) -> None:
     Raises :class:`ToolError` with the link when that doesn't happen.
     """
     rt = runtime()
-    if rt is None or ctx is None:
+    if rt is None:
         return
     try:
         request = ctx.request_context.request
     except (AttributeError, ValueError, LookupError):
-        return
+        request = None
+    # with re-auth on, every tool call arrives over HTTP: no request means a
+    # path we don't know, so refuse rather than run on an unchecked session
     if request is None:
-        return
+        raise ToolError("BeaconMCP could not check this session. Retry the request.")
     auth_header = request.headers.get("authorization", "")
     if not auth_header.startswith("Bearer "):
         return
@@ -283,7 +285,7 @@ async def gate_tool_call(ctx: Any, tool: str, args: dict) -> None:
         return
 
     form, url_mode = elicit_modes(ctx, rt.registry.get(thash))
-    entry, created = request_reverify(
+    entry, _ = request_reverify(
         rt, thash=thash, at=at, tool=tool, args=args,
         ip=client_ip(request, rt.trusted_proxies),
         user_agent=request.headers.get("user-agent", ""),
@@ -291,30 +293,39 @@ async def gate_tool_call(ctx: Any, tool: str, args: dict) -> None:
     link = reverify_url(rt.issuer_for(request), entry.id)
     message = f"Your BeaconMCP session expired. Verify it's you to run {tool}."
 
-    async def ask() -> None:
-        try:
-            if url_mode:
-                await ctx.elicit_url(message=message, url=link, elicitation_id=entry.id)
-            else:
-                await ctx.elicit(
-                    message=f"{message}\nOpen {link} then confirm here.",
-                    schema=_Verified,
-                )
-        except Exception:  # noqa: BLE001 -- the wait below still decides
-            _logger.debug("re-verify elicitation failed", exc_info=True)
-
     verified = False
     if form or url_mode:
         async with anyio.create_task_group() as tg:
-            # only the first call of a lapse prompts, the others just wait
-            if created:
-                tg.start_soon(ask)
+
+            async def ask() -> None:
+                try:
+                    if url_mode:
+                        result = await ctx.elicit_url(
+                            message=message, url=link, elicitation_id=entry.id,
+                        )
+                    else:
+                        result = await ctx.elicit(
+                            message=f"{message}\nOpen {link} then confirm here.",
+                            schema=_Verified,
+                        )
+                except Exception:  # noqa: BLE001 -- the wait still decides
+                    _logger.debug("re-verify elicitation failed", exc_info=True)
+                    return
+                # a dismissed prompt ends the hold now, the link stays valid
+                if getattr(result, "action", "accept") != "accept":
+                    tg.cancel_scope.cancel()
+
+            # every call prompts (same link): a retry after a timeout or a
+            # second window sharing the bearer must not hang silently
+            tg.start_soon(ask)
             verified = await rt.pending.wait(entry.id, rt.hold_timeout)
             tg.cancel_scope.cancel()
     if verified:
         if url_mode:
             try:
-                await ctx.request_context.session.send_elicit_complete(entry.id)
+                await ctx.request_context.session.send_elicit_complete(
+                    entry.id, related_request_id=ctx.request_id,
+                )
             except Exception:  # noqa: BLE001
                 _logger.debug("elicitation complete notification failed", exc_info=True)
         return
@@ -393,13 +404,16 @@ class McpGateApp:
                     ),
                 )
 
+        lapsed = session_lapsed(at, rt.session_ttl)
         gated = [m for m in messages if m.get("method") in GATED_METHODS]
-        if not gated or not session_lapsed(at, rt.session_ttl):
+        # a body we couldn't inspect (too big, not JSON) can't be cleared
+        uninspected = not complete or (body.strip() and not messages)
+        if not lapsed or (not gated and not uninspected):
             await self._inner(scope, replay, send)
             return
 
         info = rt.registry.get(thash)
-        if info is None or not info.can_elicit:
+        if uninspected or info is None or not info.can_elicit:
             meta = self._resource_metadata_for(request)
             response = JSONResponse(
                 {"error": "invalid_token",
