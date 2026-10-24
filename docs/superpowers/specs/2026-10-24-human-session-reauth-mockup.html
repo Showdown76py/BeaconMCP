@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BeaconMCP login remaster</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --accent: oklch(0.68 0.17 48);
+  --accent-soft: oklch(0.68 0.17 48 / 0.12);
+  --accent-softer: oklch(0.68 0.17 48 / 0.06);
+  --accent-border: oklch(0.68 0.17 48 / 0.35);
+  --accent-hover: oklch(0.62 0.18 48);
+  --accent-fg: #fff;
+  --bg: oklch(0.975 0.005 70);
+  --bg-soft: oklch(0.975 0.005 70);
+  --bg-softer: oklch(0.96 0.006 70);
+  --bg-elev: #fff;
+  --fg: oklch(0.22 0.01 70);
+  --fg-mid: oklch(0.42 0.008 70);
+  --fg-muted: oklch(0.55 0.008 70);
+  --fg-faint: oklch(0.7 0.006 70);
+  --border: oklch(0.92 0.006 70);
+  --border-strong: oklch(0.86 0.008 70);
+  --border-subtle: oklch(0.95 0.005 70);
+  --success: oklch(0.62 0.12 155);
+  --success-soft: oklch(0.62 0.12 155 / 0.12);
+  --warn: oklch(0.66 0.15 75);
+  --warn-soft: oklch(0.72 0.15 75 / 0.14);
+  --danger: oklch(0.58 0.19 25);
+  --shadow: 0 1px 2px rgba(20,14,8,0.04), 0 8px 32px rgba(20,14,8,0.08);
+  --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+}
+[data-theme="dark"] {
+  --bg: oklch(0.14 0.008 60);
+  --bg-soft: oklch(0.19 0.008 60);
+  --bg-softer: oklch(0.22 0.009 60);
+  --bg-elev: oklch(0.2 0.009 60);
+  --fg: oklch(0.95 0.006 70);
+  --fg-mid: oklch(0.78 0.008 70);
+  --fg-muted: oklch(0.62 0.01 70);
+  --fg-faint: oklch(0.45 0.008 70);
+  --border: oklch(0.28 0.009 60);
+  --border-strong: oklch(0.36 0.01 60);
+  --border-subtle: oklch(0.24 0.008 60);
+  --accent: oklch(0.75 0.17 50);
+  --accent-soft: oklch(0.75 0.17 50 / 0.16);
+  --accent-softer: oklch(0.75 0.17 50 / 0.08);
+  --accent-border: oklch(0.75 0.17 50 / 0.4);
+  --accent-hover: oklch(0.82 0.17 50);
+  --accent-fg: oklch(0.12 0.008 60);
+  --success: oklch(0.72 0.14 155);
+  --warn: oklch(0.8 0.15 75);
+  --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 32px rgba(0,0,0,0.4);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; font-family: var(--font); font-size: 15px; color: var(--fg); background: var(--bg); -webkit-font-smoothing: antialiased; }
+body { padding: 28px 16px 48px; }
+.intro { max-width: 1240px; margin: 0 auto 22px; display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
+.intro h2 { margin: 0 0 4px; font-size: 20px; letter-spacing: -0.01em; }
+.intro p { margin: 0; color: var(--fg-muted); font-size: 13.5px; max-width: 720px; line-height: 1.5; }
+.theme-btn { border: 1px solid var(--border-strong); background: var(--bg-elev); color: var(--fg); border-radius: 8px; padding: 7px 12px; font: 500 13px var(--font); cursor: pointer; }
+.grid { max-width: 1240px; margin: 0 auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 22px; align-items: start; }
+.col-label { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-muted); font-weight: 600; margin: 0 0 10px 4px; }
+.col-label span { color: var(--accent); }
+
+.auth-card { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow); overflow: hidden; }
+.server-bar { display: flex; align-items: center; justify-content: space-between; padding: 11px 18px; border-bottom: 1px solid var(--border-subtle); background: var(--bg-soft); font-size: 12px; color: var(--fg-muted); }
+.server-bar .host { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); color: var(--fg-mid); }
+.server-bar .brand { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; color: var(--fg); font-size: 13px; }
+.logo-sm { width: 18px; height: 18px; border-radius: 5px; display: block; }
+.body { padding: 26px 28px 24px; }
+
+.pair { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
+.app-icon { width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center; overflow: hidden; }
+.app-icon.claude { background: #fff; border: 1px solid var(--border); }
+[data-theme="dark"] .app-icon.claude { background: oklch(0.24 0.01 60); }
+.app-icon svg { display: block; }
+.pair .dots { flex: 0 0 28px; height: 2px; background: repeating-linear-gradient(90deg, var(--border-strong) 0 4px, transparent 4px 8px); }
+
+h1 { margin: 0 0 6px; font-size: 22px; font-weight: 600; letter-spacing: -0.018em; line-height: 1.25; }
+.sub { margin: 0 0 18px; font-size: 13.5px; line-height: 1.5; color: var(--fg-muted); }
+.sub strong { color: var(--fg); font-weight: 600; }
+
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 550; margin-bottom: 14px; }
+.chip.warn { background: var(--warn-soft); color: var(--warn); }
+.chip.warn::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+.perms { list-style: none; padding: 0; margin: 0 0 18px; border: 1px solid var(--border); border-radius: 12px; }
+.perms li { display: flex; gap: 10px; padding: 10px 12px; font-size: 13px; line-height: 1.4; }
+.perms li + li { border-top: 1px solid var(--border-subtle); }
+.perms .ic { flex: 0 0 20px; height: 20px; border-radius: 6px; display: grid; place-items: center; background: var(--bg-softer); color: var(--fg-mid); }
+.perms .ic.hot { background: var(--accent-soft); color: var(--accent); }
+.perms small { display: block; color: var(--fg-muted); font-size: 12px; margin-top: 1px; }
+
+.pending { border: 1px solid var(--accent-border); background: var(--accent-softer); border-radius: 12px; padding: 12px 14px; margin-bottom: 18px; }
+.pending .k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--fg-muted); font-weight: 600; margin-bottom: 6px; }
+.pending code { font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--fg); }
+.pending .args { font-family: var(--font-mono); font-size: 12px; color: var(--fg-mid); margin-top: 3px; }
+.origin { border: 1px solid var(--border); border-radius: 12px; padding: 8px 14px; margin: -8px 0 18px; font-size: 12px; color: var(--fg-muted); }
+.origin .row { display: flex; justify-content: space-between; padding: 3px 0; }
+.origin b { color: var(--fg); font-weight: 550; font-family: var(--font-mono); font-size: 11.5px; }
+.pending .meta { font-size: 12px; color: var(--fg-muted); margin-top: 8px; display: flex; justify-content: space-between; gap: 8px; }
+
+.btn-primary { width: 100%; padding: 12px 16px; border: 0; border-radius: 11px; background: var(--accent); color: var(--accent-fg); font: 600 14.5px var(--font); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 9px; box-shadow: 0 4px 14px oklch(0.68 0.17 48 / 0.28), inset 0 1px 0 rgba(255,255,255,0.2); transition: background 160ms var(--ease-out), transform 100ms var(--ease-out); }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-primary:active { transform: translateY(1px); }
+.alt-divider { display: flex; align-items: center; gap: 12px; margin: 18px 0 12px; color: var(--fg-faint); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; }
+.alt-divider::before, .alt-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.totp-inputs { display: flex; gap: 7px; }
+.totp-inputs input { width: 100%; aspect-ratio: 1 / 1.12; text-align: center; font: 600 21px var(--font-mono); background: var(--bg-soft); border: 1px solid var(--border-strong); border-radius: 10px; color: var(--fg); outline: none; }
+.totp-inputs input:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.totp-inputs .gap { flex: 0 0 6px; }
+.link-btn { background: none; border: 0; color: var(--fg-mid); font: 500 13px var(--font); cursor: pointer; padding: 0; text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; }
+
+.foot { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border-subtle); font-size: 12px; color: var(--fg-muted); line-height: 1.5; display: grid; gap: 6px; }
+.foot .row { display: flex; justify-content: space-between; gap: 10px; }
+.foot .row b { color: var(--fg-mid); font-weight: 550; font-family: var(--font-mono); font-size: 11.5px; }
+.foot .url { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-muted); }
+.foot .url strong { color: var(--fg); font-weight: 700; }
+.last-seen { margin: 0 0 6px; font-size: 12.5px; color: var(--fg-muted); }
+
+.success-mark { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; margin-bottom: 16px; color: var(--success); background: var(--success-soft); border: 1px solid color-mix(in oklab, var(--success) 35%, var(--border)); }
+.resume { display: flex; gap: 10px; align-items: center; border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; background: var(--bg-soft); font-size: 13px; margin-bottom: 16px; }
+.resume .spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--accent); animation: spin 900ms linear infinite; flex: 0 0 auto; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .resume .spin { animation: none; } }
+.close-hint { text-align: center; font-size: 12.5px; color: var(--fg-muted); margin: 12px 0 0; }
+
+.notes { max-width: 1240px; margin: 28px auto 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+.note { border: 1px dashed var(--border-strong); border-radius: 12px; padding: 12px 14px; font-size: 12.5px; color: var(--fg-mid); line-height: 1.5; }
+.note b { color: var(--fg); }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="bmcp" viewBox="0 0 512 512">
+    <rect width="512" height="512" fill="#FF8124"/>
+    <g fill="#fff">
+      <rect x="107" y="110" width="298" height="84" rx="12"/>
+      <rect x="107" y="212" width="298" height="84" rx="12"/>
+      <rect x="107" y="314" width="298" height="84" rx="12"/>
+    </g>
+    <g stroke="#FF8124" stroke-width="4" stroke-linecap="round">
+      <path d="M128 145h48M128 162h48M128 247h48M128 264h48M128 349h48M128 366h48"/>
+    </g>
+    <g fill="#FF8124"><circle cx="357" cy="155" r="13"/><circle cx="357" cy="255" r="13"/><circle cx="357" cy="357" r="13"/></g>
+  </symbol>
+  <symbol id="claude" viewBox="0 0 24 24">
+    <path fill="none" stroke="#D97757" stroke-width="2.1" stroke-linecap="round" d="M13.2 12.2L21.9 13.4M12.9 12.7L17.9 16.6M12.4 13.1L15.4 20.3M11.8 13.2L10.9 19.9M11.3 12.9L5.8 19.9M10.9 12.4L5.5 14.6M10.8 11.8L2.6 10.7M11.1 11.3L5.7 7.1M11.6 10.9L8.3 2.7M12.2 10.8L13.0 4.6M12.7 11.1L17.5 4.9M13.1 11.6L19.9 8.8"/>
+  </symbol>
+</svg>
+
+<div class="intro">
+  <div>
+    <h2>Remaster de la page d'auth BeaconMCP</h2>
+    <p>Une seule page, trois états. Même palette et mêmes composants qu'aujourd'hui. Passkey en premier quand il y en a une, le code TOTP reste juste en dessous. L'état du milieu est celui que Claude Code ouvrirait via URL elicitation à l'expiration des 24 h.</p>
+  </div>
+  <button class="theme-btn" onclick="var h=document.documentElement;h.dataset.theme=h.dataset.theme==='dark'?'light':'dark'">Clair / sombre</button>
+</div>
+
+<div class="grid">
+
+  <!-- 1. first connection -->
+  <div>
+    <p class="col-label"><span>1</span> · Première connexion (OAuth)</p>
+    <div class="auth-card">
+      <div class="server-bar">
+        <span class="brand"><svg class="logo-sm"><use href="#bmcp"/></svg>BeaconMCP</span>
+        <span class="host">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+          beacon.homelab.fr
+        </span>
+      </div>
+      <div class="body">
+        <div class="pair">
+          <div class="app-icon claude"><svg width="24" height="24"><use href="#claude"/></svg></div>
+          <div class="dots"></div>
+          <div class="app-icon"><svg width="40" height="40"><use href="#bmcp"/></svg></div>
+        </div>
+        <h1>Connect Claude Code</h1>
+        <p class="sub"><strong>Claude Code</strong> wants to manage your infrastructure through this BeaconMCP server.</p>
+
+        <ul class="perms">
+          <li><span class="ic"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></span>
+            <div>Read cluster, VM and BMC status<small>Proxmox · BMC · SSH</small></div></li>
+          <li><span class="ic hot"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg></span>
+            <div>Start, stop, migrate VMs and run commands<small>Logged in the audit trail</small></div></li>
+          <li><span class="ic hot"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg></span>
+            <div>Power off or reset physical servers<small>Confirmed in your client when it supports it</small></div></li>
+        </ul>
+
+        <button class="btn-primary">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="8" r="4"/><path d="M10.9 13.1A6 6 0 0 0 4 19v1h7"/><path d="M17.5 12a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z"/><path d="M17.5 17v4l1.5-1.2 1.5 1.2v-4"/></svg>
+          Continue with passkey
+        </button>
+        <div class="alt-divider"><span>or 6-digit code</span></div>
+        <div class="totp-inputs">
+          <input value="4"><input value="8"><input value="2"><span class="gap"></span><input><input><input>
+        </div>
+
+        <div class="foot">
+          <div class="row"><span>Redirects to</span><span class="url">http://<strong>localhost</strong>:53172/callback</span></div>
+          <div class="row"><span>Client</span><b>beaconmcp_7f3a…c21</b></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. re-verification -->
+  <div>
+    <p class="col-label"><span>2</span> · Revérification 24 h (URL elicitation)</p>
+    <div class="auth-card">
+      <div class="server-bar">
+        <span class="brand"><svg class="logo-sm"><use href="#bmcp"/></svg>BeaconMCP</span>
+        <span class="host">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+          beacon.homelab.fr
+        </span>
+      </div>
+      <div class="body">
+        <p class="last-seen">Last verified yesterday at 09:14</p>
+        <h1>Verify it's still you</h1>
+        <p class="sub"><strong>Claude Code</strong> paused a request until you confirm.</p>
+
+        <div class="pending">
+          <div class="k">Waiting request</div>
+          <code>proxmox_vm_start</code>
+          <div class="args">node=pve-02 · vmid=104 </div>
+          <div class="meta"><span>From Claude Code · 12 s ago</span><span>Link expires in 9:41</span></div>
+        </div>
+        <div class="origin">
+          <div class="row"><span>From</span><b>82.64.12.7 · Paris, FR</b></div>
+          <div class="row"><span>Device</span><b>Claude Code 2.1 · macOS</b></div>
+          <div class="row"><span>Connected</span><b>3 days ago</b></div>
+        </div>
+
+        <button class="btn-primary">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="8" r="4"/><path d="M10.9 13.1A6 6 0 0 0 4 19v1h7"/><path d="M17.5 12a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z"/><path d="M17.5 17v4l1.5-1.2 1.5 1.2v-4"/></svg>
+          Verify with passkey
+        </button>
+        <p class="close-hint"><button class="link-btn">Use a 6-digit code instead</button></p>
+
+        <div class="foot">
+          <div class="row"><span>Signed in as</span><b>Claude Code · showdown</b></div>
+          <div class="row"><span>Not you?</span><b style="font-family:var(--font);color:var(--danger)">Revoke this access</b></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. done -->
+  <div>
+    <p class="col-label"><span>3</span> · Terminé</p>
+    <div class="auth-card">
+      <div class="server-bar">
+        <span class="brand"><svg class="logo-sm"><use href="#bmcp"/></svg>BeaconMCP</span>
+        <span class="host">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+          beacon.homelab.fr
+        </span>
+      </div>
+      <div class="body">
+        <div class="success-mark"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg></div>
+        <h1>You're verified</h1>
+        <p class="sub">Return to <strong>Claude Code</strong>, your request is running now.</p>
+
+        <div class="resume"><span class="spin"></span><span><code style="font-family:var(--font-mono);font-weight:600">proxmox_vm_start</code> resuming in Claude Code…</span></div>
+
+        <div class="foot" style="margin-top:0;border-top:0;padding-top:0">
+          <div class="row"><span>Session valid until</span><b>tomorrow 10:02</b></div>
+          <div class="row"><span>Verified with</span><b>Passkey · MacBook Pro</b></div>
+        </div>
+        <p class="close-hint">You can close this tab.</p>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="notes">
+  <div class="note"><b>Anti-hameçonnage.</b> L'hôte du serveur, l'adresse de retour et le client sont toujours visibles. C'est ce que la spec demande de montrer pour une URL elicitation.</div>
+  <div class="note"><b>Passkey d'abord.</b> Si aucune passkey n'est enregistrée, les cases TOTP passent en premier et le bouton passkey disparaît, comme aujourd'hui.</div>
+  <div class="note"><b>Requête en attente.</b> L'état 2 montre l'appel exact qui attend. Si on ne sait pas l'afficher (ex. revérification déclenchée hors appel), le bloc disparaît.</div>
+</div>
+
+</body>
+</html>
