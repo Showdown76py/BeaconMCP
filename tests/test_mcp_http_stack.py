@@ -259,3 +259,81 @@ async def test_upload_link_body_streams_through_middleware(stack, tmp_path) -> N
         transfers.register_pusher(None)
     assert resp.status_code == 200, resp.text
     assert received["/root/f"] == payload
+
+
+# ---------------------------------------------------------------------------
+# Host allowlist on every route (not only the SDK's /mcp guard)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "method, path",
+    [
+        ("GET", "/metrics"),
+        ("GET", "/.well-known/oauth-authorization-server"),
+        ("GET", "/.well-known/oauth-protected-resource"),
+        ("GET", "/oauth/authorize"),
+        ("GET", "/app/login"),
+        ("POST", "/app/api/mcp/call"),
+    ],
+)
+async def test_foreign_host_is_421_on_every_route(stack, method: str, path: str) -> None:
+    app = stack["app"]
+    async with app.router.lifespan_context(app), _client(app) as c:
+        resp = await c.request(method, path, headers={"Host": "attacker.test"})
+    assert resp.status_code == 421, (path, resp.status_code)
+
+
+async def test_health_probe_ignores_host(stack) -> None:
+    # check-startup and the Docker healthcheck probe it by IP.
+    app = stack["app"]
+    async with app.router.lifespan_context(app), _client(app) as c:
+        resp = await c.get("/health", headers={"Host": "127.0.0.1"})
+    assert resp.status_code == 200
+
+
+async def test_oauth_metadata_issuer_is_never_a_foreign_host(stack) -> None:
+    app = stack["app"]
+    async with app.router.lifespan_context(app), _client(app) as c:
+        resp = await c.get("/.well-known/oauth-authorization-server", headers={"Host": HOST})
+    assert resp.status_code == 200
+    assert resp.json()["issuer"] == f"http://{HOST}"
+
+
+async def test_forwarded_host_from_trusted_proxy_must_be_allowlisted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from beaconmcp.server import config
+
+    # httpx's ASGITransport reports 127.0.0.1 as the TCP peer.
+    monkeypatch.setattr(config.server, "trusted_proxies", ["127.0.0.1"])
+    stack = _build_stack(tmp_path, monkeypatch)
+    app = stack["app"]
+    async with app.router.lifespan_context(app), _client(app) as c:
+        bad = await c.get(
+            "/.well-known/oauth-authorization-server",
+            headers={"Host": HOST, "X-Forwarded-Host": "attacker.test"},
+        )
+        good = await c.get(
+            "/.well-known/oauth-authorization-server",
+            headers={"Host": "127.0.0.1:8420", "X-Forwarded-Host": HOST},
+        )
+    assert bad.status_code == 421
+    assert good.status_code == 200
+    assert good.json()["issuer"] == f"http://{HOST}"
+
+
+async def test_forwarded_proto_from_untrusted_peer_is_ignored_when_proxies_declared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from beaconmcp.server import config
+
+    # A trusted proxy is declared but the direct peer (127.0.0.1) is not it.
+    monkeypatch.setattr(config.server, "trusted_proxies", ["10.0.0.0/8"])
+    stack = _build_stack(tmp_path, monkeypatch)
+    app = stack["app"]
+    async with app.router.lifespan_context(app), _client(app) as c:
+        resp = await c.get(
+            "/.well-known/oauth-authorization-server",
+            headers={"Host": HOST, "X-Forwarded-Proto": "https"},
+        )
+    assert resp.json()["issuer"] == f"http://{HOST}"

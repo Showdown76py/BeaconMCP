@@ -120,8 +120,9 @@ In `beaconmcp.yaml`:
 
 ```yaml
 server:
-  # The public hostname Cloudflare forwards to BeaconMCP. Without it the MCP
-  # SDK rejects requests with 421 Misdirected Request (DNS-rebinding guard).
+  # The public hostname Cloudflare forwards to BeaconMCP. Without it every
+  # route (not only /mcp) answers 421 Misdirected Request (DNS-rebinding
+  # guard). The Docker healthcheck still works: /health is exempt.
   allowed_hosts:
     - mcp.example.com
   # Trust Cloudflare's edge so its forwarded headers are honoured: X-Forwarded-

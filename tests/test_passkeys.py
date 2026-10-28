@@ -160,8 +160,9 @@ class SoftwareAuthenticator:
 class FakeRequest:
     """Just the surface :mod:`beaconmcp.dashboard.passkeys` reads."""
 
-    def __init__(self, host: str = RP_ID, scheme: str = "https") -> None:
+    def __init__(self, host: str = RP_ID, scheme: str = "https", peer: str = "203.0.113.9") -> None:
         self.headers = {"host": host, "x-forwarded-proto": scheme}
+        self.client = type("_Client", (), {"host": peer})()
 
         class _URL:
             netloc = host
@@ -224,12 +225,27 @@ def test_secure_context_requires_https_or_loopback():
     assert not is_secure_context(FakeRequest(host="192.168.1.5:8420", scheme="http"))
 
 
-def test_forwarded_host_wins_over_host():
-    from beaconmcp.dashboard.passkeys import rp_id_for
+def test_forwarded_host_ignored_without_trusted_proxy():
+    # X-Forwarded-Host is attacker-controlled on a direct request: a passkey
+    # must never be bound to a host the operator did not declare.
+    from beaconmcp.dashboard.passkeys import origin_for, rp_id_for
 
     req = FakeRequest(host="internal:8420")
     req.headers["x-forwarded-host"] = "public.example"
-    assert rp_id_for(req) == "public.example"
+    assert rp_id_for(req) == "internal"
+    assert origin_for(req) == "https://internal:8420"
+
+
+def test_forwarded_host_wins_over_host_from_trusted_proxy():
+    from beaconmcp.dashboard.passkeys import origin_for, rp_id_for
+
+    req = FakeRequest(host="internal:8420", peer="10.1.2.3")
+    req.headers["x-forwarded-host"] = "public.example"
+    trusted = ("10.0.0.0/8",)
+    assert rp_id_for(req, trusted) == "public.example"
+    assert origin_for(req, trusted) == "https://public.example"
+    # Same headers from an undeclared peer: back to Host.
+    assert rp_id_for(FakeRequest(host="internal:8420", peer="203.0.113.9"), trusted) == "internal"
 
 
 def test_default_label_from_user_agent():

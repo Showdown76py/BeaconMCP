@@ -32,6 +32,8 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from ..ratelimit import forwarded_host, forwarded_scheme
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from starlette.requests import Request
 
@@ -89,23 +91,24 @@ def b64url_decode(value: str) -> bytes:
 # Relying-party identity, derived from the live request
 # ---------------------------------------------------------------------------
 
-def _forwarded_host(request: "Request") -> str:
-    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
-    if not host:
-        host = request.url.netloc or "localhost"
-    # A proxy chain may append entries; the first one is the client-facing host.
-    return host.split(",")[0].strip()
+def _forwarded_host(request: "Request", trusted_proxies: tuple[str, ...] = ()) -> str:
+    # Same trust model as the OAuth issuer: X-Forwarded-Host only from a
+    # declared proxy, the request's own Host otherwise. Binding a credential
+    # to an attacker-supplied header would lose it for the real hostname.
+    default = getattr(request.url, "netloc", None) or "localhost"
+    return forwarded_host(request, trusted_proxies, default=default)
 
 
-def rp_id_for(request: "Request") -> str:
+def rp_id_for(request: "Request", trusted_proxies: tuple[str, ...] = ()) -> str:
     """Return the WebAuthn RP ID (effective domain, no scheme, no port).
 
     Derived from the request rather than configured, so a deployment that
     moves behind a new hostname keeps working without a config edit. The
     trade-off is that credentials are scoped to the hostname they were
-    registered under -- which is exactly the WebAuthn security model.
+    registered under -- which is exactly the WebAuthn security model. The
+    host itself is guaranteed allowlisted by :class:`HostGuardMiddleware`.
     """
-    host = _forwarded_host(request)
+    host = _forwarded_host(request, trusted_proxies)
     if host.startswith("["):  # IPv6 literal: [::1]:8420
         closing = host.find("]")
         if closing != -1:
@@ -113,26 +116,22 @@ def rp_id_for(request: "Request") -> str:
     return host.rsplit(":", 1)[0] if ":" in host else host
 
 
-def origin_for(request: "Request") -> str:
+def origin_for(request: "Request", trusted_proxies: tuple[str, ...] = ()) -> str:
     """Return the origin the browser will put in ``clientDataJSON``."""
-    scheme = request.headers.get("x-forwarded-proto") or request.url.scheme
-    scheme = scheme.split(",")[0].strip()
-    return f"{scheme}://{_forwarded_host(request)}"
+    scheme = forwarded_scheme(request, trusted_proxies)
+    return f"{scheme}://{_forwarded_host(request, trusted_proxies)}"
 
 
-def is_secure_context(request: "Request") -> bool:
+def is_secure_context(request: "Request", trusted_proxies: tuple[str, ...] = ()) -> bool:
     """True when the browser will expose ``navigator.credentials``.
 
     WebAuthn is gated on a secure context: HTTPS, or a loopback host. A
     plain-HTTP LAN deployment silently has no passkey API at all, so the
     UI needs to know before it offers the button.
     """
-    scheme = (
-        request.headers.get("x-forwarded-proto") or request.url.scheme
-    ).split(",")[0].strip()
-    if scheme == "https":
+    if forwarded_scheme(request, trusted_proxies) == "https":
         return True
-    return rp_id_for(request) in ("localhost", "127.0.0.1", "::1")
+    return rp_id_for(request, trusted_proxies) in ("localhost", "127.0.0.1", "::1")
 
 
 # ---------------------------------------------------------------------------
@@ -381,9 +380,16 @@ def _transport_descriptors(transports: list[str]) -> list[Any] | None:
 class PasskeyService:
     """Generates and verifies WebAuthn ceremonies against a :class:`PasskeyStore`."""
 
-    def __init__(self, store: PasskeyStore | None) -> None:
+    def __init__(
+        self,
+        store: PasskeyStore | None,
+        *,
+        trusted_proxies: tuple[str, ...] = (),
+    ) -> None:
         self._store = store
         self._challenges = ChallengeStore()
+        # Governs X-Forwarded-Host / -Proto when deriving the RP ID and origin.
+        self._trusted_proxies = tuple(trusted_proxies)
 
     @property
     def available(self) -> bool:
@@ -442,7 +448,7 @@ class PasskeyService:
                 "Remove one before adding another."
             )
         options = _webauthn.generate_registration_options(
-            rp_id=rp_id_for(request),
+            rp_id=rp_id_for(request, self._trusted_proxies),
             rp_name=RP_NAME,
             user_id=client_id.encode("utf-8"),
             user_name=client_id,
@@ -492,8 +498,8 @@ class PasskeyService:
             verified = _webauthn.verify_registration_response(
                 credential=credential,
                 expected_challenge=pending.challenge,
-                expected_rp_id=rp_id_for(request),
-                expected_origin=origin_for(request),
+                expected_rp_id=rp_id_for(request, self._trusted_proxies),
+                expected_origin=origin_for(request, self._trusted_proxies),
             )
         except Exception as exc:  # noqa: BLE001 - library raises many subtypes
             raise PasskeyError(f"Passkey registration rejected: {exc}") from exc
@@ -532,7 +538,7 @@ class PasskeyService:
                 "2FA code once, then add one."
             )
         options = _webauthn.generate_authentication_options(
-            rp_id=rp_id_for(request),
+            rp_id=rp_id_for(request, self._trusted_proxies),
             allow_credentials=[
                 PublicKeyCredentialDescriptor(
                     id=b64url_decode(p.credential_id),
@@ -580,8 +586,8 @@ class PasskeyService:
             verified = _webauthn.verify_authentication_response(
                 credential=credential,
                 expected_challenge=pending.challenge,
-                expected_rp_id=rp_id_for(request),
-                expected_origin=origin_for(request),
+                expected_rp_id=rp_id_for(request, self._trusted_proxies),
+                expected_origin=origin_for(request, self._trusted_proxies),
                 credential_public_key=record.public_key,
                 credential_current_sign_count=record.sign_count,
             )

@@ -318,11 +318,9 @@ def forwarded_host(
     to the ``X-Forwarded-For`` client and the trusted-proxy branch below could
     never open.
 
-    Kept deliberately narrow -- it does NOT touch the scheme. ``X-Forwarded-
-    Proto`` is still read directly by the callers, because a TLS-terminating
-    edge (Cloudflare tunnel, nginx) legitimately needs it to report https even
-    when ``trusted_proxies`` is unset; gating it would silently downgrade the
-    Secure-cookie flag and the OAuth issuer to http.
+    Kept deliberately narrow -- it does NOT touch the scheme; that is
+    :func:`forwarded_scheme`, which has to stay permissive when
+    ``trusted_proxies`` is unset (see its docstring).
     """
     headers = getattr(request, "headers", None)
     has_get = headers is not None and hasattr(headers, "get")
@@ -351,3 +349,30 @@ def forwarded_host(
             if parts:
                 return parts[-1]
     return host_header
+
+
+def forwarded_scheme(request: object, trusted_proxies: tuple[str, ...] = ()) -> str:
+    """Client-facing URL scheme for a Starlette ``Request``.
+
+    ``X-Forwarded-Proto`` is honoured in two cases: when no trusted proxy is
+    declared at all (a TLS-terminating edge must still be able to report
+    https, otherwise the Secure-cookie flag and the OAuth issuer silently
+    downgrade to http), and when the direct peer is a declared trusted proxy.
+    Once ``server.trusted_proxies`` is set, a direct caller can no longer strip
+    the header's effect by speaking to the backend itself.
+    """
+    headers = getattr(request, "headers", None)
+    url = getattr(request, "url", None)
+    own_scheme = str(getattr(url, "scheme", "http") or "http")
+    if headers is None or not hasattr(headers, "get"):
+        return own_scheme
+    fwd = headers.get("x-forwarded-proto")
+    if not fwd:
+        return own_scheme
+    if trusted_proxies:
+        client = getattr(request, "client", None)
+        direct_peer = getattr(client, "host", None) if client is not None else None
+        direct_ip = _coerce_ip(str(direct_peer)) if direct_peer is not None else None
+        if not direct_ip or not _is_trusted_proxy(direct_ip, trusted_proxies):
+            return own_scheme
+    return fwd.split(",")[0].strip() or own_scheme

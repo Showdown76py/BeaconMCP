@@ -34,7 +34,7 @@ Tailscale IP, a VPN address, a bastion.
 
 | Key | Notes |
 |-----|-------|
-| `server.allowed_hosts` | DNS-rebinding allowlist. **Must** include the public FQDN behind your reverse proxy, or requests come back `421 Misdirected Request`. |
+| `server.allowed_hosts` | DNS-rebinding allowlist, enforced on **every** route (`/mcp`, `/oauth/*`, `/app/*`, `/.well-known/*`, `/metrics`), not only the MCP endpoint. **Must** include the public FQDN behind your reverse proxy, or requests come back `421 Misdirected Request`. Also list any host you scrape `/metrics` through (an IP needs a `:*` entry, e.g. `10.0.0.5:*`). `/health` is exempt so liveness probes keep working by IP. |
 | `server.allowed_origins` | Web-origin allowlist, used for browser CORS preflights and for OAuth HTTPS redirect URIs. Desktop and CLI callbacks (`vscode://`, `cursor://`, loopback) are handled separately. |
 | `server.trusted_proxies` | Direct peers whose forwarded headers are trusted, as IPs or CIDRs. Governs `X-Forwarded-For` (the auth rate-limit client IP) **and** `X-Forwarded-Host` (the host advertised in the OAuth issuer and the token/connector MCP URLs). When empty, both fall back to the request's own peer / `Host` and forwarded values from any peer are ignored. The value `cloudflare` auto-expands to Cloudflare's edge ranges. |
 | `server.tokens_db` | SQLite file persisting named API tokens (the `/app/tokens` page), OAuth access tokens and OAuth refresh tokens across restarts. OAuth tokens are stored as SHA-256 hashes. Created owner-only (0600). Defaults to `tokens.db` next to `clients_file`. Env override: `BEACONMCP_TOKENS_DB`. |

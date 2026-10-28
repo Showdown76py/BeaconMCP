@@ -593,7 +593,14 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         TotpResult,
         current_bearer_token,
     )
-    from .ratelimit import RateLimiter, TotpLockout, client_ip, forwarded_host
+    from .hostguard import HostGuardMiddleware
+    from .ratelimit import (
+        RateLimiter,
+        TotpLockout,
+        client_ip,
+        forwarded_host,
+        forwarded_scheme,
+    )
     from .server import config, transport_security
     # The same list the SDK enforces for CORS, including its built-in default
     # when beaconmcp.yaml leaves server.allowed_origins empty: OAuth
@@ -719,7 +726,8 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
     passkey_service = passkeys_mod.PasskeyService(
         passkeys_mod.PasskeyStore(shared_database)
         if shared_database is not None
-        else None
+        else None,
+        trusted_proxies=tuple(config.server.trusted_proxies),
     )
     # Share the TokenStore with MCP tools so security_end_session can revoke
     # the caller's bearer without an import cycle.
@@ -754,12 +762,12 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         return client_ip(request, tuple(config.server.trusted_proxies))
 
     def _issuer(request: Request) -> str:
-        scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
-        # X-Forwarded-Host is only trusted from a declared proxy; otherwise the
-        # request's own Host header wins (see ratelimit.forwarded_host).
-        host_header = forwarded_host(
-            request, tuple(config.server.trusted_proxies),
-        )
+        # X-Forwarded-Host / -Proto are only trusted from a declared proxy;
+        # otherwise the request's own Host and scheme win (see ratelimit).
+        # The host is guaranteed allowlisted by HostGuardMiddleware.
+        trusted = tuple(config.server.trusted_proxies)
+        scheme = forwarded_scheme(request, trusted)
+        host_header = forwarded_host(request, trusted)
         return f"{scheme}://{host_header}"
 
     async def oauth_metadata(request: Request) -> Response:
@@ -894,7 +902,9 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
     def _authorize_passkeys_enabled(request: Request, client_id: str) -> bool:
         if passkey_service is None or not passkey_service.available:
             return False
-        return passkeys_mod.is_secure_context(request)
+        return passkeys_mod.is_secure_context(
+            request, tuple(config.server.trusted_proxies),
+        )
 
     def _wants_json_authorize(request: Request) -> bool:
         return request.headers.get("x-beaconmcp-mode", "") == "json"
@@ -1751,6 +1761,16 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             Mount("/", app=mcp_app),
         ],
         middleware=[
+            # Outermost on purpose: the SDK only checks Host on /mcp, but every
+            # route below derives a hostname from the request (OAuth issuer,
+            # passkey RP ID, authorize-page host, session cookies). Same
+            # allowlist, same matching rules, before anything else runs.
+            Middleware(
+                HostGuardMiddleware,
+                allowed_hosts=list(transport_security.allowed_hosts),
+                trusted_proxies=tuple(config.server.trusted_proxies),
+                enabled=transport_security.enable_dns_rebinding_protection,
+            ),
             Middleware(MetricsMiddleware),
             Middleware(BaseHTTPMiddleware, dispatch=auth_middleware),
         ],

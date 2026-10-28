@@ -110,7 +110,10 @@ Things worth knowing before you enrol:
 
 - **Passkeys are bound to the hostname.** The relying-party ID is derived from the request host, so
   a credential registered on `beacon.example` will not work on `beacon.internal` or on a raw IP that
-  differs from the one used at registration. Settle on your public hostname first.
+  differs from the one used at registration. Settle on your public hostname first. Only hosts listed
+  in `server.allowed_hosts` ever reach the enrolment page (every route answers `421` otherwise), and
+  `X-Forwarded-Host` is honoured only from a declared `server.trusted_proxies` peer, so a credential
+  cannot be bound to a hostname you did not declare.
 - **A secure context is required.** Browsers only expose the WebAuthn API over HTTPS or on loopback.
   On a plain-HTTP LAN deployment the passkey buttons are hidden and TOTP stays the only path in.
 - **Keep TOTP working.** Passkeys are an alternative, not a replacement: losing every enrolled device

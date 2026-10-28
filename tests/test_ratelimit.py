@@ -209,3 +209,37 @@ def test_forwarded_host_through_a_real_starlette_request() -> None:
         )
         == "real.example"
     )
+
+
+# ---------------------------------------------------------------------------
+# forwarded_scheme: X-Forwarded-Proto trust
+# ---------------------------------------------------------------------------
+
+class _SchemeReq:
+    def __init__(self, peer: str | None, proto: str | None, scheme: str = "http") -> None:
+        self.headers = {} if proto is None else {"x-forwarded-proto": proto}
+
+        class _URL:
+            pass
+
+        self.url = _URL()
+        self.url.scheme = scheme  # type: ignore[attr-defined]
+        self.client = None if peer is None else type("C", (), {"host": peer})()
+
+
+def test_forwarded_scheme_honoured_when_no_proxies_declared():
+    from beaconmcp.ratelimit import forwarded_scheme
+
+    # Backwards compatible: a TLS edge without trusted_proxies still gets https.
+    assert forwarded_scheme(_SchemeReq("203.0.113.9", "https"), ()) == "https"
+    assert forwarded_scheme(_SchemeReq("203.0.113.9", None), ()) == "http"
+    assert forwarded_scheme(_SchemeReq("203.0.113.9", "https, http"), ()) == "https"
+
+
+def test_forwarded_scheme_ignored_from_untrusted_peer_when_proxies_declared():
+    from beaconmcp.ratelimit import forwarded_scheme
+
+    trusted = ("10.0.0.0/8",)
+    assert forwarded_scheme(_SchemeReq("203.0.113.9", "https"), trusted) == "http"
+    assert forwarded_scheme(_SchemeReq("10.1.2.3", "https"), trusted) == "https"
+    assert forwarded_scheme(_SchemeReq(None, "https"), trusted) == "http"

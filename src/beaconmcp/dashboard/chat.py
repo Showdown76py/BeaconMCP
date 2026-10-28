@@ -183,6 +183,10 @@ _NEEDS_CONFIRMATION: frozenset[str] = frozenset({
     "proxmox_snapshot_rollback",
     "proxmox_snapshot_delete",
     "proxmox_backup_restore",
+    # Mutating with no undo: a new guest, a storage write. vm_create is
+    # gated through config; these two ran without a modal.
+    "proxmox_vm_clone",
+    "proxmox_backup_create",
     "bmc_power_off",
     "bmc_power_reset",
     # --- legacy names (pre-unified tools) -----------------------------

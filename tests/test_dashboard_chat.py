@@ -996,3 +996,12 @@ def test_every_registered_tool_is_gated_or_deliberately_not():
         "new tool(s) outside the confirmation gate; decide and list them: "
         f"{sorted(unclassified)}"
     )
+
+
+def test_clone_and_backup_create_need_confirmation():
+    # Both mutate the cluster (new guest, storage writes) with no undo, yet
+    # ran without a modal while vm_create was gated.
+    from beaconmcp.dashboard.chat import _NEEDS_CONFIRMATION
+
+    assert "proxmox_vm_clone" in _NEEDS_CONFIRMATION
+    assert "proxmox_backup_create" in _NEEDS_CONFIRMATION
