@@ -72,7 +72,7 @@ sse-starlette==3.5.0
 starlette==1.7.0
 tenacity==9.1.4
 textual==8.2.8
-truststore==0.10.4
+truststore==0.10.5
 typing-inspection==0.4.4
 typing_extensions==4.16.0
 urllib3==2.8.0
