@@ -483,3 +483,27 @@ def test_tokens_only_login_page_redirects_when_authenticated(tokens_only_client)
     r = tokens_only_client.get("/app/login")
     assert r.status_code == 302
     assert r.headers["location"] == "/app/tokens"
+
+
+# ---------------------------------------------------------------------------
+# CSRF cookie Secure flag follows the same proxy trust as the session cookie
+# ---------------------------------------------------------------------------
+
+def _csrf_cookie_is_secure(deps, trusted_proxies: tuple[str, ...]) -> bool:
+    deps.trusted_proxies = trusted_proxies
+    app = Starlette(routes=build_dashboard_routes(deps))
+    c = TestClient(app, follow_redirects=False)
+    r = c.get("/app/login", headers={"X-Forwarded-Proto": "https"})
+    assert r.status_code == 200
+    cookies = [h for h in r.headers.get_list("set-cookie") if h.startswith(CSRF_COOKIE + "=")]
+    assert len(cookies) == 1, cookies
+    return "Secure" in cookies[0]
+
+
+def test_csrf_cookie_secure_flag_follows_trusted_proxies(deps):
+    # TestClient's peer is the literal "testclient": not a trusted proxy, not
+    # a local address. With no proxy declared X-Forwarded-Proto is honoured
+    # from anyone; once one is declared, this peer no longer gets to say
+    # https, for the CSRF cookie exactly as for the session cookie.
+    assert _csrf_cookie_is_secure(deps, ()) is True
+    assert _csrf_cookie_is_secure(deps, ("10.0.0.0/8",)) is False

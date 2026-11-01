@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from beaconmcp.ratelimit import RateLimiter, client_ip, forwarded_host
 
 
@@ -209,3 +211,96 @@ def test_forwarded_host_through_a_real_starlette_request() -> None:
         )
         == "real.example"
     )
+
+
+# ---------------------------------------------------------------------------
+# forwarded_scheme: X-Forwarded-Proto trust
+# ---------------------------------------------------------------------------
+
+class _SchemeReq:
+    def __init__(self, peer: str | None, proto: str | None, scheme: str = "http") -> None:
+        self.headers = {} if proto is None else {"x-forwarded-proto": proto}
+
+        class _URL:
+            pass
+
+        self.url = _URL()
+        self.url.scheme = scheme  # type: ignore[attr-defined]
+        self.client = None if peer is None else type("C", (), {"host": peer})()
+
+
+def test_forwarded_scheme_honoured_when_no_proxies_declared():
+    from beaconmcp.ratelimit import forwarded_scheme
+
+    # Backwards compatible: a TLS edge without trusted_proxies still gets https.
+    assert forwarded_scheme(_SchemeReq("203.0.113.9", "https"), ()) == "https"
+    assert forwarded_scheme(_SchemeReq("203.0.113.9", None), ()) == "http"
+    assert forwarded_scheme(_SchemeReq("203.0.113.9", "https, http"), ()) == "https"
+
+
+def test_forwarded_scheme_ignored_from_public_peer_when_proxies_declared(caplog, monkeypatch):
+    from beaconmcp import ratelimit
+    from beaconmcp.ratelimit import forwarded_scheme
+
+    monkeypatch.setattr(ratelimit, "_warned_headers", set())
+    trusted = ("10.0.0.0/8",)
+    with caplog.at_level("WARNING", logger="beaconmcp"):
+        # An internet peer that is not the declared proxy cannot claim https.
+        assert forwarded_scheme(_SchemeReq("8.8.8.8", "https"), trusted) == "http"
+        assert forwarded_scheme(_SchemeReq("8.8.8.8", "https"), trusted) == "http"
+        assert forwarded_scheme(_SchemeReq("10.1.2.3", "https"), trusted) == "https"
+        assert forwarded_scheme(_SchemeReq(None, "https"), trusted) == "http"
+    warnings = [r for r in caplog.records if "X-Forwarded-Proto" in r.getMessage()]
+    assert len(warnings) == 1, "ignored X-Forwarded-Proto is logged once, not per request"
+    assert "8.8.8.8" in warnings[0].getMessage()
+    assert "trusted_proxies" in warnings[0].getMessage()
+
+
+@pytest.mark.parametrize("peer", ["127.0.0.1", "::1", "192.168.1.201", "172.17.0.2", "100.64.1.1", "fd00::1"])
+def test_forwarded_scheme_honoured_from_local_peer_even_with_proxies_declared(peer, caplog):
+    """``trusted_proxies: [cloudflare]`` names the edge, but the request comes
+    from cloudflared on loopback or the Docker network. Dropping to http there
+    would silently break the OAuth issuer, the passkey origin and the Secure
+    cookie flag, and forging https from the LAN buys an attacker nothing."""
+    from beaconmcp.ratelimit import forwarded_scheme
+
+    trusted = ("173.245.48.0/20",)
+    with caplog.at_level("WARNING", logger="beaconmcp"):
+        assert forwarded_scheme(_SchemeReq(peer, "https"), trusted) == "https"
+    assert not [r for r in caplog.records if "X-Forwarded-Proto" in r.getMessage()]
+
+
+def test_forwarded_host_ignored_is_logged_once(caplog, monkeypatch):
+    """Behind nginx with only X-Forwarded-Host set and no trusted_proxies, the
+    RP ID silently becomes the backend's own Host: say why, once."""
+    from types import SimpleNamespace
+
+    from beaconmcp import ratelimit
+
+    monkeypatch.setattr(ratelimit, "_warned_headers", set())
+    req = SimpleNamespace(
+        client=SimpleNamespace(host="127.0.0.1"),
+        headers={"host": "127.0.0.1:8420", "x-forwarded-host": "beacon.example"},
+    )
+    with caplog.at_level("WARNING", logger="beaconmcp"):
+        assert forwarded_host(req, ()) == "127.0.0.1:8420"
+        assert forwarded_host(req, ("10.0.0.0/8",)) == "127.0.0.1:8420"
+    warnings = [r for r in caplog.records if "X-Forwarded-Host" in r.getMessage()]
+    assert len(warnings) == 1
+    msg = warnings[0].getMessage()
+    assert "127.0.0.1:8420" in msg and "passkey" in msg and "trusted_proxies" in msg
+
+
+def test_forwarded_host_honoured_does_not_warn(caplog, monkeypatch):
+    from types import SimpleNamespace
+
+    from beaconmcp import ratelimit
+
+    monkeypatch.setattr(ratelimit, "_warned_headers", set())
+    req = SimpleNamespace(
+        client=SimpleNamespace(host="10.1.2.3"),
+        headers={"host": "127.0.0.1:8420", "x-forwarded-host": "beacon.example"},
+    )
+    with caplog.at_level("WARNING", logger="beaconmcp"):
+        assert forwarded_host(req, ("10.0.0.0/8",)) == "beacon.example"
+    assert not caplog.records

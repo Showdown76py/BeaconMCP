@@ -124,9 +124,10 @@ beaconmcp auth revoke <client_id>
 Put a reverse proxy in front that terminates TLS and forwards your public hostname to
 `http://localhost:8420` (Caddy, nginx, Traefik and Cloudflare Tunnel all work).
 
-Then declare that hostname under `server.allowed_hosts` in `beaconmcp.yaml`. Without it the MCP SDK
-rejects requests with `421 Misdirected Request`, which is its DNS-rebinding protection doing its
-job.
+Then declare that hostname under `server.allowed_hosts` in `beaconmcp.yaml`. Without it every route
+(not just `/mcp`) answers `421 Misdirected Request`, which is the DNS-rebinding protection doing its
+job: the OAuth issuer, the passkey relying-party ID and the host shown on the authorize page are all
+derived from the request, so only allowlisted hosts ever reach them.
 
 If you proxy through Cloudflare, add `cloudflare` to `server.trusted_proxies` so forwarded client
 IPs can be trusted for auth rate limiting. Cloudflare's bot, WAF and Access defaults also block

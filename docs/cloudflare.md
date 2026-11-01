@@ -120,16 +120,22 @@ In `beaconmcp.yaml`:
 
 ```yaml
 server:
-  # The public hostname Cloudflare forwards to BeaconMCP. Without it the MCP
-  # SDK rejects requests with 421 Misdirected Request (DNS-rebinding guard).
+  # The public hostname Cloudflare forwards to BeaconMCP. Without it every
+  # route (not only /mcp) answers 421 Misdirected Request (DNS-rebinding
+  # guard). The Docker healthcheck still works: /health is exempt.
   allowed_hosts:
     - mcp.example.com
-  # Trust Cloudflare's edge so its forwarded headers are honoured: X-Forwarded-
-  # For for the auth rate-limit client IP, and X-Forwarded-Host for the host in
-  # the OAuth issuer and token MCP URLs. The literal "cloudflare" auto-expands
-  # to Cloudflare's IP ranges.
+  # Trust the forwarded headers: X-Forwarded-For for the auth rate-limit
+  # client IP, X-Forwarded-Host for the host in the OAuth issuer, passkey RP ID
+  # and token MCP URLs, X-Forwarded-Proto for the https scheme behind them.
+  # The literal "cloudflare" auto-expands to Cloudflare's IP ranges, but the
+  # request BeaconMCP sees comes from cloudflared itself (loopback, or the
+  # Docker network), not from the edge: list that address too, otherwise
+  # X-Forwarded-For is ignored and every visitor shares one rate-limit budget
+  # (the log says so once: "not in server.trusted_proxies").
   trusted_proxies:
     - cloudflare
+    - 127.0.0.1        # cloudflared on the same host; or e.g. 172.16.0.0/12 for Docker
 ```
 
 Restart BeaconMCP after editing. (Both also have env equivalents:

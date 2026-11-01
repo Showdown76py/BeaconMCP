@@ -166,7 +166,7 @@ def test_default_per_client_cap_is_ten(clock) -> None:
 def test_forwarded_header_without_trusted_proxies_warns_once(caplog, monkeypatch) -> None:
     from types import SimpleNamespace
 
-    monkeypatch.setattr(ratelimit, "_forwarding_warned", False)
+    monkeypatch.setattr(ratelimit, "_warned_headers", set())
     request = SimpleNamespace(
         client=SimpleNamespace(host="10.0.0.2"),
         headers={"x-forwarded-for": ATTACKER},
@@ -184,7 +184,7 @@ def test_forwarded_header_from_an_unlisted_proxy_warns(caplog, monkeypatch) -> N
     which connects from its own LAN address: say so instead of staying quiet."""
     from types import SimpleNamespace
 
-    monkeypatch.setattr(ratelimit, "_forwarding_warned", False)
+    monkeypatch.setattr(ratelimit, "_warned_headers", set())
     request = SimpleNamespace(
         client=SimpleNamespace(host="192.168.1.201"),
         headers={"x-forwarded-for": ATTACKER},
@@ -197,7 +197,7 @@ def test_forwarded_header_from_an_unlisted_proxy_warns(caplog, monkeypatch) -> N
 def test_no_warning_when_the_proxy_is_trusted(caplog, monkeypatch) -> None:
     from types import SimpleNamespace
 
-    monkeypatch.setattr(ratelimit, "_forwarding_warned", False)
+    monkeypatch.setattr(ratelimit, "_warned_headers", set())
     request = SimpleNamespace(
         client=SimpleNamespace(host="10.0.0.2"),
         headers={"x-forwarded-for": ATTACKER},

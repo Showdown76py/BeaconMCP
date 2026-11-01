@@ -29,7 +29,7 @@ from starlette.templating import Jinja2Templates
 
 from .. import audit
 from ..auth import TOTP_REPLAY_MESSAGE, TotpResult
-from ..ratelimit import forwarded_host
+from ..ratelimit import forwarded_host, forwarded_scheme
 from . import csrf as csrf
 from .chat import (
     ChatEngine,
@@ -118,9 +118,13 @@ class DashboardDeps:
 # helpers
 # ---------------------------------------------------------------------------
 
-def _is_secure(request: Request) -> bool:
-    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
-    return proto == "https"
+def _is_secure(request: Request, trusted_proxies: tuple[str, ...]) -> bool:
+    # Drives the Secure flag on the session and CSRF cookies, from the same
+    # scheme the OAuth issuer and the passkey origin use. A direct plain-HTTP
+    # request still gets a non-Secure cookie on that connection; what the
+    # trust model rules out is an undeclared internet peer dressing a plain
+    # connection up as https (see ratelimit.forwarded_scheme).
+    return forwarded_scheme(request, trusted_proxies) == "https"
 
 
 def _set_session_cookie(response: Response, session_id: str, secure: bool) -> None:
@@ -166,15 +170,21 @@ def _clear_session_cookies(response: Response) -> None:
 def _render(
     template: str,
     request: Request,
+    deps: DashboardDeps,
     *,
     status_code: int = 200,
     csrf_token: str | None = None,
     secure: bool | None = None,
     **context,
 ) -> HTMLResponse:
-    """Render a Jinja2 template, ensuring a CSRF cookie is in place."""
+    """Render a Jinja2 template, ensuring a CSRF cookie is in place.
+
+    ``deps`` is required so the CSRF cookie's Secure flag follows the same
+    proxy trust as the session cookie, instead of a default that would
+    silently trust every peer.
+    """
     if secure is None:
-        secure = _is_secure(request)
+        secure = _is_secure(request, deps.trusted_proxies)
     token = csrf_token or csrf.cookie_token(request)
     if not token:
         token = csrf.issue_token()
@@ -380,12 +390,13 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         return _render(
             "login.html",
             request,
+            deps,
             client_id="",
             next=request.query_params.get("next", ""),
             banner=None,
             locked=False,
             passkeys_enabled=_passkeys_ready(deps),
-            secure_context=is_secure_context(request),
+            secure_context=is_secure_context(request, deps.trusted_proxies),
         )
 
     def _login_success_payload(
@@ -406,7 +417,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             "bearer_expires_at": time.time() + bearer_ttl,
             "session_expires_at": session.expires_at,
             "passkeys_enabled": _passkeys_ready(deps),
-            "secure_context": is_secure_context(request),
+            "secure_context": is_secure_context(request, deps.trusted_proxies),
             "passkey_count": (
                 deps.passkeys.store.count_for_client(session.client_id)
                 if _passkeys_ready(deps) else 0
@@ -435,7 +446,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             bearer_ttl_seconds=ttl,
             user_agent=ua,
         )
-        secure = _is_secure(request)
+        secure = _is_secure(request, deps.trusted_proxies)
         new_csrf = csrf.issue_token()
         if as_json if as_json is not None else _wants_json(request):
             payload = _login_success_payload(
@@ -472,13 +483,14 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                 return _render(
                     "login.html",
                     request,
+                    deps,
                     client_id="",
                     next="",
                     banner=message,
                     locked=True,
                     status_code=429,
                     passkeys_enabled=_passkeys_ready(deps),
-                    secure_context=is_secure_context(request),
+                    secure_context=is_secure_context(request, deps.trusted_proxies),
                 )
 
         form = await request.form()
@@ -502,13 +514,14 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             return _render(
                 "login.html",
                 request,
+                deps,
                 client_id=client_id,
                 next=next_url if next_url != _default_landing() else "",
                 banner=message,
                 locked=locked,
                 status_code=status,
                 passkeys_enabled=_passkeys_ready(deps),
-                secure_context=is_secure_context(request),
+                secure_context=is_secure_context(request, deps.trusted_proxies),
             )
 
         if not client_id or not client_secret or not totp:
@@ -563,6 +576,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         return _render(
             "totp_refresh.html",
             request,
+            deps,
             client_id=session.client_id,
             client_name=client_name,
             next=request.query_params.get("next", ""),
@@ -595,6 +609,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             return _render(
                 "totp_refresh.html",
                 request,
+                deps,
                 client_id=session.client_id,
                 client_name=client_name,
                 next=next_url if next_url != _default_landing() else "",
@@ -663,6 +678,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         return _render(
             "overview.html",
             request,
+            deps,
             client_name=(
                 deps.client_store.get_name(session.client_id)  # type: ignore[attr-defined]
                 or "Unknown"
@@ -678,6 +694,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         return _render(
             "usage_cost.html",
             request,
+            deps,
             client_name=(
                 deps.client_store.get_name(session.client_id)  # type: ignore[attr-defined]
                 or "Unknown"
@@ -801,6 +818,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         return _render(
             "connectors.html",
             request,
+            deps,
             client_id=session.client_id,
             client_name=(
                 deps.client_store.get_name(session.client_id)  # type: ignore[attr-defined]
@@ -876,7 +894,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         store.prune_expired()
         row = store.mint(owner_client_id=session.client_id, label=label)
 
-        scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+        scheme = forwarded_scheme(request, deps.trusted_proxies)
         host_hdr = forwarded_host(request, deps.trusted_proxies)
         url = f"{scheme}://{host_hdr}/mcp/c/{row.slug}"
         return _render_connectors_page(
@@ -1269,6 +1287,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         return _render(
             "chat.html",
             request,
+            deps,
             client_id=session.client_id,
             client_name=(
                 deps.client_store.get_name(session.client_id)  # type: ignore[attr-defined]
@@ -1880,13 +1899,14 @@ def _render_tokens_page(
     if deps.mcp_public_url:
         mcp_url = deps.mcp_public_url.rstrip("/") + "/mcp"
     else:
-        scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+        scheme = forwarded_scheme(request, deps.trusted_proxies)
         host = forwarded_host(request, deps.trusted_proxies)
         mcp_url = f"{scheme}://{host}/mcp"
 
     return _render(
         "tokens.html",
         request,
+        deps,
         client_id=session.client_id,
         client_name=client_name,
         tokens=tokens,
@@ -1936,7 +1956,7 @@ def _resolve_mcp_url(request: Request, deps: DashboardDeps) -> str:
     if deps.mcp_mode == "remote":
         if deps.mcp_public_url:
             return deps.mcp_public_url.rstrip("/") + "/mcp"
-        scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+        scheme = forwarded_scheme(request, deps.trusted_proxies)
         host = forwarded_host(request, deps.trusted_proxies)
         return f"{scheme}://{host}/mcp"
     import os as _os

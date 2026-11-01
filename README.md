@@ -47,7 +47,8 @@ curl http://localhost:8420/health
 into an authenticator app before closing the terminal.
 
 The server listens on `:8420` in plain HTTP. Put a reverse proxy with TLS in front of it, list the
-public hostname under `server.allowed_hosts`, then add the connector to your client.
+public hostname under `server.allowed_hosts` (enforced on every route, not only `/mcp`), then add
+the connector to your client.
 
 There is also a TUI wizard (`beaconmcp init`) that writes the YAML for you, and a bare-metal systemd
 install. Both are covered in [Installation](docs/installation.md).

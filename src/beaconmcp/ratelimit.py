@@ -239,29 +239,52 @@ def _is_trusted_proxy(ip_value: str, trusted_proxies: tuple[str, ...]) -> bool:
     return False
 
 
-_forwarding_warned = False
+def _is_local_peer(ip_value: str) -> bool:
+    """Loopback, RFC 1918, link-local, ULA or CGNAT: not routable from the internet."""
+    try:
+        return not ipaddress.ip_address(ip_value).is_global
+    except ValueError:
+        return False
 
 
-def _warn_untrusted_forwarding(forwarded_for: str | None, peer: str | None) -> None:
-    """Say once that a proxy is forwarding but is not in ``trusted_proxies``.
+def _peer_is_trusted(
+    request: object, trusted_proxies: tuple[str, ...],
+) -> tuple[str | None, bool]:
+    """``(direct peer IP, is it a declared trusted proxy)`` for a request.
 
-    Behind a reverse proxy every request then comes from the proxy's own
-    address, so the per-IP limits (login, authorize, TOTP lockout) become
-    one budget shared by every visitor, and one attacker can spend it for
-    everyone. Also fires with a non-empty list: a cloudflared tunnel
-    connects from its own LAN address, which ``cloudflare`` (the edge
-    ranges) does not cover.
+    The one place that decides whether a forwarded header may be honoured:
+    :func:`client_ip`, :func:`forwarded_host` and :func:`forwarded_scheme` all
+    key on the real TCP peer, which is why the server runs with uvicorn
+    ``proxy_headers=False`` (see ``__main__``).
     """
-    global _forwarding_warned
-    if _forwarding_warned or not forwarded_for:
+    client = getattr(request, "client", None)
+    direct_peer = getattr(client, "host", None) if client is not None else None
+    direct_ip = _coerce_ip(str(direct_peer)) if direct_peer is not None else None
+    return direct_ip, bool(direct_ip) and _is_trusted_proxy(direct_ip, trusted_proxies)
+
+
+# Headers already warned about, so a misconfigured proxy costs one log line
+# per header per process rather than one per request.
+_warned_headers: set[str] = set()
+
+
+def _warn_ignored_forwarded(header: str, peer: str | None, consequence: str) -> None:
+    """Say once per header that a forwarding peer is not in ``trusted_proxies``.
+
+    Fires with an empty list and with a non-empty one alike: a cloudflared
+    tunnel connects from its own LAN address, which ``cloudflare`` (the edge
+    ranges) does not cover, and nginx on the same host comes from loopback.
+    Without this the symptom (shared rate-limit budget, http issuer, passkey
+    that stopped matching) has no visible cause.
+    """
+    if header in _warned_headers:
         return
-    _forwarding_warned = True
+    _warned_headers.add(header)
     logging.getLogger("beaconmcp").warning(
-        "X-Forwarded-For received from %s, which is not in server.trusted_proxies: "
-        "every client behind that proxy shares one rate-limit and TOTP-lockout "
-        "budget. If %s is your reverse proxy or cloudflared tunnel, add it to "
+        "%s received from %s, which is not in server.trusted_proxies: %s "
+        "If %s is your reverse proxy or cloudflared tunnel, add it to "
         "server.trusted_proxies.",
-        peer or "an unknown peer", peer or "it",
+        header, peer or "an unknown peer", consequence, peer or "it",
     )
 
 
@@ -275,12 +298,16 @@ def client_ip(request: object, trusted_proxies: tuple[str, ...] = ()) -> str:
     client = getattr(request, "client", None)
     direct_peer = getattr(client, "host", None) if client is not None else None
     direct_peer_raw = str(direct_peer) if direct_peer is not None else ""
-    direct_ip = _coerce_ip(direct_peer_raw)
+    direct_ip, peer_trusted = _peer_is_trusted(request, trusted_proxies)
 
     headers = getattr(request, "headers", None)
-    peer_trusted = bool(direct_ip) and _is_trusted_proxy(direct_ip, trusted_proxies)
     if not peer_trusted and headers is not None and hasattr(headers, "get"):
-        _warn_untrusted_forwarding(headers.get("x-forwarded-for"), direct_ip)
+        if headers.get("x-forwarded-for"):
+            _warn_ignored_forwarded(
+                "X-Forwarded-For", direct_ip,
+                "every client behind that proxy shares one rate-limit and "
+                "TOTP-lockout budget.",
+            )
     if headers is not None and peer_trusted:
         fwd = headers.get("x-forwarded-for") if hasattr(headers, "get") else None
         if fwd:
@@ -312,17 +339,13 @@ def forwarded_host(
     it is honored only when the direct peer is a declared trusted proxy.
     Otherwise the request's own ``Host`` header is used (then ``default``).
 
-    Like :func:`client_ip`, this keys on ``request.client.host`` being the real
-    TCP peer, so the server must run with uvicorn ``proxy_headers=False`` (see
-    ``__main__``): the default ``ProxyHeadersMiddleware`` would rewrite the peer
-    to the ``X-Forwarded-For`` client and the trusted-proxy branch below could
-    never open.
+    Like :func:`client_ip`, this keys on the real TCP peer through
+    :func:`_peer_is_trusted`. A forwarded value that is present but not
+    honoured is logged once, because the visible symptom (issuer or passkey
+    RP ID on the backend's own ``Host``) does not point at ``trusted_proxies``.
 
-    Kept deliberately narrow -- it does NOT touch the scheme. ``X-Forwarded-
-    Proto`` is still read directly by the callers, because a TLS-terminating
-    edge (Cloudflare tunnel, nginx) legitimately needs it to report https even
-    when ``trusted_proxies`` is unset; gating it would silently downgrade the
-    Secure-cookie flag and the OAuth issuer to http.
+    Kept deliberately narrow -- it does NOT touch the scheme; that is
+    :func:`forwarded_scheme`, which is trusted more widely (see its docstring).
     """
     headers = getattr(request, "headers", None)
     has_get = headers is not None and hasattr(headers, "get")
@@ -331,23 +354,71 @@ def forwarded_host(
         return headers.get(name) if has_get else None
 
     host_header = _hdr("host") or default
-    if not trusted_proxies:
+    fwd = _hdr("x-forwarded-host")
+    if not fwd:
         return host_header
 
-    client = getattr(request, "client", None)
-    direct_peer = getattr(client, "host", None) if client is not None else None
-    direct_ip = _coerce_ip(str(direct_peer)) if direct_peer is not None else None
-    if direct_ip and _is_trusted_proxy(direct_ip, trusted_proxies):
-        fwd = _hdr("x-forwarded-host")
-        if fwd:
-            # Take the last entry, not the first. A proxy that appends rather
-            # than overwrites puts its own value last, so the last entry is the
-            # one the nearest trusted proxy wrote; returning the first would
-            # hand back a client-supplied prefix. Symmetric with client_ip's
-            # right-to-left walk. Proxies that overwrite (the common case:
-            # nginx ``proxy_set_header X-Forwarded-Host $host``) leave a single
-            # entry, so first and last coincide.
-            parts = [p.strip() for p in fwd.split(",") if p.strip()]
-            if parts:
-                return parts[-1]
+    direct_ip, peer_trusted = _peer_is_trusted(request, trusted_proxies)
+    if peer_trusted:
+        # Take the last entry, not the first. A proxy that appends rather
+        # than overwrites puts its own value last, so the last entry is the
+        # one the nearest trusted proxy wrote; returning the first would
+        # hand back a client-supplied prefix. Symmetric with client_ip's
+        # right-to-left walk. Proxies that overwrite (the common case:
+        # nginx ``proxy_set_header X-Forwarded-Host $host``) leave a single
+        # entry, so first and last coincide.
+        parts = [p.strip() for p in fwd.split(",") if p.strip()]
+        if parts:
+            return parts[-1]
+        return host_header
+
+    _warn_ignored_forwarded(
+        "X-Forwarded-Host", direct_ip,
+        f"the OAuth issuer, the passkey RP ID and the dashboard URLs use the "
+        f"Host header ({host_header}) instead, so a passkey enrolled under the "
+        f"forwarded hostname will not match.",
+    )
     return host_header
+
+
+def forwarded_scheme(request: object, trusted_proxies: tuple[str, ...]) -> str:
+    """Client-facing URL scheme for a Starlette ``Request``.
+
+    ``X-Forwarded-Proto`` is honoured from three kinds of peer: any peer when
+    no trusted proxy is declared (a TLS-terminating edge must still be able
+    to report https), a declared trusted proxy, and a peer on a non-global
+    address (loopback, RFC 1918, link-local, CGNAT) even when the list is
+    set. The last case is deliberate: the usual layout is cloudflared or
+    nginx on the same host or LAN with ``trusted_proxies: [cloudflare]``
+    naming the edge rather than the tunnel, and ignoring the header there
+    silently downgrades the OAuth issuer, the passkey origin, the dashboard
+    URLs and the Secure cookie flag to http.
+
+    The scheme is trusted more widely than ``X-Forwarded-For`` (rate-limit
+    evasion) or ``X-Forwarded-Host`` (hostname a credential is bound to)
+    because forging it buys an attacker nothing: the cookie and the URLs
+    it affects are the forger's own. The one thing the gate still does is
+    refuse an undeclared *internet* peer that claims https. Note what it
+    does not do: a direct plain-HTTP request to the backend keeps its own
+    ``http`` scheme and gets a non-Secure cookie on that connection, which
+    is the connection's property, not a downgrade anyone else can trigger.
+    """
+    headers = getattr(request, "headers", None)
+    url = getattr(request, "url", None)
+    own_scheme = str(getattr(url, "scheme", "http") or "http")
+    if headers is None or not hasattr(headers, "get"):
+        return own_scheme
+    fwd = headers.get("x-forwarded-proto")
+    if not fwd:
+        return own_scheme
+    if trusted_proxies:
+        direct_ip, peer_trusted = _peer_is_trusted(request, trusted_proxies)
+        if not peer_trusted and not (direct_ip and _is_local_peer(direct_ip)):
+            _warn_ignored_forwarded(
+                "X-Forwarded-Proto", direct_ip,
+                f"the scheme falls back to the backend's own ({own_scheme}), so "
+                f"the OAuth issuer, the passkey origin and the Secure cookie "
+                f"flag follow it.",
+            )
+            return own_scheme
+    return fwd.split(",")[0].strip() or own_scheme
