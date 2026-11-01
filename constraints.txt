@@ -50,7 +50,7 @@ pyasn1==0.6.4
 pyasn1_modules==0.4.2
 pycparser==3.11
 pydantic==2.14.1
-pydantic_core==2.50.0
+pydantic_core==2.50.1
 Pygments==2.21.0
 PyJWT==2.15.1
 pyOpenSSL==26.4.0
