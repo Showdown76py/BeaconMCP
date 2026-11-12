@@ -9,7 +9,8 @@ Rules applied to each entry (MCP spec, ``ToolAnnotations``):
 - ``readOnlyHint`` is true only when the tool changes nothing in any call mode
   (``proxmox_vm_config`` reads without ``updates`` but writes with it, so it is
   not read-only). Read-only entries leave destructive/idempotent unset: the
-  spec ignores them there.
+  spec ignores them there. ``proxmox_read_file`` changes nothing but has no
+  ``readOnlyHint``, so that clients keep asking before it reads a guest file.
 - ``destructiveHint`` is true when the tool can delete, overwrite, stop or run
   arbitrary code; false only for a pure addition without loss.
 - ``idempotentHint`` is true only when repeating the same call has no further
@@ -61,7 +62,6 @@ TOOL_ANNOTATIONS: dict[str, ToolAnnotations] = {
     "proxmox_snapshot_list": _read(),
     "proxmox_backup_list": _read(),
     "proxmox_list_transfers": _read(),
-    "proxmox_read_file": _read(),
     "ssh_list_sessions": _read(),
     "bmc_list_devices": _read(),
     "bmc_server_info": _read(),
@@ -85,6 +85,12 @@ TOOL_ANNOTATIONS: dict[str, ToolAnnotations] = {
     "proxmox_backup_create": _write(destructive=False, idempotent=False),
     "proxmox_backup_restore": _write(destructive=True, idempotent=False),
     # Commands and files
+    # Changes nothing, but reads any file in a guest (keys, /etc/shadow) and
+    # some clients skip the approval prompt for read-only tools. readOnlyHint
+    # is left unset on purpose (the spec default, false).
+    "proxmox_read_file": ToolAnnotations(
+        destructive_hint=False, idempotent_hint=True, open_world_hint=False,
+    ),
     "proxmox_run": _write(destructive=True, idempotent=False),
     "ssh_run": _write(destructive=True, idempotent=False),
     "proxmox_write_file": _write(destructive=True, idempotent=True),

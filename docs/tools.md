@@ -175,7 +175,9 @@ ones and flag tools that leave the declared infrastructure. They live in one tab
 `src/beaconmcp/tool_annotations.py`, applied when a tool is registered.
 
 - `readOnlyHint` is true only if the tool changes nothing in any call mode. `proxmox_vm_config`
-  reads without `updates` but writes with it, so it is not read-only.
+  reads without `updates` but writes with it, so it is not read-only. `proxmox_read_file` changes
+  nothing but declares no `readOnlyHint`: it can read any file in a guest (keys, `/etc/shadow`),
+  and some clients skip the approval prompt for read-only tools.
 - `destructiveHint` is true when the tool can delete, overwrite, stop or run arbitrary code, and
   false for pure additions (snapshot, clone, backup, start). `proxmox_upload_link` counts as
   destructive: it only mints a link, but whoever holds it can overwrite a file in the guest.

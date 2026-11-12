@@ -30,8 +30,23 @@ async def test_every_listed_tool_carries_annotations(stack) -> None:
     assert not missing, f"tools without annotations on the wire: {missing}"
     for name, tool in tools.items():
         ann = tool["annotations"]
-        assert isinstance(ann.get("readOnlyHint"), bool), name
+        if name in _NO_READ_ONLY_HINT:
+            assert "readOnlyHint" not in ann, name
+        else:
+            assert isinstance(ann.get("readOnlyHint"), bool), name
         assert isinstance(ann.get("openWorldHint"), bool), name
+
+
+# Change nothing but read sensitive data: no readOnlyHint, so clients keep asking.
+_NO_READ_ONLY_HINT = {"proxmox_read_file"}
+
+
+def test_guest_file_read_is_not_marked_read_only() -> None:
+    from beaconmcp.tool_annotations import TOOL_ANNOTATIONS as T
+
+    assert {n for n, a in T.items() if a.read_only_hint is None} == _NO_READ_ONLY_HINT
+    ann = T["proxmox_read_file"]
+    assert ann.destructive_hint is False and ann.idempotent_hint is True
 
 
 async def test_table_and_registered_tools_match_exactly(stack) -> None:
