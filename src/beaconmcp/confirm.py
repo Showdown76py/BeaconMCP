@@ -87,8 +87,11 @@ def _supports_form(ctx: Any) -> bool:
 # freshly allocated volume, ``none`` or an ISO in a CD-ROM drive.
 _DISK_KEY = re.compile(r"^(mp|scsi|virtio|sata|ide|efidisk|tpmstate|unused)\d+$")
 _NEW_VOLUME = re.compile(r"^[\w.-]+:\d+(\.\d+)?$")  # <storage>:<size>
-_ISO_VOLUME = re.compile(r"^[\w.-]+:iso/.+$")
-_SENSITIVE_PATTERN = re.compile(r"^(dev|hostpci|usb)\d+$")
+_ISO_VOLUME = re.compile(r"^[\w.-]+:iso/[^/]+\.(iso|img)$", re.IGNORECASE)
+# Host passthrough: devices (devN, hostpciN, usbN, parallelN) and host
+# directories (virtiofsN). serialN is a host device too unless it is a socket.
+_SENSITIVE_PATTERN = re.compile(r"^(dev|hostpci|usb|parallel|virtiofs)\d+$")
+_SERIAL_KEY = re.compile(r"^serial\d+$")
 _SENSITIVE_PREFIXES = ("lxc.",)
 # Sensitive whenever set to something non falsy. ``cicustom`` points cloud-init
 # at snippet files read from a storage on the host.
@@ -147,6 +150,9 @@ def _sensitive_config(cfg: Any) -> bool:
                 return True
         elif k == "features":
             if _sensitive_features(value):
+                return True
+        elif _SERIAL_KEY.match(k):
+            if str(value).strip().lower() != "socket":
                 return True
         elif _SENSITIVE_PATTERN.match(k) or k.startswith(_SENSITIVE_PREFIXES):
             return True

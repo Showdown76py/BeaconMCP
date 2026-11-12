@@ -110,8 +110,9 @@ server:
   #  proxmox_snapshot_delete, proxmox_backup_restore (force only),
   #  beaconmcp_self_update,
   #  proxmox_vm_create / proxmox_vm_config (only with a host-reaching key:
-  #  hookscript, args, cicustom, lxc.*, devN, hostpciN, usbN, features other
-  #  than nesting, unprivileged=0,
+  #  hookscript, args, cicustom, lxc.*, devN, hostpciN, usbN, parallelN,
+  #  virtiofsN, serialN other than socket, features other than nesting,
+  #  unprivileged=0,
   #  restore, archive, force, or a disk key (mpN, rootfs, scsiN...) that
   #  attaches an existing volume, a path or import-from)]
   # To also confirm shell commands (polling by exec_id alone is exempt),

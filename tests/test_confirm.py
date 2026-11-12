@@ -307,6 +307,44 @@ def test_nesting_only_and_empty_values_are_not_gated(cfg: dict) -> None:
     assert not _need("proxmox_vm_create", config=cfg)
 
 
+@pytest.mark.parametrize("cfg", [
+    {"serial0": "/dev/ttyS0"},
+    {"serial3": "/dev/ttyUSB0"},
+    {"parallel0": "/dev/parport0"},
+    {"parallel2": "/dev/usb/lp0"},
+    {"virtiofs0": "shared,cache=always"},
+    {"virtiofs9": "dirid=shared"},
+])
+def test_serial_parallel_virtiofs_passthrough_is_gated(cfg: dict) -> None:
+    assert _need("proxmox_vm_config", updates=cfg)
+    assert _need("proxmox_vm_create", config=cfg)
+
+
+def test_serial_socket_is_not_gated() -> None:
+    # serial0: socket is what most cloud images use for the console
+    assert not _need("proxmox_vm_create", config={"serial0": "socket"})
+    assert not _need("proxmox_vm_config", updates={"serial1": "Socket"})
+
+
+@pytest.mark.parametrize("value", [
+    "local:iso/../../102/vm-102-disk-0.raw,media=cdrom",
+    "local:iso/sub/debian.iso,media=cdrom",
+    "local:iso/debian.qcow2,media=cdrom",
+    "local:iso/,media=cdrom",
+])
+def test_iso_cdrom_must_be_a_plain_iso_or_img(value: str) -> None:
+    assert _need("proxmox_vm_config", updates={"ide2": value})
+
+
+@pytest.mark.parametrize("value", [
+    "local:iso/debian-13.iso,media=cdrom",
+    "local:iso/Windows.ISO,media=cdrom",
+    "nas-iso:iso/virtio-win.img,media=cdrom",
+])
+def test_plain_iso_or_img_cdrom_is_not_gated(value: str) -> None:
+    assert not _need("proxmox_vm_config", updates={"ide2": value})
+
+
 async def test_strict_with_form_client_elicits_instead_of_refusing() -> None:
     ctx = Ctx(FORM)
     assert await confirm_destructive(ctx, "bmc_power_off", {"a": 1}, strict=True) == {"a": 1}

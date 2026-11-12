@@ -5,6 +5,7 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
+from ..confirm import _falsy
 from ..utils import filter_fields
 from .client import ProxmoxClient
 
@@ -132,7 +133,13 @@ def register_vm_tools(mcp: MCPServer, client: ProxmoxClient) -> None:
         if vm_type not in ("qemu", "lxc"):
             return {"error": f"Invalid vm_type '{vm_type}'. Use 'qemu' for VMs or 'lxc' for containers."}
 
-        create_params = config or {}
+        create_params = dict(config or {})
+        # Without the key, PVE 9 creates the container unprivileged but PVE 8
+        # creates it privileged. Ask for unprivileged on both; an explicit
+        # ``unprivileged: 0`` goes through the confirmation gate instead. A
+        # restore keeps the backup's own value, as PVE does.
+        if vm_type == "lxc" and "unprivileged" not in create_params and _falsy(create_params.get("restore")):
+            create_params["unprivileged"] = 1
         result = client.post(node, f"nodes/{node}/{vm_type}", vmid=vmid, **create_params)
         if isinstance(result, dict) and "error" in result:
             return result

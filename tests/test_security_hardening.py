@@ -215,6 +215,49 @@ def test_dry_run_aware_tools_actually_declare_dry_run() -> None:
         assert "dry_run" in inspect.signature(registered[name]).parameters, name
 
 
+# --- vm_create asks for an unprivileged container ---------------------------
+
+
+def _vm_create_posts(vm_type: str, config: dict | None) -> list[dict]:
+    from beaconmcp.proxmox.vms import register_vm_tools
+
+    registered: dict[str, object] = {}
+    posts: list[dict] = []
+
+    class _Recorder:
+        def tool(self, *_a: object, **_kw: object):
+            def deco(fn):
+                registered[fn.__name__] = fn
+                return fn
+            return deco
+
+    class _Client:
+        def post(self, node: str, path: str, **params: object) -> str:
+            posts.append(params)
+            return "UPID:x"
+
+    register_vm_tools(_Recorder(), _Client())  # type: ignore[arg-type]
+    registered["proxmox_vm_create"]("n", 120, vm_type, config)  # type: ignore[operator]
+    return posts
+
+
+def test_lxc_create_without_unprivileged_is_unprivileged() -> None:
+    """PVE 8 creates a container privileged when the key is absent (PVE 9 does not)."""
+    cfg = {"ostemplate": "local:vztmpl/debian.tar.zst", "rootfs": "local-lvm:8"}
+    assert _vm_create_posts("lxc", cfg)[0]["unprivileged"] == 1
+    assert _vm_create_posts("lxc", None)[0]["unprivileged"] == 1
+    assert "unprivileged" not in cfg  # the caller's dict is left alone
+
+
+def test_lxc_create_keeps_an_explicit_unprivileged_and_restores_untouched() -> None:
+    assert _vm_create_posts("lxc", {"unprivileged": 0})[0]["unprivileged"] == 0
+    # a restore keeps the backup's value, as PVE does
+    restore = {"ostemplate": "local:backup/vzdump-lxc-1.tar.zst", "restore": 1}
+    assert "unprivileged" not in _vm_create_posts("lxc", restore)[0]
+    assert _vm_create_posts("lxc", {"restore": 0})[0]["unprivileged"] == 1
+    assert "unprivileged" not in _vm_create_posts("qemu", {"cores": 1})[0]
+
+
 # --- BMC verify_tls actually reaches the backend ----------------------------
 
 
