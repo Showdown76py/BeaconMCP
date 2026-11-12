@@ -279,8 +279,10 @@ features:
     channel: branch
     # Refuse an update whose target is not signed by a key this host trusts
     # (git verify-tag for a release, git verify-commit for the branch tip).
-    # Trust comes from the service user's git setup: a GPG keyring, or
-    # gpg.format=ssh with gpg.ssh.allowedSignersFile.
+    # Trust comes from the service user's git setup: a GPG keyring where the
+    # key is valid, i.e. lsigned by a local ultimately trusted key or given
+    # ultimate trust (a key that is merely imported is refused, see
+    # docs/updates.md), or gpg.format=ssh with gpg.ssh.allowedSignersFile.
     require_signed: false
 
 # Free-form infrastructure context exposed as an MCP resource. Edit freely:
