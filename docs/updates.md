@@ -74,7 +74,10 @@ In order, stopping at the first failure:
    not whatever the remote points at a second later.
 5. **Reinstall**: `pip install -e . -c constraints.txt` in the detected venv. `constraints.txt` pins
    every dependency, direct or not, to the set CI tested, so an update never pulls a library
-   release nobody has run.
+   release nobody has run. It also pins the build backend (`hatchling`, equal to the pin in
+   `pyproject.toml`): the tool exports `PIP_CONSTRAINT` and `PIP_BUILD_CONSTRAINT` (the file's
+   absolute path) for this step, because `-c` alone does not reach pip's isolated build
+   environment. Do the same when installing by hand.
 6. **Check startup**: runs `beaconmcp check-startup` in a subprocess. The *new* code loads your
    *actual* configuration, imports every module, builds the HTTP app and answers `/health`, against
    scratch copies of the token store and dashboard database.

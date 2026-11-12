@@ -329,7 +329,7 @@ def stub_side_effects(monkeypatch):
     recorded: list[list[str]] = []
     outcomes = {"pip": 0, "validate": 0}
 
-    def fake_run(cmd, cwd, timeout):
+    def fake_run(cmd, cwd, timeout, env=None):
         recorded.append(list(cmd))
         if "pip" in " ".join(cmd):
             return outcomes["pip"], "pip output"
@@ -485,7 +485,7 @@ def test_a_second_update_is_refused_while_one_runs(checkout, upstream, monkeypat
 
     real_run = updates._run
 
-    def blocking_run(cmd, cwd, timeout):
+    def blocking_run(cmd, cwd, timeout, env=None):
         if "pip" in " ".join(cmd):
             started.set()
             release.wait(10)
@@ -590,7 +590,7 @@ def test_restart_with_a_watchdog_runs_as_its_own_transient_unit(monkeypatch, tmp
     """systemctl restart kills the service's cgroup, children included."""
     ran = []
 
-    def fake_run(cmd, cwd, timeout):
+    def fake_run(cmd, cwd, timeout, env=None):
         ran.append(cmd)
         return 0, ""
 
@@ -693,7 +693,7 @@ def test_a_failed_comparison_is_an_error_not_up_to_date(checkout, upstream, stub
 def test_rollback_reports_a_failed_dependency_reinstall(checkout, upstream, monkeypatch):
     pip_calls = []
 
-    def fake_run(cmd, cwd, timeout):
+    def fake_run(cmd, cwd, timeout, env=None):
         if "pip" in " ".join(cmd):
             pip_calls.append(cmd)
             return (0, "ok") if len(pip_calls) == 1 else (1, "No matching distribution")
@@ -743,6 +743,52 @@ def test_pip_install_is_pinned_when_the_tree_has_constraints(tmp_path):
     cmd = updates._pip_install_command(install, tmp_path)
     assert cmd[-4:] == ["-e", ".", "-c", "constraints.txt"]
     assert any("-c constraints.txt" in step for step in updates.manual_instructions(install))
+
+
+def test_pip_install_env_applies_the_constraints_to_the_isolated_build(tmp_path):
+    # pip does not hand -c to the isolated build environment.
+    assert "PIP_CONSTRAINT" not in (updates._pip_install_env(tmp_path) or {})
+    (tmp_path / "constraints.txt").write_text("hatchling==1.0\n")
+    env = updates._pip_install_env(tmp_path)
+    assert env["PIP_CONSTRAINT"] == str((tmp_path / "constraints.txt").resolve())
+    assert Path(env["PIP_CONSTRAINT"]).is_absolute()
+    # pip >= 25.3 only honours PIP_BUILD_CONSTRAINT for the build environment.
+    assert env["PIP_BUILD_CONSTRAINT"] == env["PIP_CONSTRAINT"]
+    code, out = updates._run(
+        [sys.executable, "-c", "import os; print(os.environ['PIP_CONSTRAINT'])"],
+        tmp_path, 30, env=env,
+    )
+    assert code == 0 and out == env["PIP_CONSTRAINT"]
+
+
+def test_apply_runs_pip_with_the_build_constraint(checkout, upstream, stub_side_effects, monkeypatch):
+    _advance(upstream, "feat: thing", {"constraints.txt": "hatchling==1.0\n"})
+    seen = []
+    inner = updates._run
+
+    def spy(cmd, cwd, timeout, env=None):
+        if "pip" in " ".join(cmd):
+            seen.append(((env or {}).get("PIP_CONSTRAINT"), (env or {}).get("PIP_BUILD_CONSTRAINT")))
+        return inner(cmd, cwd, timeout, env=env)
+
+    monkeypatch.setattr(updates, "_run", spy)
+    result = updates.apply_update(install=_install(checkout))
+    assert result.ok is True
+    pinned = str((checkout / "constraints.txt").resolve())
+    assert seen == [(pinned, pinned)]
+
+
+def test_build_backend_pin_matches_constraints_txt():
+    import re
+
+    repo = Path(__file__).resolve().parent.parent
+    requires = re.search(
+        r"\[build-system\]\s*requires\s*=\s*\[(.*?)\]", (repo / "pyproject.toml").read_text(), re.S
+    ).group(1)
+    pin = re.search(r"hatchling==([0-9][^\"'\s,]*)", requires)
+    assert pin, "hatchling must be pinned to an exact version in [build-system]"
+    constraints = (repo / "constraints.txt").read_text().splitlines()
+    assert f"hatchling=={pin.group(1)}" in constraints
 
 
 def test_startup_check_command_passes_the_config(tmp_path):
@@ -985,7 +1031,11 @@ def _run_watchdog(
         bindir / "systemctl",
         f'if [ "$1" = show ]; then\n{show_body}exit 0\nfi\necho "systemctl $*" >> {log}\n',
     )
-    pip = _exe(bindir / "fake-pip", f'echo "pip $* (in $(pwd))" >> {log}\n')
+    pip = _exe(
+        bindir / "fake-pip",
+        f'echo "pip $* (in $(pwd))" >> {log}\n'
+        f'echo "$PIP_CONSTRAINT $PIP_BUILD_CONSTRAINT" >> {tmp_path / "pip-env.log"}\n',
+    )
     # Stands in for "$py -c <probe> <url>": healthy or not, by exit code.
     probe = _exe(bindir / "fake-python", probe_body)
     status = checkout / updates.STATUS_FILE
@@ -1034,6 +1084,19 @@ def test_watchdog_rolls_back_an_update_that_never_answers(tmp_path, checkout, up
     ]
     assert status["outcome"] == "rolled_back"
     assert "rolling back" in proc.stdout
+
+
+def test_watchdog_rollback_reinstall_applies_the_build_constraint(tmp_path, checkout, upstream):
+    _advance(upstream, "pins", {"constraints.txt": ""})
+    _run("git", "pull", "--ff-only", cwd=checkout)
+    from_sha = _head(checkout)
+    _advance(upstream, "feat: breaks at runtime")
+    _run("git", "pull", "--ff-only", cwd=checkout)
+    to_sha = _head(checkout)
+    probe = f'[ "$(git -C {checkout} rev-parse HEAD)" = "{from_sha}" ]\n'
+    _run_watchdog(tmp_path, checkout, from_sha, to_sha, probe)
+    pinned = str(checkout / "constraints.txt")
+    assert (tmp_path / "pip-env.log").read_text().strip() == f"{pinned} {pinned}"
 
 
 def test_watchdog_reports_a_rollback_that_does_not_help(tmp_path, checkout, upstream):
