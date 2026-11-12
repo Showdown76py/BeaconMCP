@@ -1730,8 +1730,17 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
 
         start = time.monotonic()
         try:
+            # Accepting the server's confirmation dialog is consistent here:
+            # panel_call_allowed above only lets through the closed list of
+            # calls a panel may make unattended (lifecycle of one guest,
+            # sizing keys), the same calls the operator already allowed to
+            # skip the modal. Anything the server rule would ask about
+            # beyond that was refused with 403 before reaching this point.
+            # Note the call comes from the panel's script, not necessarily a
+            # click: the panel document is served by the MCP server itself.
             async with mcp_bridge.open_session(
                 _resolve_mcp_url(request, deps), session.mcp_bearer or "",
+                elicitation_callback=mcp_bridge.approve_server_confirmation,
             ) as mcp_session:
                 result = await mcp_session.call_tool(name, args)
         except Exception as exc:  # noqa: BLE001

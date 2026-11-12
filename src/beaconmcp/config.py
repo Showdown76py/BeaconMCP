@@ -171,6 +171,9 @@ class ServerConfig:
     # Tools that ask for a yes/no confirmation through form elicitation when
     # the client supports it. ``None`` means confirm.DEFAULT_CONFIRM_TOOLS.
     confirm_tools: list[str] | None = None
+    # When true, a tool that needs confirmation is refused (not run) if the
+    # client cannot show the dialog (no form elicitation, claude.ai today).
+    confirm_strict: bool = False
 
 
 @dataclass
@@ -595,6 +598,7 @@ class Config:
                 if isinstance(srv_raw.get("confirm_tools"), list)
                 else None
             ),
+            confirm_strict=bool(srv_raw.get("confirm_strict", False)),
         )
         if server.named_token_ttl is not None and server.named_token_ttl < 0:
             raise ConfigError(
@@ -781,6 +785,7 @@ class Config:
                     "(default list)" if self.server.confirm_tools is None
                     else self.server.confirm_tools
                 ),
+                "confirm_strict": self.server.confirm_strict,
             },
             "proxmox": {
                 "verify_ssl": self.verify_ssl,

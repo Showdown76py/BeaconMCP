@@ -749,3 +749,13 @@ def test_confirm_tools_default_and_override(tmp_path: Path) -> None:
         tmp_path / "b.yaml", base + "server:\n  confirm_tools: [bmc_power_off]\n",
     ))
     assert cfg.server.confirm_tools == ["bmc_power_off"]
+
+
+def test_confirm_strict_default_and_override(tmp_path: Path) -> None:
+    base = "version: 1\nssh:\n  hosts:\n    - name: v\n      host: 198.51.100.10\n      user: root\n      password: pw\n"
+    cfg = Config.load(config_path=_write(tmp_path / "a.yaml", base))
+    assert cfg.server.confirm_strict is False
+    cfg = Config.load(config_path=_write(
+        tmp_path / "b.yaml", base + "server:\n  confirm_strict: true\n",
+    ))
+    assert cfg.server.confirm_strict is True

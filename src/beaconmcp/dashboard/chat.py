@@ -253,6 +253,35 @@ _DRY_RUN_AWARE: frozenset[str] = frozenset({
 def _tool_call_requires_confirmation(name: str, args: Any) -> bool:
     """Return True when a tool call needs human approval before running.
 
+    That is the case when the chat's own rule says so, or when the server
+    would ask for a confirmation itself (``server.confirm_tools``). The
+    second half is what makes it safe for the dashboard's MCP sessions to
+    accept the server's dialog: the human was already asked here.
+    """
+    return _chat_rule_requires_confirmation(name, args) or _server_rule_requires_confirmation(
+        name, args,
+    )
+
+
+def _server_rule_requires_confirmation(name: str, args: Any) -> bool:
+    """Would the server's own dialog fire for this call?
+
+    ``dry_run`` is dropped before asking, unless the tool declares it (see
+    :data:`_DRY_RUN_AWARE`): the model's arguments are not validated here, and
+    pydantic ignores undeclared ones, so a stray ``dry_run`` must not hide a
+    call the server will really run.
+    """
+    from .. import confirm
+
+    kw = dict(args) if isinstance(args, dict) else {}
+    if name not in _DRY_RUN_AWARE:
+        kw.pop("dry_run", None)
+    return confirm.requires_confirmation(name, kw)
+
+
+def _chat_rule_requires_confirmation(name: str, args: Any) -> bool:
+    """The chat's own approval rule.
+
     The unified ``ssh_run`` / ``proxmox_run`` tools have three call patterns
     (sync start, async start, poll existing by ``exec_id``). Only the start
     patterns actually execute shell; a pure poll call -- where ``exec_id``
@@ -684,6 +713,7 @@ class GeminiChatEngine:
         # ``generate_content_stream`` call until no function_call remains.
         try:
             from .mcp_bridge import (
+                approve_server_confirmation,
                 call_result_to_wire,
                 open_session,
                 ui_resource_uri,
@@ -712,6 +742,11 @@ class GeminiChatEngine:
                     turn.bearer,
                     timeout=30,
                     sse_read_timeout=300,
+                    # The card above already asked the human for everything
+                    # the server's own dialog would ask (see
+                    # _tool_call_requires_confirmation), so accept it and
+                    # keep working under server.confirm_strict.
+                    elicitation_callback=approve_server_confirmation,
                 )
             )
             # Already initialized: returns the cached handshake result.

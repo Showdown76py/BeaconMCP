@@ -167,11 +167,8 @@ _orig_tool = mcp.tool
 # input schema by the SDK) so sensitive tools can ask for a confirmation
 _CTX_KW = "_beacon_ctx"
 
-_confirm_tools = frozenset(
-    config.server.confirm_tools
-    if config.server.confirm_tools is not None
-    else confirm.DEFAULT_CONFIRM_TOOLS
-)
+_confirm_tools = confirm.set_active_tools(config.server.confirm_tools)
+_confirm_strict = bool(config.server.confirm_strict)
 
 def _metric_tool(*args, **kwargs):
     def decorator(func):
@@ -186,7 +183,7 @@ def _metric_tool(*args, **kwargs):
             try:
                 try:
                     f_kwargs = await confirm.confirm_destructive(
-                        ctx, tool_name, f_kwargs, _confirm_tools,
+                        ctx, tool_name, f_kwargs, _confirm_tools, _confirm_strict,
                     )
                 except confirm.ConfirmationDeclined:
                     status = "declined"
