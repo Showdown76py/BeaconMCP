@@ -225,6 +225,9 @@ _CONFIRM_WHEN_ARG_PRESENT: dict[str, str] = {
     "proxmox_vm_config": "updates",
     "beaconmcp_self_update": "confirm",
     "proxmox_vm_create": "config",
+    # ``vmstate=true`` writes the whole guest RAM to the storage pool, so a
+    # looping agent can fill it. ``vmstate=False`` / absent stays ungated.
+    "proxmox_snapshot_create": "vmstate",
 }
 
 # Tools that actually implement a ``dry_run`` parameter and return a
