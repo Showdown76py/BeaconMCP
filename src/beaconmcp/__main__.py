@@ -196,13 +196,16 @@ def main():
     )
 
     serve_parser = sub.add_parser("serve", help="Start the MCP HTTP server")
+    # No argparse defaults here: _cmd_serve falls back to BEACONMCP_PORT /
+    # BEACONMCP_HOST, then server.port / server.host from the YAML. A default
+    # on the flag would always win and silently ignore the YAML value.
     serve_parser.add_argument(
-        "--port", type=int, default=int(os.environ.get("BEACONMCP_PORT", "8420")),
-        help="HTTP port (default: 8420)",
+        "--port", type=int, default=None,
+        help="HTTP port (default: BEACONMCP_PORT, then server.port, then 8420)",
     )
     serve_parser.add_argument(
-        "--host", default=os.environ.get("BEACONMCP_HOST", "0.0.0.0"),
-        help="HTTP bind address (default: 0.0.0.0)",
+        "--host", default=None,
+        help="HTTP bind address (default: BEACONMCP_HOST, then server.host, then 0.0.0.0)",
     )
 
     # --- validate-config ---
@@ -559,6 +562,46 @@ def _cmd_auth(args):
         sys.exit(1)
 
 
+_METRICS_EXACT_PATHS = frozenset({
+    "/", "/mcp", "/health", "/metrics",
+    "/.well-known/oauth-authorization-server",
+    "/.well-known/oauth-protected-resource",
+    "/.well-known/oauth-protected-resource/mcp",
+    "/oauth/authorize", "/oauth/authorize/finalize",
+    "/oauth/passkey/options", "/oauth/passkey/verify",
+    "/oauth/passkey/register/options", "/oauth/passkey/register/verify",
+    "/oauth/token", "/oauth/register", "/oauth/logo/generic",
+})
+# Checked in order; the first prefix wins and its stripped form is the label.
+# The variable tail is a credential or a slug (single-use capability) for
+# several of these, so it must never reach the label.
+_METRICS_PREFIXES = (
+    "/app/api/conversations",
+    "/app/",
+    "/static/",
+    "/transfers/upload/",
+    "/oauth/logo/",
+    "/mcp/c/",
+    "/.well-known/oauth-protected-resource/mcp/c/",
+    "/.well-known/oauth-authorization-server/as/",
+    "/oauth/register/c/",
+)
+
+
+def _metrics_path_label(path: str) -> str:
+    """Closed-set label for beaconmcp_http_requests_total.
+
+    The middleware runs before auth, so unauthenticated probes of arbitrary
+    paths must not create new series. Anything unknown is ``other``.
+    """
+    if path in _METRICS_EXACT_PATHS:
+        return path
+    for prefix in _METRICS_PREFIXES:
+        if path.startswith(prefix):
+            return prefix.rstrip("/")
+    return "other"
+
+
 def _run_http(mcp, host: str, port: int, *, serve: bool = True):
     """Run the MCP server over Streamable HTTP with OAuth client credentials.
 
@@ -611,18 +654,7 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
 
     class MetricsMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
-            path = request.url.path
-
-            # Group dashboard and static paths to avoid cardinality explosion
-            if path.startswith("/app/api/conversations"):
-                path = "/app/api/conversations"
-            elif path.startswith("/app/"):
-                path = "/app"
-            elif path.startswith("/static/"):
-                path = "/static"
-            elif path.startswith(transfers.UPLOAD_PATH_PREFIX):
-                # The rest of the path is a live credential.
-                path = transfers.UPLOAD_PATH_PREFIX.rstrip("/")
+            path = _metrics_path_label(request.url.path)
 
             try:
                 response = await call_next(request)

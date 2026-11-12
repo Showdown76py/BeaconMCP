@@ -736,7 +736,11 @@ function renderToolCard(tc, msgId) {
 }
 
 function renderConfirmCard(tc, msgId) {
-  const host = (tc.args && (tc.args.host || tc.args.hostname)) || "";
+  const a = (tc.args && typeof tc.args === "object") ? tc.args : {};
+  // proxmox_run has no host: its target is node + vmid. Show it so the
+  // operator knows which guest the command runs on.
+  const host = a.host || a.hostname ||
+    (a.vmid ? String(a.node || "?") + " \u00b7 vmid " + String(a.vmid) : "");
   const cmd = (tc.args && (tc.args.command || tc.args.cmd || "")) || "";
 
   const actions = h("div", { class: "confirm-actions" });
@@ -766,6 +770,11 @@ function renderConfirmCard(tc, msgId) {
     ]),
     cmd ? h("pre", { class: "confirm-code", text: "$ " + cmd }) : null,
     actions,
+    // Arguments come from the model and may carry hostile text: textContent only.
+    h("details", { class: "confirm-args" }, [
+      h("summary", { text: "All arguments" }),
+      h("pre", { class: "tool-block", text: JSON.stringify(a, null, 2) }),
+    ]),
   ]);
   return card;
 }

@@ -74,7 +74,10 @@ In order, stopping at the first failure:
    not whatever the remote points at a second later.
 5. **Reinstall**: `pip install -e . -c constraints.txt` in the detected venv. `constraints.txt` pins
    every dependency, direct or not, to the set CI tested, so an update never pulls a library
-   release nobody has run.
+   release nobody has run. It also pins the build backend (`hatchling`, equal to the pin in
+   `pyproject.toml`): the tool exports `PIP_CONSTRAINT` and `PIP_BUILD_CONSTRAINT` (the file's
+   absolute path) for this step, because `-c` alone does not reach pip's isolated build
+   environment. Do the same when installing by hand.
 6. **Check startup**: runs `beaconmcp check-startup` in a subprocess. The *new* code loads your
    *actual* configuration, imports every module, builds the HTTP app and answers `/health`, against
    scratch copies of the token store and dashboard database.
@@ -130,8 +133,15 @@ features:
 - `require_signed: true` makes `git verify-tag` (release) or `git verify-commit` (branch) a hard
   gate. Git checks the signature against the keys the service user trusts: import the maintainers'
   GPG keys, or for SSH signatures set `gpg.ssh.allowedSignersFile` in that user's git config.
-  **Every** public key in that user's keyring is accepted, trusted or not, so keep it to the
-  maintainers' keys (or point `GNUPGHOME` at a dedicated keyring in the unit). A release tag must
+  The key must be valid at least "fully" (checked with `-c gpg.minTrustLevel=fully`): a key that is
+  merely present in the keyring has "unknown" validity and the update is refused. Make each
+  maintainer key valid in one of two ways: certify it with a local key you already trust
+  ultimately (`gpg --lsign-key <id>`), or give it ultimate trust (`gpg --edit-key <id> trust`,
+  choice 5, or `echo '<fingerprint>:6:' | gpg --import-ownertrust`). Choice 4 ("I trust fully")
+  is not enough on its own: it is about trusting the owner to certify other keys and leaves the
+  key itself with "unknown" validity. SSH signatures are not affected: listing a key in
+  `gpg.ssh.allowedSignersFile` is the trust decision. Keep the keyring to the maintainers' keys (or
+  point `GNUPGHOME` at a dedicated keyring in the unit). A release tag must
   also carry its own name: a signed `v2.1.0-rc1` republished as `v2.1.0` is refused.
   On the branch channel this needs a signed tip commit; merges made through GitHub's web UI are
   signed by GitHub's key, which you then have to trust. That key signs every web-UI commit of every

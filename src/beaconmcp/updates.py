@@ -630,6 +630,11 @@ def _resolve_target(root: Path, channel: str) -> tuple[_Target | None, str | Non
     return _Target("branch", remote_ref, sha), None
 
 
+# git exits 0 for any cryptographically valid signature, even from a key
+# with "unknown" trust. Require the key to be trusted at least "fully".
+_TRUST_ARGS = ("-c", "gpg.minTrustLevel=fully")
+
+
 def _verify_signature(root: Path, target: _Target) -> tuple[bool, str]:
     """Check the target's signature against the keys this host trusts.
 
@@ -647,9 +652,9 @@ def _verify_signature(root: Path, target: _Target) -> tuple[bool, str]:
                 f"the signed tag object is named {own_name or 'nothing'!r}, "
                 f"not {target.name!r}"
             )
-        code, out, err = _git(root, "verify-tag", ref)
+        code, out, err = _git(root, *_TRUST_ARGS, "verify-tag", ref)
     else:
-        code, out, err = _git(root, "verify-commit", target.sha)
+        code, out, err = _git(root, *_TRUST_ARGS, "verify-commit", target.sha)
     detail = (err or out or "").strip()
     return code == 0, detail
 
@@ -841,11 +846,14 @@ def _pip_command(install: Installation) -> list[str]:
     return [install.python, "-m", "pip"]
 
 
-def _run(cmd: list[str], cwd: Path, timeout: int) -> tuple[int, str]:
+def _run(
+    cmd: list[str], cwd: Path, timeout: int, env: dict[str, str] | None = None,
+) -> tuple[int, str]:
     """Run a command, returning ``(returncode, combined output)``."""
     try:
         proc = subprocess.run(
             cmd, cwd=str(cwd), capture_output=True, text=True, timeout=timeout,
+            env=env,
         )
     except subprocess.TimeoutExpired:
         return 124, f"{' '.join(cmd)} timed out after {timeout}s"
@@ -867,6 +875,23 @@ def _pip_install_command(install: Installation, root: Path) -> list[str]:
     if (root / CONSTRAINTS_FILE).is_file():
         cmd += ["-c", CONSTRAINTS_FILE]
     return cmd
+
+
+def _pip_install_env(root: Path) -> dict[str, str] | None:
+    """Environment for the pip step: ``-c`` does not reach pip's isolated build
+    environment, so the build backend (hatchling, pinned in ``constraints.txt``)
+    would float. ``PIP_BUILD_CONSTRAINT`` (``--build-constraint``) does it on
+    pip >= 25.3, which no longer honours ``PIP_CONSTRAINT`` for the build
+    environment; older pips ignore the unknown variable and use ``PIP_CONSTRAINT``.
+    An environment variable, not a flag, so one command works on every pip.
+
+    ``None`` (inherit the environment) when the tree has no constraints file.
+    """
+    constraints = root / CONSTRAINTS_FILE
+    if not constraints.is_file():
+        return None
+    path = str(constraints.resolve())
+    return {**os.environ, "PIP_CONSTRAINT": path, "PIP_BUILD_CONSTRAINT": path}
 
 
 def _startup_check_command(install: Installation, config_path: Path | None) -> list[str]:
@@ -942,7 +967,14 @@ if [ "$(git -C "$root" rev-parse HEAD)" != "$to" ]; then
 fi
 if git -C "$root" reset --hard "$from"; then
   cd "$root" || exit 1
-  if [ -f constraints.txt ]; then pip_install "$@" install -e . -c constraints.txt; else pip_install "$@" install -e .; fi \
+  # -c does not reach pip's isolated build env (hatchling pin): pip >= 25.3
+  # reads PIP_BUILD_CONSTRAINT, older pips PIP_CONSTRAINT.
+  if [ -f constraints.txt ]; then
+    PIP_CONSTRAINT="$root/constraints.txt" PIP_BUILD_CONSTRAINT="$root/constraints.txt" \
+      pip_install "$@" install -e . -c constraints.txt
+  else
+    pip_install "$@" install -e .
+  fi \
     || log "reinstalling the dependencies of $from FAILED; run pip install by hand"
   systemctl restart "$service"
   if wait_healthy; then
@@ -1162,7 +1194,10 @@ def _apply_update_locked(
         if rolled:
             # Put the dependency set back too, so a half-applied update
             # doesn't leave newer libraries against older code.
-            pip_code, pip_out = _run(_pip_install_command(install, root), root, _PIP_TIMEOUT)
+            pip_code, pip_out = _run(
+                _pip_install_command(install, root), root, _PIP_TIMEOUT,
+                env=_pip_install_env(root),
+            )
             deps_ok = pip_code == 0
             result.steps.append(UpdateStep(
                 "rollback-pip-install", deps_ok,
@@ -1183,7 +1218,9 @@ def _apply_update_locked(
         result.message = reason + tail
         return result
 
-    code, out = _run(_pip_install_command(install, root), root, _PIP_TIMEOUT)
+    code, out = _run(
+        _pip_install_command(install, root), root, _PIP_TIMEOUT, env=_pip_install_env(root),
+    )
     if code != 0:
         result.steps.append(UpdateStep("pip-install", False, _tail(out)))
         return _rollback(f"Dependency install failed: {_tail(out, 400)}.")
