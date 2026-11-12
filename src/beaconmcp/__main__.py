@@ -196,13 +196,16 @@ def main():
     )
 
     serve_parser = sub.add_parser("serve", help="Start the MCP HTTP server")
+    # No argparse defaults here: _cmd_serve falls back to BEACONMCP_PORT /
+    # BEACONMCP_HOST, then server.port / server.host from the YAML. A default
+    # on the flag would always win and silently ignore the YAML value.
     serve_parser.add_argument(
-        "--port", type=int, default=int(os.environ.get("BEACONMCP_PORT", "8420")),
-        help="HTTP port (default: 8420)",
+        "--port", type=int, default=None,
+        help="HTTP port (default: BEACONMCP_PORT, then server.port, then 8420)",
     )
     serve_parser.add_argument(
-        "--host", default=os.environ.get("BEACONMCP_HOST", "0.0.0.0"),
-        help="HTTP bind address (default: 0.0.0.0)",
+        "--host", default=None,
+        help="HTTP bind address (default: BEACONMCP_HOST, then server.host, then 0.0.0.0)",
     )
 
     # --- validate-config ---
