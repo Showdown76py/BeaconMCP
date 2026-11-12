@@ -127,6 +127,19 @@ server:
   # already went through the chat approval card or a panel click.
   # confirm_strict: false
 
+  # Optional SSO on /oauth/authorize through an OpenID Connect provider
+  # (Ory Hydra, Keycloak...): a "Continue with SSO" button next to the TOTP
+  # code and passkeys. Deny by default: only accounts matched by an allow
+  # rule may authorize the client the rule names. See docs/configuration.md.
+  # oidc:
+  #   enabled: true
+  #   issuer: https://hydra.example.com/
+  #   client_id: beaconmcp
+  #   client_secret: ${BEACONMCP_OIDC_CLIENT_SECRET}
+  #   allow:
+  #     - client: beaconmcp_xxxx        # from `beaconmcp auth list`
+  #       emails: [you@example.com]
+
 # -------- Proxmox capability (optional) ------------------------------------
 # Delete this section if you have no Proxmox cluster. Tools starting with
 # `proxmox_` won't be registered.

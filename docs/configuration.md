@@ -44,6 +44,75 @@ Tailscale IP, a VPN address, a bastion.
 | `server.confirm_strict` | Default `false`. When `true`, a tool that needs a confirmation is refused instead of run if the client cannot show it (no form elicitation, or no request context). Turn it on once your clients support elicitation, or accept that those clients cannot use the gated tools. The dashboard chat and panels keep working: their MCP sessions accept the dialog because the chat approval card (which also covers every tool in `confirm_tools`) or the panel click already asked the human. |
 | `server.audit_log` | JSON-lines audit log covering tool calls, dashboard logins, OAuth authorize and client revokes. Created owner-only (0600). Default `/opt/beaconmcp/audit.log`; `-` keeps stderr only. Env override: `BEACONMCP_AUDIT_LOG`. |
 | `server.transfers_max_mb` | Size cap for `proxmox_upload_file` / `proxmox_download_file` / `proxmox_upload_link` / `proxmox_fetch_url`. Default 500. Behind Cloudflare, an upload link request body is also capped by Cloudflare (100 MB on the free plan, 413 from Cloudflare above that); `proxmox_fetch_url` is not affected. |
+| `server.oidc` | Optional SSO on `/oauth/authorize` through an external OpenID Connect provider (Ory Hydra, Keycloak, Authentik...). Off by default. See [SSO (OpenID Connect)](#sso-openid-connect). |
+
+## SSO (OpenID Connect)
+
+`server.oidc` adds a **Continue with SSO** button to `/oauth/authorize`. The operator signs in at
+your identity provider instead of typing a 6-digit code, and BeaconMCP then shows the usual approval
+screen. BeaconMCP stays the OAuth server that MCP clients (claude.ai, ChatGPT, Claude Code...) talk
+to, so nothing changes on their side, and TOTP and passkeys keep working next to it. The dashboard
+login (`/app/login`) is not covered: it still takes the client secret plus TOTP or a passkey.
+
+Access is denied by default. Only accounts matched by an `allow` rule get in, and each rule names
+the BeaconMCP client it may authorize (a client created through the ChatGPT bootstrap is covered by
+its owner's rules). The button only shows for clients that have a rule.
+
+```yaml
+server:
+  oidc:
+    enabled: true
+    issuer: https://hydra.example.com/        # exactly as in the provider's discovery doc
+    client_id: beaconmcp
+    client_secret: ${BEACONMCP_OIDC_CLIENT_SECRET}
+    # scopes: [openid, email, profile]         # openid is always added
+    # label: SSO                               # button text
+    # redirect_uri: https://mcp.example.com/oauth/oidc/callback
+    # token_auth_method: client_secret_basic   # or client_secret_post
+    # groups_claim: groups
+    # require_email_verified: true
+    allow:
+      - client: beaconmcp_7f3a...              # from `beaconmcp auth list`
+        emails: [alice@example.com]
+      - client: beaconmcp_7f3a...
+        groups: [infra-admins]
+      - client: beaconmcp_91bc...
+        subjects: [3f2a9c4e-...]               # the provider's `sub`
+```
+
+| Key | Notes |
+|-----|-------|
+| `issuer` | Provider base URL. Its `/.well-known/openid-configuration` is fetched on the first sign-in (not at boot, so a provider outage never stops BeaconMCP) and cached for an hour. Must be `https` (plain `http` only for localhost). |
+| `client_id` / `client_secret` | The confidential client registered for BeaconMCP at the provider. |
+| `redirect_uri` | Defaults to `<public URL>/oauth/oidc/callback`, built from the request host (`X-Forwarded-Host` from `server.trusted_proxies`). Set it when the provider needs one fixed value. |
+| `token_auth_method` | How BeaconMCP authenticates at the token endpoint. Hydra's default is `client_secret_basic`. |
+| `allow` | Required, at least one rule. A rule matches when any of its `emails`, `groups` or `subjects` matches the id_token. Emails count only with `email_verified: true` unless `require_email_verified` is `false`. Groups are read from `groups_claim`. |
+
+The id_token is checked before anything is granted: signature against the provider's JWKS
+(asymmetric algorithms only, key rotation picked up automatically), `iss`, `aud`, `azp`, expiry and
+the `nonce`. The round trip uses `state`, PKCE (S256) and a short-lived cookie that ties the
+callback to the browser that started it.
+
+### Ory Hydra
+
+Register BeaconMCP as a client on Hydra's admin API:
+
+```bash
+hydra create oauth2-client \
+  --endpoint http://hydra-admin:4445 \
+  --name BeaconMCP \
+  --grant-type authorization_code \
+  --response-type code \
+  --scope openid --scope email --scope profile \
+  --redirect-uri https://mcp.example.com/oauth/oidc/callback \
+  --token-endpoint-auth-method client_secret_basic
+```
+
+Put the printed client id and secret in `server.oidc`, and set `issuer` to Hydra's public URL
+(`urls.self.issuer` in Hydra's config). The id_token only carries what your login and consent app
+puts in `session.id_token` when it accepts the consent request: `email` and `email_verified` for
+email rules, a `groups` claim for group rules. `sub` is the subject your login app accepted, so
+`subjects` rules work without anything extra.
 
 ## Proxmox
 

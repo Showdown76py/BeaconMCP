@@ -22,6 +22,8 @@ dependencies = [
     "webauthn>=2,<4",
     "qrcode",
     "cryptography>=42",
+    # id_token checks for the optional OIDC sso (server.oidc)
+    "pyjwt[crypto]>=2.8",
     "jinja2>=3",
     "google-genai>=1.0",
     "httpx>=0.27",

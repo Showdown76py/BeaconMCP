@@ -134,6 +134,25 @@ Passkey ceremonies are rate-limited per IP by the same limiter that guards `/app
 lockout does not block them: a passkey cannot be guessed, so it stays the owner's way in while
 someone burns the client's TOTP budget.
 
+## SSO (OpenID Connect)
+
+With `server.oidc` on, a sign-in at your identity provider can stand in for the 6-digit code on
+`/oauth/authorize` (setup in [configuration.md](configuration.md#sso-openid-connect)). That moves
+trust to the provider: whoever controls an account matched by an `allow` rule can authorize the
+client that rule names, so require MFA at the provider and keep the rules narrow.
+
+- **Deny by default.** No rule, no access. A rule names one BeaconMCP client; an account that
+  matches a rule for another client is refused.
+- **Unverified emails don't count** unless you turn `require_email_verified` off, because an
+  unverified email is whatever the user typed at the provider.
+- **The approval screen still needs a click.** A provider session that signs you in silently lands
+  on the same "Finish signing in" screen as TOTP and passkeys, and nothing is issued before it.
+- **TOTP and passkeys stay available**, so a provider outage never locks you out, and a TOTP lockout
+  does not block SSO (an IdP login cannot be guessed).
+- SSO sign-ins are audited as `auth.authorize.2fa` with `via=oidc` and the provider's `sub`;
+  failures as `auth.authorize.fail` with an `oidc:` reason. The round trip shares the per-IP login
+  limiter.
+
 Manage enrolled credentials from `/app/tokens`, or drop them all for a client with:
 
 ```sql

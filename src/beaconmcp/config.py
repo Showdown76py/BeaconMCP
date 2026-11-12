@@ -22,6 +22,7 @@ import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
@@ -124,6 +125,45 @@ class SSHConfig:
     strict_host_key_checking: bool | None = None
 
 
+OIDC_TOKEN_AUTH_METHODS = ("client_secret_basic", "client_secret_post")
+
+
+@dataclass
+class OidcRule:
+    """one ``server.oidc.allow`` entry: who may authorize ``client``.
+
+    a rule matches when any of its lists matches the id_token claims.
+    """
+
+    client: str
+    emails: list[str] = field(default_factory=list)
+    groups: list[str] = field(default_factory=list)
+    subjects: list[str] = field(default_factory=list)
+
+
+@dataclass
+class OidcConfig:
+    """sso on /oauth/authorize via an external OIDC provider (Ory Hydra, Keycloak...).
+
+    an extra way through the human step, next to TOTP and passkeys. off by
+    default; deny by default, only ``allow`` rules let an account in.
+    """
+
+    enabled: bool = False
+    issuer: str = ""
+    client_id: str = ""
+    client_secret: str = ""
+    scopes: list[str] = field(default_factory=lambda: ["openid", "email", "profile"])
+    # button text on the authorize page
+    label: str = "SSO"
+    # None = <public base>/oauth/oidc/callback, from the request host
+    redirect_uri: str | None = None
+    token_auth_method: str = "client_secret_basic"
+    groups_claim: str = "groups"
+    require_email_verified: bool = True
+    allow: list[OidcRule] = field(default_factory=list)
+
+
 @dataclass
 class ServerConfig:
     host: str = "0.0.0.0"
@@ -174,6 +214,7 @@ class ServerConfig:
     # When true, a tool that needs confirmation is refused (not run) if the
     # client cannot show the dialog (no form elicitation, claude.ai today).
     confirm_strict: bool = False
+    oidc: OidcConfig = field(default_factory=OidcConfig)
 
 
 @dataclass
@@ -599,6 +640,7 @@ class Config:
                 else None
             ),
             confirm_strict=bool(srv_raw.get("confirm_strict", False)),
+            oidc=_parse_oidc(srv_raw.get("oidc")),
         )
         if server.named_token_ttl is not None and server.named_token_ttl < 0:
             raise ConfigError(
@@ -786,6 +828,29 @@ class Config:
                     else self.server.confirm_tools
                 ),
                 "confirm_strict": self.server.confirm_strict,
+                "oidc": (
+                    {
+                        "enabled": True,
+                        "issuer": self.server.oidc.issuer,
+                        "client_id": self.server.oidc.client_id,
+                        "client_secret": mask(self.server.oidc.client_secret),
+                        "scopes": self.server.oidc.scopes,
+                        "redirect_uri": self.server.oidc.redirect_uri
+                        or "(default: <public base>/oauth/oidc/callback)",
+                        "token_auth_method": self.server.oidc.token_auth_method,
+                        "allow": [
+                            {
+                                "client": r.client,
+                                "emails": r.emails,
+                                "groups": r.groups,
+                                "subjects": r.subjects,
+                            }
+                            for r in self.server.oidc.allow
+                        ],
+                    }
+                    if self.server.oidc.enabled
+                    else {"enabled": False}
+                ),
             },
             "proxmox": {
                 "verify_ssl": self.verify_ssl,
@@ -936,6 +1001,90 @@ def _required(obj: dict, key: str, ctx: str) -> str:
     if key not in obj or obj[key] in (None, ""):
         raise ConfigError(f"{ctx}: missing required field '{key}'.")
     return str(obj[key])
+
+
+def _str_list(value: Any, ctx: str) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        raise ConfigError(f"{ctx}: expected a list of strings.")
+    return [str(v).strip() for v in value if str(v).strip()]
+
+
+def _parse_oidc(raw: Any) -> OidcConfig:
+    """``server.oidc``. validated only when enabled, so a parked block never breaks boot."""
+    if raw is None:
+        return OidcConfig()
+    if not isinstance(raw, dict):
+        raise ConfigError("server.oidc: expected a mapping.")
+    if not _bool(raw.get("enabled", False)):
+        return OidcConfig()
+
+    ctx = "server.oidc"
+    issuer = _required(raw, "issuer", ctx).strip()
+    parsed = urlparse(issuer)
+    local = parsed.hostname in ("localhost", "127.0.0.1", "::1")
+    if not parsed.netloc or not (
+        parsed.scheme == "https" or (parsed.scheme == "http" and local)
+    ):
+        raise ConfigError(
+            f"{ctx}.issuer: must be an https URL (http only for localhost), got {issuer!r}."
+        )
+    redirect_uri = raw.get("redirect_uri") or None
+    if redirect_uri is not None:
+        redirect_uri = str(redirect_uri).strip()
+        rp = urlparse(redirect_uri)
+        if rp.scheme not in ("https", "http") or not rp.netloc:
+            raise ConfigError(f"{ctx}.redirect_uri: must be an absolute URL.")
+    method = str(raw.get("token_auth_method") or "client_secret_basic").strip()
+    if method not in OIDC_TOKEN_AUTH_METHODS:
+        raise ConfigError(
+            f"{ctx}.token_auth_method: expected one of "
+            f"{', '.join(OIDC_TOKEN_AUTH_METHODS)}, got {method!r}."
+        )
+    scopes = _str_list(raw.get("scopes"), f"{ctx}.scopes") or [
+        "openid", "email", "profile",
+    ]
+    if "openid" not in scopes:
+        scopes.insert(0, "openid")
+
+    allow_raw = raw.get("allow")
+    if not isinstance(allow_raw, list) or not allow_raw:
+        raise ConfigError(
+            f"{ctx}.allow: at least one rule is required (nobody gets in otherwise)."
+        )
+    rules: list[OidcRule] = []
+    for i, entry in enumerate(allow_raw):
+        rctx = f"{ctx}.allow[{i}]"
+        if not isinstance(entry, dict):
+            raise ConfigError(f"{rctx}: expected a mapping.")
+        rule = OidcRule(
+            client=_required(entry, "client", rctx).strip(),
+            emails=[e.lower() for e in _str_list(entry.get("emails"), f"{rctx}.emails")],
+            groups=_str_list(entry.get("groups"), f"{rctx}.groups"),
+            subjects=_str_list(entry.get("subjects"), f"{rctx}.subjects"),
+        )
+        if not (rule.emails or rule.groups or rule.subjects):
+            raise ConfigError(
+                f"{rctx}: list at least one of emails, groups or subjects."
+            )
+        rules.append(rule)
+
+    return OidcConfig(
+        enabled=True,
+        issuer=issuer,
+        client_id=_required(raw, "client_id", ctx).strip(),
+        client_secret=_required(raw, "client_secret", ctx),
+        scopes=scopes,
+        label=str(raw.get("label") or "SSO").strip() or "SSO",
+        redirect_uri=redirect_uri,
+        token_auth_method=method,
+        groups_claim=str(raw.get("groups_claim") or "groups").strip() or "groups",
+        require_email_verified=_bool(raw.get("require_email_verified", True)),
+        allow=rules,
+    )
 
 
 def _bool(value: Any) -> bool:
