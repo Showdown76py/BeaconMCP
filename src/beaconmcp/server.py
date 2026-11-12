@@ -31,6 +31,7 @@ import time
 from . import audit, confirm
 from .auth import current_client_id
 from .metrics import tool_calls, tool_latency_ms
+from .tool_annotations import TOOL_ANNOTATIONS
 
 config = Config.load()
 proxmox_client = ProxmoxClient(config)
@@ -217,7 +218,11 @@ def _metric_tool(*args, **kwargs):
                 )
 
         wrapper.__annotations__ = {**getattr(func, "__annotations__", {}), _CTX_KW: Context}
-        return _orig_tool(*args, **kwargs)(wrapper)
+        # Client hints from the central table, unless the caller passed its own.
+        tool_kwargs = dict(kwargs)
+        if "annotations" not in tool_kwargs and tool_name in TOOL_ANNOTATIONS:
+            tool_kwargs["annotations"] = TOOL_ANNOTATIONS[tool_name]
+        return _orig_tool(*args, **tool_kwargs)(wrapper)
     return decorator
 mcp.tool = _metric_tool
 
