@@ -252,7 +252,27 @@ def _is_local_address(addr: str) -> bool:
     ip = ipaddress.ip_address(addr.split("%", 1)[0])
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
         ip = ip.ipv4_mapped
-    return ip.is_loopback or ip.is_link_local or ip.is_unspecified or ip.is_multicast
+    if ip.is_loopback or ip.is_link_local or ip.is_unspecified or ip.is_multicast:
+        return True
+    return _is_host_address(ip)
+
+
+def _is_host_address(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True if ``ip`` is assigned to one of this machine's interfaces.
+
+    A UDP ``bind`` only succeeds on an address the host owns (``EADDRNOTAVAIL``
+    otherwise), so this covers every interface without a list to maintain.
+    Nothing is sent and the socket is always closed.
+    """
+    family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_DGRAM)
+    try:
+        sock.bind((str(ip), 0))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
 
 
 async def _host_addresses(host: str) -> list[str]:
@@ -284,8 +304,8 @@ async def _refuse_local_target(request: httpx.Request) -> None:
     local = next((a for a in addrs if _is_local_address(a)), None)
     if local is not None:
         raise _LocalTargetRefused(
-            f"Refusing to fetch from {host} ({local}): loopback and link-local "
-            "addresses are not allowed."
+            f"Refusing to fetch from {host} ({local}): loopback, link-local and "
+            "host-owned addresses are not allowed."
         )
 
 
@@ -321,8 +341,8 @@ class _GuardedNetworkBackend(httpcore.AsyncNetworkBackend):
         local = next((a for a in addrs if _is_local_address(a)), None)
         if local is not None:
             raise _LocalTargetRefused(
-                f"Refusing to fetch from {host} ({local}): loopback and link-local "
-                "addresses are not allowed."
+                f"Refusing to fetch from {host} ({local}): loopback, link-local and "
+                "host-owned addresses are not allowed."
             )
         # Every address was checked above, so trying them in turn keeps the
         # guarantee: an unreachable AAAA on an IPv4-only host must not end it.
@@ -1035,9 +1055,10 @@ def register_system_tools(mcp: MCPServer, client: ProxmoxClient, ssh_client: Any
         when the file is reachable by URL, e.g. a release asset or a raw file
         on GitHub. The staged copy is deleted afterwards.
 
-        URLs that resolve to a loopback or link-local address (the BeaconMCP
-        host itself, cloud metadata endpoints) are refused, redirects
-        included. Private LAN addresses are allowed.
+        URLs that resolve to a loopback or link-local address, or to any
+        address assigned to the BeaconMCP host itself (cloud metadata
+        endpoints, the host's own services on any interface), are refused,
+        redirects included. Other private LAN addresses are allowed.
         """
         if not ssh_client:
             return {

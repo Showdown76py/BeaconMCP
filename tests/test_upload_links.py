@@ -567,3 +567,17 @@ async def test_fetch_tries_each_checked_address(monkeypatch) -> None:
     monkeypatch.setattr(backend._inner, "connect_tcp", connect)
     assert await backend.connect_tcp("example.com", 443) == "stream"
     assert tried == ["2001:db8::1", "198.51.100.7"]
+
+
+async def test_fetch_url_refuses_the_hosts_own_lan_address(env, remote) -> None:
+    from test_fetch_url_guard import host_lan_ip
+
+    ip = host_lan_ip()
+    if ip is None:
+        pytest.skip("no non-loopback IPv4 address on this machine")
+    res = await env.tools["proxmox_fetch_url"](
+        node=NODE, vmid=CT, url=f"http://{ip}:8006/", dest="/x",
+    )
+    assert res["status"] == "error"
+    assert "not allowed" in res["error"]
+    assert env.ssh.guest_files == {}
