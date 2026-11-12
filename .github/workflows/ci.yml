@@ -13,6 +13,14 @@ concurrency:
 permissions:
   contents: read
 
+# constraints.txt also pins the build backend (hatchling). -c does not reach
+# pip's isolated build environment, these do: PIP_BUILD_CONSTRAINT on
+# pip >= 25.3, PIP_CONSTRAINT on older pips and for `python -m build`.
+# Absolute, since the build runs in its own directory.
+env:
+  PIP_CONSTRAINT: ${{ github.workspace }}/constraints.txt
+  PIP_BUILD_CONSTRAINT: ${{ github.workspace }}/constraints.txt
+
 jobs:
   test:
     runs-on: ubuntu-latest
