@@ -1005,3 +1005,21 @@ def test_clone_and_backup_create_need_confirmation():
 
     assert "proxmox_vm_clone" in _NEEDS_CONFIRMATION
     assert "proxmox_backup_create" in _NEEDS_CONFIRMATION
+
+
+def test_snapshot_create_with_vmstate_needs_confirmation():
+    """``vmstate=true`` dumps the whole guest RAM onto the storage pool.
+
+    An agent loop can fill the pool that way, so a snapshot that carries
+    ``vmstate`` must reach the modal, while a plain snapshot (no ``vmstate``
+    or ``vmstate=False``) stays ungated.
+    """
+    from beaconmcp.dashboard.chat import _tool_call_requires_confirmation
+
+    assert _tool_call_requires_confirmation(
+        "proxmox_snapshot_create", {"vmid": 201, "vmstate": True}
+    )
+    assert not _tool_call_requires_confirmation(
+        "proxmox_snapshot_create", {"vmid": 201, "vmstate": False}
+    )
+    assert not _tool_call_requires_confirmation("proxmox_snapshot_create", {})
