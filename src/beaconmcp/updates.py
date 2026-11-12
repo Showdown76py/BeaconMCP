@@ -630,6 +630,11 @@ def _resolve_target(root: Path, channel: str) -> tuple[_Target | None, str | Non
     return _Target("branch", remote_ref, sha), None
 
 
+# git exits 0 for any cryptographically valid signature, even from a key
+# with "unknown" trust. Require the key to be trusted at least "fully".
+_TRUST_ARGS = ("-c", "gpg.minTrustLevel=fully")
+
+
 def _verify_signature(root: Path, target: _Target) -> tuple[bool, str]:
     """Check the target's signature against the keys this host trusts.
 
@@ -647,9 +652,9 @@ def _verify_signature(root: Path, target: _Target) -> tuple[bool, str]:
                 f"the signed tag object is named {own_name or 'nothing'!r}, "
                 f"not {target.name!r}"
             )
-        code, out, err = _git(root, "verify-tag", ref)
+        code, out, err = _git(root, *_TRUST_ARGS, "verify-tag", ref)
     else:
-        code, out, err = _git(root, "verify-commit", target.sha)
+        code, out, err = _git(root, *_TRUST_ARGS, "verify-commit", target.sha)
     detail = (err or out or "").strip()
     return code == 0, detail
 

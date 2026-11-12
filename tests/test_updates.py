@@ -947,6 +947,49 @@ def test_require_signed_refuses_a_signature_from_an_unknown_key(
     assert _head(checkout) == before
 
 
+def test_require_signed_refuses_a_valid_signature_from_an_untrusted_key(
+    checkout, upstream, stub_side_effects, gpg_signer, monkeypatch,
+):
+    _advance(upstream, "release v1.0.0")
+    _tag(upstream, "v1.0.0", signed=True)
+    pub = subprocess.run(
+        ["gpg", "--export"], check=True, capture_output=True,
+    ).stdout
+    # This host's keyring holds the release key, but never marked it trusted.
+    import tempfile
+
+    other = tempfile.mkdtemp(prefix="bmu")
+    os.chmod(other, 0o700)
+    monkeypatch.setenv("GNUPGHOME", other)
+    try:
+        subprocess.run(["gpg", "--batch", "--import"], input=pub, check=True, capture_output=True)
+        before = _head(checkout)
+        info = updates.check_for_update(install=_install(checkout), settings=SIGNED_RELEASE)
+        assert info.signature_ok is False
+        result = updates.apply_update(install=_install(checkout), settings=SIGNED_RELEASE)
+        assert result.ok is False
+        assert _head(checkout) == before
+    finally:
+        subprocess.run(["gpgconf", "--kill", "gpg-agent"], capture_output=True)
+        shutil.rmtree(other, ignore_errors=True)
+
+
+def test_signature_checks_require_a_fully_trusted_key(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_git(root, *args, **kw):
+        calls.append(args)
+        return 0, "v1.0.0", ""
+
+    monkeypatch.setattr(updates, "_git", fake_git)
+    updates._verify_signature(tmp_path, updates._Target("release", "v1.0.0", "a" * 40))
+    updates._verify_signature(tmp_path, updates._Target("branch", "origin/main", "a" * 40))
+    verifies = [c for c in calls if "verify-tag" in c or "verify-commit" in c]
+    assert len(verifies) == 2
+    for c in verifies:
+        assert c[:2] == ("-c", "gpg.minTrustLevel=fully")
+
+
 def test_require_signed_on_the_branch_checks_the_tip_commit(
     checkout, upstream, stub_side_effects, gpg_signer,
 ):
