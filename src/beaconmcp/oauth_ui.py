@@ -716,6 +716,26 @@ def client_pair(logo_url: str, client_name: str) -> str:
     )
 
 
+def oidc_block(label: str | None, hidden_inputs: str) -> str:
+    """sso button. never disabled by the TOTP lockout: an IdP login can't be guessed."""
+    if not label:
+        return ""
+    return (
+        '<div id="oidc-block">'
+        '<form method="POST" action="/oauth/oidc/start" id="oidc-form">'
+        f"{hidden_inputs}"
+        '<button type="submit" class="btn-ghost" id="oidc-btn">'
+        '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+        'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="M10 17l5-5-5-5"/>'
+        '<path d="M15 12H3"/></svg>'
+        f'<span class="btn-label">Continue with {html.escape(label)}</span>'
+        "</button></form>"
+        '<div class="alt-divider"><span>or</span></div>'
+        "</div>"
+    )
+
+
 def totp_boxes(disabled: bool = False) -> str:
     dis = " disabled" if disabled else ""
     return '<div class="totp-inputs" id="totp-inputs">' + "".join(
@@ -832,12 +852,13 @@ def render_authorize_page(
     *, host: str, client_id: str, client_name: str, logo_url: str,
     redirect_uri: str, kinds: list[str], hidden_inputs: str, banner: str,
     locked: bool, approved: bool, passkeys_on: bool, ticket: str,
-    access_expiry: str, ticket_expiry: str,
+    access_expiry: str, ticket_expiry: str, oidc_label: str | None = None,
 ) -> str:
     """``/oauth/authorize``: connect step, then the post-2FA confirmation.
 
     ``hidden_inputs`` and ``banner`` are pre-escaped HTML; ``access_expiry``
     and ``ticket_expiry`` too. Element ids are what ``AUTHORIZE_JS`` binds to.
+    ``oidc_label`` adds the sso button (plain form post, no JS) when set.
     """
     e = html.escape
     disabled = " disabled" if locked else ""
@@ -855,6 +876,7 @@ def render_authorize_page(
     {banner}
     {permissions_list(kinds)}
     <div class="banner" id="verify-error" hidden></div>
+    {oidc_block(oidc_label, hidden_inputs)}
     <div id="passkey-block" hidden>
       <button type="button" class="btn-primary" id="passkey-btn"{disabled}>
         {PASSKEY_ICON}<span class="btn-label">Continue with passkey</span>

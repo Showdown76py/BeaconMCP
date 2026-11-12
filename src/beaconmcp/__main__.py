@@ -571,6 +571,7 @@ _METRICS_EXACT_PATHS = frozenset({
     "/oauth/passkey/options", "/oauth/passkey/verify",
     "/oauth/passkey/register/options", "/oauth/passkey/register/verify",
     "/oauth/token", "/oauth/register", "/oauth/logo/generic",
+    "/oauth/oidc/start", "/oauth/oidc/callback",
 })
 # Checked in order; the first prefix wins and its stripped form is the label.
 # The variable tail is a credential or a slug (single-use capability) for
@@ -625,6 +626,7 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
     from . import audit
     from . import auth
     from . import oauth_ui
+    from . import oidc
     from .client_identity import LogoResolver, identify
     from . import transfers
     from .auth import (
@@ -764,6 +766,12 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
     # Share the TokenStore with MCP tools so security_end_session can revoke
     # the caller's bearer without an import cycle.
     auth.register_token_store(token_store)
+
+    # sso via an external OIDC IdP (server.oidc), None when off. discovery is
+    # lazy so a down IdP never blocks boot, TOTP / passkeys keep working.
+    oidc_provider = (
+        oidc.OidcProvider(config.server.oidc) if config.server.oidc.enabled else None
+    )
 
     # In-memory TOTP brute-force guard, keyed on (client_id, source IP): 5
     # wrong codes from one IP lock that IP out for 5 minutes, and 10 from any
@@ -931,6 +939,15 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             return client.owner_client_id
         return client_id
 
+    def _oidc_label_for(client_id: str) -> str | None:
+        """button label when sso can authorize this client, else None (no button)."""
+        if oidc_provider is None:
+            return None
+        allowed = oidc_provider.configured_clients()
+        if client_id in allowed or _passkey_owner(client_id) in allowed:
+            return config.server.oidc.label
+        return None
+
     def _authorize_passkeys_enabled(request: Request, client_id: str) -> bool:
         if passkey_service is None or not passkey_service.available:
             return False
@@ -1006,6 +1023,7 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             locked=locked,
             approved=approved,
             passkeys_on=passkeys_on,
+            oidc_label=None if approved else _oidc_label_for(client_id),
             ticket=ticket or "",
             access_expiry=_fmt(access_expires_at),
             ticket_expiry=_fmt(ticket_expires_at),
@@ -1159,6 +1177,128 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             ip=client_ip(request, tuple(config.server.trusted_proxies)),
         )
         return _authorize_redirect(normalized)
+
+    # --- sso (OIDC) on the authorize page --------------------------------
+
+    OIDC_COOKIE = "beaconmcp_oidc"
+    OIDC_COOKIE_PATH = "/oauth/oidc/"
+
+    def _oidc_redirect_uri(request: Request) -> str:
+        return (
+            config.server.oidc.redirect_uri
+            or f"{_issuer(request)}/oauth/oidc/callback"
+        )
+
+    def _oidc_rate_limited(request: Request) -> int | None:
+        ip = _ip(request)
+        if _login_limiter.check(ip):
+            return None
+        return _login_limiter.retry_after(ip)
+
+    async def oauth_oidc_start(request: Request) -> Response:
+        if oidc_provider is None:
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        form = await request.form()
+        body = {k: v for k, v in form.items() if isinstance(v, str)}
+        normalized, err = _validate_authorize_params(body)
+        if err is not None:
+            return err
+        retry = _oidc_rate_limited(request)
+        if retry is not None:
+            response = _authorize_failed(
+                request, normalized, f"Too many attempts. Retry in {retry}s.",
+                status=429,
+            )
+            response.headers["Retry-After"] = str(retry)
+            return response
+        if _oidc_label_for(normalized["client_id"]) is None:
+            return _authorize_failed(
+                request, normalized, "SSO is not enabled for this client.",
+                status=403,
+            )
+        try:
+            url, binding = await oidc_provider.start(
+                redirect_uri=_oidc_redirect_uri(request), payload=normalized,
+            )
+        except oidc.OidcError as exc:
+            logging.getLogger("beaconmcp").warning("oidc start failed: %s", exc)
+            return _authorize_failed(
+                request, normalized,
+                "The SSO provider can't be reached right now. Use your 2FA code instead.",
+                status=502,
+            )
+        response = Response(status_code=303, headers={"Location": url})
+        trusted = tuple(config.server.trusted_proxies)
+        response.set_cookie(
+            OIDC_COOKIE, binding,
+            max_age=int(oidc.PENDING_TTL), path=OIDC_COOKIE_PATH,
+            httponly=True, samesite="lax",
+            secure=forwarded_scheme(request, trusted) == "https",
+        )
+        return response
+
+    async def oauth_oidc_callback(request: Request) -> Response:
+        if oidc_provider is None:
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        if _oidc_rate_limited(request) is not None:
+            return JSONResponse({"error": "too_many_requests"}, status_code=429)
+        params = request.query_params
+        pending = oidc_provider.take(
+            params.get("state", ""), request.cookies.get(OIDC_COOKIE, ""),
+        )
+        if pending is None:
+            return JSONResponse(
+                {
+                    "error": "invalid_request",
+                    "error_description": (
+                        "This SSO sign-in expired or was started in another "
+                        "browser. Start the authorization again."
+                    ),
+                },
+                status_code=400,
+            )
+        normalized = pending.payload
+        client_id = normalized["client_id"]
+        ip = _ip(request)
+
+        def _fail(reason: str, message: str, status: int = 401) -> Response:
+            audit.emit(
+                "auth.authorize.fail", client_id=client_id,
+                reason=f"oidc:{reason}", ip=ip,
+            )
+            response = _authorize_failed(request, normalized, message, status=status)
+            response.delete_cookie(OIDC_COOKIE, path=OIDC_COOKIE_PATH)
+            return response
+
+        if params.get("error"):
+            # IdP said no (user cancelled, consent denied...). error is
+            # IdP-controlled text: logged, never echoed
+            return _fail(
+                str(params.get("error"))[:64],
+                "SSO sign-in was cancelled or refused.",
+            )
+        try:
+            claims = await oidc_provider.finish(pending, params.get("code", ""))
+        except oidc.OidcError as exc:
+            logging.getLogger("beaconmcp").warning("oidc sign-in failed: %s", exc)
+            return _fail("invalid", "SSO sign-in failed. Use your 2FA code instead.")
+
+        allowed = oidc_provider.allowed_clients(claims)
+        if client_id not in allowed and _passkey_owner(client_id) not in allowed:
+            return _fail(
+                "not_allowed",
+                "Your SSO account isn't allowed to authorize this client.",
+                status=403,
+            )
+        # like a passkey: a clean human step, clears the TOTP lockout
+        totp_record_success(client_id, ip)
+        audit.emit(
+            "auth.authorize.2fa", client_id=client_id, via="oidc",
+            sub=str(claims.get("sub")), ip=ip,
+        )
+        response = _authorize_approved(request, normalized)
+        response.delete_cookie(OIDC_COOKIE, path=OIDC_COOKIE_PATH)
+        return response
 
     # --- passkeys on the authorize page ----------------------------------
 
@@ -1488,6 +1628,12 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         if path.startswith(transfers.UPLOAD_PATH_PREFIX):
             return await call_next(request)
 
+        # sso round trip for /oauth/authorize: no bearer yet. guarded by the
+        # login limiter, single-use state + cookie binding, and the id_token
+        # checks; the approval ticket still needs the human's click.
+        if path in ("/oauth/oidc/start", "/oauth/oidc/callback"):
+            return await call_next(request)
+
         # Passkey ceremonies for /oauth/authorize. They are part of signing
         # in, so they cannot require a bearer -- there isn't one yet. Their
         # own guards are the WebAuthn signature, the TOTP lockout and the
@@ -1770,6 +1916,8 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
                 "/oauth/authorize/finalize",
                 oauth_authorize_finalize, methods=["POST"],
             ),
+            Route("/oauth/oidc/start", oauth_oidc_start, methods=["POST"]),
+            Route("/oauth/oidc/callback", oauth_oidc_callback, methods=["GET"]),
             Route("/oauth/passkey/options", oauth_passkey_options, methods=["POST"]),
             Route("/oauth/passkey/verify", oauth_passkey_verify, methods=["POST"]),
             Route(

@@ -26,6 +26,7 @@ EXACT = [
     "/oauth/passkey/options", "/oauth/passkey/verify",
     "/oauth/passkey/register/options", "/oauth/passkey/register/verify",
     "/oauth/token", "/oauth/register", "/oauth/logo/generic",
+    "/oauth/oidc/start", "/oauth/oidc/callback",
 ]
 
 
