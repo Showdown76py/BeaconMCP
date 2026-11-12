@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from types import SimpleNamespace
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -575,3 +576,63 @@ def test_app_context_entry_count_is_capped(client, engine):
         }),
     )
     assert len(engine.calls[0].app_context) == 8
+
+
+@pytest.mark.anyio
+async def test_open_session_forwards_elicitation_callback(monkeypatch):
+    seen: dict = {}
+
+    @asynccontextmanager
+    async def fake_transport(url, *, http_client=None, **kwargs):
+        yield ("read", "write")
+
+    class FakeSession:
+        def __init__(self, read, write, **kwargs):
+            seen["kwargs"] = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def initialize(self):
+            pass
+
+    monkeypatch.setattr(mcp_bridge, "streamable_http_client", fake_transport)
+    monkeypatch.setattr(mcp_bridge, "ClientSession", FakeSession)
+
+    async with mcp_bridge.open_session(
+        "http://x/mcp", "tok", elicitation_callback=mcp_bridge.approve_server_confirmation,
+    ):
+        pass
+    assert seen["kwargs"]["elicitation_callback"] is mcp_bridge.approve_server_confirmation
+
+
+def test_approval_callback_makes_session_declare_form_elicitation():
+    from mcp.client.session import ClientSession
+
+    from beaconmcp.confirm import _supports_form
+
+    session = ClientSession(
+        "r", "w", elicitation_callback=mcp_bridge.approve_server_confirmation,
+    )
+    caps = session._build_capabilities("2025-11-25")
+    ctx = SimpleNamespace(request_context=SimpleNamespace(
+        session=SimpleNamespace(client_capabilities=caps),
+    ))
+    assert _supports_form(ctx)
+
+
+@pytest.mark.anyio
+async def test_approval_callback_answers_the_confirm_form():
+    from mcp import types
+
+    from beaconmcp.confirm import _Confirm
+
+    params = types.ElicitRequestFormParams(
+        message="Run x?", requested_schema=_Confirm.model_json_schema(),
+    )
+    result = await mcp_bridge.approve_server_confirmation(None, params)
+    assert result.action == "accept"
+    assert _Confirm(**result.content).confirm is True

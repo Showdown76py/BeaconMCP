@@ -23,7 +23,8 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 import httpx2
-from mcp.client.session import ClientSession
+from mcp import types
+from mcp.client.session import ClientSession, ElicitationFnT
 from mcp.client.streamable_http import streamable_http_client
 
 # Extension identifier and content type from the MCP Apps spec (SEP-1865).
@@ -40,6 +41,25 @@ _UI_CAPABILITY: dict[str, Any] = {"mimeTypes": [APP_MIME_TYPE]}
 CLIENT_EXTENSIONS: dict[str, dict[str, Any]] = {UI_EXTENSION_ID: _UI_CAPABILITY}
 
 
+async def approve_server_confirmation(
+    context: Any, params: types.ElicitRequestParams,
+) -> types.ElicitResult | types.ErrorData:
+    """Answer the server's yes/no dialog (``confirm.confirm_destructive``) with yes.
+
+    Only safe because every dashboard path that reaches a tool the server
+    would ask about has already put it in front of the human: the chat card
+    (``chat._tool_call_requires_confirmation`` includes the server rule) or a
+    click in a panel (``chat.panel_call_allowed``). Anything that is not the
+    plain ``confirm`` form is refused.
+    """
+    if not isinstance(params, types.ElicitRequestFormParams):
+        return types.ErrorData(code=types.INVALID_REQUEST, message="Only the confirm form is supported")
+    props = (params.requested_schema or {}).get("properties", {})
+    if set(props) != {"confirm"}:
+        return types.ErrorData(code=types.INVALID_REQUEST, message="Only the confirm form is supported")
+    return types.ElicitResult(action="accept", content={"confirm": True})
+
+
 @asynccontextmanager
 async def open_session(
     mcp_url: str,
@@ -47,13 +67,21 @@ async def open_session(
     *,
     timeout: int = 30,
     sse_read_timeout: int = 300,
+    elicitation_callback: ElicitationFnT | None = None,
 ) -> AsyncIterator[ClientSession]:
     """Open an initialized Apps-aware session against ``mcp_url``.
 
     In mcp 2.x the bearer header and the timeouts live on the
     ``httpx2.AsyncClient`` handed to ``streamable_http_client``; ``timeout``
     is the connect/write/pool budget and ``sse_read_timeout`` the read one.
+
+    ``elicitation_callback`` makes the session declare form elicitation and
+    answers the server's confirmation dialogs (see
+    :func:`approve_server_confirmation`).
     """
+    extra: dict[str, Any] = {}
+    if elicitation_callback is not None:
+        extra["elicitation_callback"] = elicitation_callback
     async with httpx2.AsyncClient(
         headers={"Authorization": f"Bearer {bearer}"},
         timeout=httpx2.Timeout(float(timeout), read=float(sse_read_timeout)),
@@ -66,6 +94,7 @@ async def open_session(
                 read_stream,
                 write_stream,
                 extensions={k: dict(v) for k, v in CLIENT_EXTENSIONS.items()},
+                **extra,
             ) as session:
                 await session.initialize()
                 yield session

@@ -913,8 +913,8 @@ def test_self_update_needs_confirmation_when_applied():
     from beaconmcp.dashboard.chat import _tool_call_requires_confirmation
 
     assert _tool_call_requires_confirmation("beaconmcp_self_update", {"confirm": True})
-    assert not _tool_call_requires_confirmation("beaconmcp_self_update", {"confirm": False})
-    assert not _tool_call_requires_confirmation("beaconmcp_self_update", {})
+    # (the preview shapes need the card too: the server's own dialog would
+    # turn them into an apply, see test_chat_self_update_preview_needs_card)
     # Checking is read-only and must not raise a modal.
     assert not _tool_call_requires_confirmation("beaconmcp_check_update", {})
 
@@ -1005,3 +1005,53 @@ def test_clone_and_backup_create_need_confirmation():
 
     assert "proxmox_vm_clone" in _NEEDS_CONFIRMATION
     assert "proxmox_backup_create" in _NEEDS_CONFIRMATION
+
+
+@pytest.fixture
+def server_confirm_tools():
+    """Set the server-side confirm list for one test, restore the default after."""
+    from beaconmcp import confirm
+
+    yield confirm.set_active_tools
+    confirm.set_active_tools(None)
+
+
+def test_chat_card_follows_server_confirm_tools(server_confirm_tools):
+    """A tool the operator adds to ``confirm_tools`` needs the card too.
+
+    The dashboard session accepts the server's own dialog, which is only safe
+    if the chat already asked the human whatever the server would ask.
+    """
+    from beaconmcp.dashboard.chat import _NEEDS_CONFIRMATION, _tool_call_requires_confirmation
+
+    assert "proxmox_vm_start" not in _NEEDS_CONFIRMATION
+    assert not _tool_call_requires_confirmation("proxmox_vm_start", {"vmid": 1})
+    server_confirm_tools(["proxmox_vm_start"])
+    assert _tool_call_requires_confirmation("proxmox_vm_start", {"vmid": 1})
+
+
+def test_chat_undeclared_dry_run_does_not_bypass_server_rule(server_confirm_tools):
+    """``dry_run`` is dropped by pydantic on tools that do not declare it."""
+    from beaconmcp.dashboard.chat import _tool_call_requires_confirmation
+
+    server_confirm_tools(["proxmox_vm_start", "proxmox_snapshot_delete"])
+    assert _tool_call_requires_confirmation("proxmox_vm_start", {"vmid": 1, "dry_run": True})
+    # a tool that really implements dry_run still skips the card
+    assert not _tool_call_requires_confirmation(
+        "proxmox_snapshot_delete", {"vmid": 1, "snapname": "s", "dry_run": True},
+    )
+
+
+def test_chat_card_for_sensitive_guest_config():
+    from beaconmcp.dashboard.chat import _tool_call_requires_confirmation
+
+    args = {"node": "n", "vmid": 101, "updates": {"mp1": "local:102/vm-102-disk-9.raw,mp=/m"}}
+    assert _tool_call_requires_confirmation("proxmox_vm_config", args)
+
+
+def test_chat_self_update_preview_needs_card():
+    """The server dialog turns a preview into an apply, so the preview needs the card."""
+    from beaconmcp.dashboard.chat import _tool_call_requires_confirmation
+
+    assert _tool_call_requires_confirmation("beaconmcp_self_update", {"confirm": False})
+    assert _tool_call_requires_confirmation("beaconmcp_self_update", {})

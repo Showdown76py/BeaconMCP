@@ -121,6 +121,8 @@ server:
 
   # true: refuse a tool that needs confirmation when the client cannot show
   # the dialog, instead of running it. Default false (run as before).
+  # The dashboard chat and panels keep working in strict mode: their calls
+  # already went through the chat approval card or a panel click.
   # confirm_strict: false
 
 # -------- Proxmox capability (optional) ------------------------------------

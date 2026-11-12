@@ -281,3 +281,30 @@ def test_existing_volume_is_gated(cfg: dict) -> None:
 def test_new_or_empty_volume_is_not_gated(cfg: dict) -> None:
     assert not _need("proxmox_vm_config", updates=cfg)
     assert not _need("proxmox_vm_create", config=cfg)
+
+
+async def test_strict_with_form_client_elicits_instead_of_refusing() -> None:
+    ctx = Ctx(FORM)
+    assert await confirm_destructive(ctx, "bmc_power_off", {"a": 1}, strict=True) == {"a": 1}
+    assert len(ctx.messages) == 1
+
+
+def test_active_tools_default_and_override() -> None:
+    from beaconmcp import confirm
+
+    try:
+        assert confirm.active_tools() == frozenset(DEFAULT_CONFIRM_TOOLS)
+        assert confirm.set_active_tools(["ssh_run"]) == frozenset({"ssh_run"})
+        assert confirm.active_tools() == frozenset({"ssh_run"})
+        assert confirm.set_active_tools(None) == frozenset(DEFAULT_CONFIRM_TOOLS)
+    finally:
+        confirm.set_active_tools(None)
+
+
+def test_requires_confirmation_public_rule() -> None:
+    from beaconmcp import confirm
+
+    assert confirm.requires_confirmation("bmc_power_off", {})
+    assert not confirm.requires_confirmation("bmc_power_off", {"dry_run": True})
+    assert not confirm.requires_confirmation("proxmox_vm_start", {"vmid": 1})
+    assert confirm.requires_confirmation("proxmox_vm_start", {"vmid": 1}, tools={"proxmox_vm_start"})

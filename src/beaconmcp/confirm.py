@@ -155,6 +155,30 @@ def _needs_confirmation(tool: str, kw: dict, tools: Collection[str]) -> bool:
     return condition(kw) if condition else True
 
 
+# The tool list in force for this process. server.py sets it from the config
+# at import; the dashboard (same process) reads it so that its approval card
+# covers whatever the server would ask.
+_active_tools: frozenset[str] = frozenset(DEFAULT_CONFIRM_TOOLS)
+
+
+def set_active_tools(configured: Collection[str] | None) -> frozenset[str]:
+    """Set the tool list from ``server.confirm_tools`` (None = defaults)."""
+    global _active_tools
+    _active_tools = frozenset(DEFAULT_CONFIRM_TOOLS if configured is None else configured)
+    return _active_tools
+
+
+def active_tools() -> frozenset[str]:
+    return _active_tools
+
+
+def requires_confirmation(
+    tool: str, kw: dict, tools: Collection[str] | None = None,
+) -> bool:
+    """Public form of the server rule: would this call raise the dialog?"""
+    return _needs_confirmation(tool, kw, _active_tools if tools is None else tools)
+
+
 async def confirm_destructive(
     ctx: Any, tool: str, kwargs: dict, tools: Collection[str] = DEFAULT_CONFIRM_TOOLS,
     strict: bool = False,

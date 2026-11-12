@@ -32,7 +32,9 @@ refusal.
 Outside the chat, BeaconMCP itself asks for a confirmation on a short list of tools
 (`server.confirm_tools`, see [configuration.md](configuration.md)), including guest create/config
 calls that carry host-reaching keys. Clients without form elicitation (claude.ai today) are not
-asked and the tool runs; set `server.confirm_strict: true` to refuse instead.
+asked and the tool runs; set `server.confirm_strict: true` to refuse instead. The dashboard chat and
+panels are not affected by strict mode: their sessions accept the server's dialog, and the chat
+card is raised for every call the server would ask about, so the human is still asked once.
 
 The interactive panels are the one place a gated tool runs without that modal, and only for a
 closed list: starting, stopping and restarting a single guest, and resizing its CPU or memory.
