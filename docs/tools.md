@@ -166,3 +166,23 @@ Registered on every deployment shape, unless `features.updates.enabled` is `fals
 The restart is deferred a few seconds so the tool result reaches the caller before the process dies.
 Show the user `beaconmcp_check_update` output — especially any new configuration — and get an
 explicit go-ahead before calling `beaconmcp_self_update`.
+
+## Tool annotations
+
+Every tool declares MCP `ToolAnnotations` (`readOnlyHint`, `destructiveHint`, `idempotentHint`,
+`openWorldHint`) in `tools/list`, so a client can group read-only tools, prompt before destructive
+ones and flag tools that leave the declared infrastructure. They live in one table,
+`src/beaconmcp/tool_annotations.py`, applied when a tool is registered.
+
+- `readOnlyHint` is true only if the tool changes nothing in any call mode. `proxmox_vm_config`
+  reads without `updates` but writes with it, so it is not read-only.
+- `destructiveHint` is true when the tool can delete, overwrite, stop or run arbitrary code, and
+  false for pure additions (snapshot, clone, backup, start). `proxmox_upload_link` counts as
+  destructive: it only mints a link, but whoever holds it can overwrite a file in the guest.
+- `idempotentHint` is true only when repeating the same call has no further effect.
+- `openWorldHint` is true for `proxmox_fetch_url` (arbitrary URLs) and the two update tools (they
+  contact the remote git repository).
+
+These are hints for the client, not a security barrier. The server-side control stays
+`server.confirm_tools` (and the bearer and TOTP layers). A test fails if a registered tool has no
+entry in the table, or an entry has no tool.
