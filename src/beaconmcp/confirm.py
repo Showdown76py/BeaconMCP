@@ -77,17 +77,39 @@ def _supports_form(ctx: Any) -> bool:
     return elicitation.form is not None or elicitation.url is None
 
 
-# Config keys that reach the host or other guests' disks (hook scripts, raw
-# QEMU args, bind mounts, device passthrough, raw LXC keys, privileged
-# containers) or that turn a create into a restore over an existing guest.
-_SENSITIVE_PATTERN = re.compile(r"^(mp|dev|hostpci|usb)\d+$")
+# Config keys that reach the host or other guests' disks. PVE already refuses
+# several of them to API tokens (bind mounts, devN passthrough, hookscript,
+# most features), so for those this filter is defense in depth: it keeps
+# working if the server runs with a more privileged credential. What PVE does
+# let a token do is attach an EXISTING volume of another guest (``mp1:
+# local:102/vm-102-disk-9.raw``), which gives one guest the disk of another.
+# Disk keys are therefore sensitive unless the value is clearly harmless: a
+# freshly allocated volume, ``none`` or an ISO in a CD-ROM drive.
+_DISK_KEY = re.compile(r"^(mp|scsi|virtio|sata|ide|efidisk|tpmstate|unused)\d+$")
+_NEW_VOLUME = re.compile(r"^[\w.-]+:\d+(\.\d+)?$")  # <storage>:<size>
+_ISO_VOLUME = re.compile(r"^[\w.-]+:iso/.+$")
+_SENSITIVE_PATTERN = re.compile(r"^(dev|hostpci|usb)\d+$")
 _SENSITIVE_PREFIXES = ("lxc.",)
-_PRESENT_KEYS = frozenset({"archive", "hookscript", "args"})
-_TRUTHY_KEYS = frozenset({"restore", "force"})
+# Sensitive whenever set to something non falsy
+_SENSITIVE_KEYS = frozenset({"archive", "hookscript", "args", "restore", "force"})
 
 
 def _falsy(value: Any) -> bool:
     return value is None or str(value).strip().lower() in ("", "0", "false", "no", "off")
+
+
+def _sensitive_disk(value: Any) -> bool:
+    """True unless a disk value is a new volume, ``none`` or an ISO CD-ROM."""
+    parts = str(value).strip().split(",")
+    first = parts[0].strip()
+    opts = [p.strip().lower() for p in parts[1:]]
+    if any(o.startswith("import-from=") for o in opts):
+        return True
+    if _NEW_VOLUME.match(first) or first.lower() == "none":
+        return False
+    if "media=cdrom" in opts and (first.lower() == "cdrom" or _ISO_VOLUME.match(first)):
+        return False
+    return True
 
 
 def _sensitive_config(cfg: Any) -> bool:
@@ -96,14 +118,14 @@ def _sensitive_config(cfg: Any) -> bool:
         return False
     for key, value in cfg.items():
         k = str(key).strip().lower()
-        if k in _PRESENT_KEYS:
-            if not _falsy(value):
-                return True
-        elif k in _TRUTHY_KEYS:
+        if k in _SENSITIVE_KEYS:
             if not _falsy(value):
                 return True
         elif k == "unprivileged":
             if _falsy(value):
+                return True
+        elif k == "rootfs" or _DISK_KEY.match(k):
+            if _sensitive_disk(value):
                 return True
         elif _SENSITIVE_PATTERN.match(k) or k.startswith(_SENSITIVE_PREFIXES):
             return True

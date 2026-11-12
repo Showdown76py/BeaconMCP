@@ -247,3 +247,37 @@ async def test_strict_with_form_client_still_asks() -> None:
     ctx = Ctx(FORM)
     await confirm_destructive(ctx, "bmc_power_off", {}, strict=True)
     assert ctx.messages
+
+
+@pytest.mark.parametrize("cfg", [
+    {"mp1": "local:102/vm-102-disk-9.raw,mp=/mnt/autre"},
+    {"scsi1": "local-lvm:vm-201-disk-0"},
+    {"virtio0": "/dev/sdb"},
+    {"sata0": "local-lvm:base-100-disk-0,size=8G"},
+    {"scsi0": "local-lvm:0,import-from=local:100/vm-100-disk-0.raw"},
+    {"scsi0": "local-lvm:32,import-from=/tmp/x.qcow2"},
+    {"rootfs": "local:101/vm-101-disk-0.raw"},
+    {"rootfs": "local-lvm:vm-101-disk-0,size=8G"},
+    {"ide2": "local:iso/debian.iso"},  # no media=cdrom
+    {"ide2": "/dev/sr0,media=cdrom"},
+    {"unused0": "local-lvm:vm-9-disk-1"},
+])
+def test_existing_volume_is_gated(cfg: dict) -> None:
+    assert _need("proxmox_vm_config", updates=cfg)
+    assert _need("proxmox_vm_create", config=cfg)
+
+
+@pytest.mark.parametrize("cfg", [
+    {"mp2": "local:1,mp=/x"},
+    {"mp2": "local:0.5,mp=/x"},
+    {"scsi0": "local-lvm:32"},
+    {"ide2": "local:iso/debian.iso,media=cdrom"},
+    {"ide2": "cdrom,media=cdrom"},
+    {"ide2": "none,media=cdrom"},
+    {"scsi3": "none"},
+    {"rootfs": "local-lvm:8"},
+    {"description": "only text"},
+])
+def test_new_or_empty_volume_is_not_gated(cfg: dict) -> None:
+    assert not _need("proxmox_vm_config", updates=cfg)
+    assert not _need("proxmox_vm_create", config=cfg)
