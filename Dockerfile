@@ -9,11 +9,14 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md constraints.txt ./
 COPY src ./src
 
+# Constrain the isolated build environment (pins hatchling): pip >= 25.3 reads
+# PIP_BUILD_CONSTRAINT, older pips PIP_CONSTRAINT.
 RUN pip install --upgrade pip build \
- && python -m build --wheel --outdir /dist
+ && PIP_CONSTRAINT=/build/constraints.txt PIP_BUILD_CONSTRAINT=/build/constraints.txt \
+    python -m build --wheel --outdir /dist
 
 
 FROM python:3.13-slim AS runtime

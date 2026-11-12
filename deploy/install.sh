@@ -39,8 +39,11 @@ fi
 # 4. Install Python dependencies
 echo "[*] Installing Python dependencies..."
 "$VENV_DIR/bin/pip" install --upgrade pip --quiet
-# constraints.txt pins every dependency to the set CI tested.
-"$VENV_DIR/bin/pip" install -e . -c constraints.txt --quiet
+# constraints.txt pins every dependency to the set CI tested. -c does not reach
+# pip's isolated build environment (hatchling pin): pip >= 25.3 reads
+# PIP_BUILD_CONSTRAINT, older pips PIP_CONSTRAINT.
+PIP_CONSTRAINT="$PWD/constraints.txt" PIP_BUILD_CONSTRAINT="$PWD/constraints.txt" \
+    "$VENV_DIR/bin/pip" install -e . -c constraints.txt --quiet
 
 # 5. .env file
 if [ ! -f "$INSTALL_DIR/.env" ]; then
