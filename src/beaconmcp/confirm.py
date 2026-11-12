@@ -1,13 +1,14 @@
 """Best-effort human confirmation for a few destructive tools.
 
 When the client supports form elicitation, the user gets a yes/no dialog
-before the tool runs. When it doesn't, the tool runs as it always did: the
-user chose not to break automation, so this is not a hard gate.
+before the tool runs. When it doesn't, the tool runs as it always did unless
+``server.confirm_strict`` is on, in which case it is refused.
 """
 
 from __future__ import annotations
 
-from collections.abc import Collection
+import re
+from collections.abc import Callable, Collection
 from typing import Any
 
 from mcp.server.mcpserver.exceptions import ToolError
@@ -22,6 +23,8 @@ DEFAULT_CONFIRM_TOOLS: tuple[str, ...] = (
     "proxmox_snapshot_delete",
     "proxmox_backup_restore",
     "beaconmcp_self_update",
+    "proxmox_vm_create",
+    "proxmox_vm_config",
 )
 
 
@@ -74,29 +77,89 @@ def _supports_form(ctx: Any) -> bool:
     return elicitation.form is not None or elicitation.url is None
 
 
+# Config keys that reach the host or other guests' disks (hook scripts, raw
+# QEMU args, bind mounts, device passthrough, raw LXC keys, privileged
+# containers) or that turn a create into a restore over an existing guest.
+_SENSITIVE_PATTERN = re.compile(r"^(mp|dev|hostpci|usb)\d+$")
+_SENSITIVE_PREFIXES = ("lxc.",)
+_PRESENT_KEYS = frozenset({"archive", "hookscript", "args"})
+_TRUTHY_KEYS = frozenset({"restore", "force"})
+
+
+def _falsy(value: Any) -> bool:
+    return value is None or str(value).strip().lower() in ("", "0", "false", "no", "off")
+
+
+def _sensitive_config(cfg: Any) -> bool:
+    """True when a Proxmox guest config dict carries a host-reaching key."""
+    if not isinstance(cfg, dict):
+        return False
+    for key, value in cfg.items():
+        k = str(key).strip().lower()
+        if k in _PRESENT_KEYS:
+            if not _falsy(value):
+                return True
+        elif k in _TRUTHY_KEYS:
+            if not _falsy(value):
+                return True
+        elif k == "unprivileged":
+            if _falsy(value):
+                return True
+        elif _SENSITIVE_PATTERN.match(k) or k.startswith(_SENSITIVE_PREFIXES):
+            return True
+    return False
+
+
+def _runs_command(kw: dict) -> bool:
+    # polling a running command (exec_id without command) executes nothing
+    return bool(kw.get("command")) or not kw.get("exec_id")
+
+
+# Tools that are only dangerous in some call shapes: tool -> kw -> needs a dialog.
+# A listed tool without an entry here always needs one.
+_CONDITIONS: dict[str, Callable[[dict], bool]] = {
+    "proxmox_backup_restore": lambda kw: bool(kw.get("force")),
+    "proxmox_vm_create": lambda kw: _sensitive_config(kw.get("config")),
+    "proxmox_vm_config": lambda kw: _sensitive_config(kw.get("updates")),
+    "ssh_run": _runs_command,
+    "proxmox_run": _runs_command,
+}
+
+
 def _needs_confirmation(tool: str, kw: dict, tools: Collection[str]) -> bool:
     if tool not in tools or kw.get("dry_run"):
         return False
-    if tool == "proxmox_backup_restore" and not kw.get("force"):
-        return False
-    return True
+    condition = _CONDITIONS.get(tool)
+    return condition(kw) if condition else True
 
 
 async def confirm_destructive(
     ctx: Any, tool: str, kwargs: dict, tools: Collection[str] = DEFAULT_CONFIRM_TOOLS,
+    strict: bool = False,
 ) -> dict:
     """Ask the user before a destructive tool runs. Returns the kwargs to use.
 
     Raises :class:`ConfirmationDeclined` when the user declines or cancels,
-    :class:`ConfirmationUnavailable` when the dialog could not be shown.
+    :class:`ConfirmationUnavailable` when the dialog could not be shown, or,
+    with ``strict``, when the client cannot show one at all.
     """
-    if ctx is None or not _needs_confirmation(tool, kwargs, tools):
+    if not _needs_confirmation(tool, kwargs, tools):
         return kwargs
-    try:
-        ctx.request_context
-    except (AttributeError, ValueError, LookupError):
-        return kwargs
-    if not _supports_form(ctx):
+    has_context = True
+    if ctx is None:
+        has_context = False
+    else:
+        try:
+            ctx.request_context
+        except (AttributeError, ValueError, LookupError):
+            has_context = False
+    if not has_context or not _supports_form(ctx):
+        if strict:
+            audit.emit("tool.confirm.unavailable", tool=tool, error="no form elicitation")
+            raise ConfirmationUnavailable(
+                f"{tool} needs a confirmation but this client cannot show a "
+                "confirmation and server.confirm_strict is on. Nothing was run."
+            )
         return kwargs
     try:
         result = await ctx.elicit(message=_message(tool, kwargs), schema=_Confirm)

@@ -102,13 +102,25 @@ server:
   # env var overrides this.
   # refresh_token_ttl: 86400
 
-  # Sensitive tools that ask "are you sure?" through MCP form elicitation
-  # when the client supports it (Claude Code does; claude.ai and Cowork
-  # don't yet, there they run as before). Default:
+  # Sensitive tools that ask "are you sure?" through MCP form elicitation.
+  # Only clients that declare form elicitation show it (Claude Code does;
+  # claude.ai does not today): on the others the tool runs WITHOUT
+  # confirming unless confirm_strict is true. Default:
   # [bmc_power_off, bmc_power_reset, proxmox_snapshot_rollback,
   #  proxmox_snapshot_delete, proxmox_backup_restore (force only),
-  #  beaconmcp_self_update]
-  # confirm_tools: [bmc_power_off, bmc_power_reset]
+  #  beaconmcp_self_update,
+  #  proxmox_vm_create / proxmox_vm_config (only with a host-reaching key:
+  #  hookscript, args, lxc.*, mpN, devN, hostpciN, usbN, unprivileged=0,
+  #  restore, archive, force)]
+  # To also confirm shell commands (polling by exec_id alone is exempt),
+  # list the full set you want:
+  # confirm_tools: [bmc_power_off, bmc_power_reset, proxmox_snapshot_rollback,
+  #   proxmox_snapshot_delete, proxmox_backup_restore, beaconmcp_self_update,
+  #   proxmox_vm_create, proxmox_vm_config, ssh_run, proxmox_run]
+
+  # true: refuse a tool that needs confirmation when the client cannot show
+  # the dialog, instead of running it. Default false (run as before).
+  # confirm_strict: false
 
 # -------- Proxmox capability (optional) ------------------------------------
 # Delete this section if you have no Proxmox cluster. Tools starting with

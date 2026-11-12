@@ -172,6 +172,7 @@ _confirm_tools = frozenset(
     if config.server.confirm_tools is not None
     else confirm.DEFAULT_CONFIRM_TOOLS
 )
+_confirm_strict = bool(config.server.confirm_strict)
 
 def _metric_tool(*args, **kwargs):
     def decorator(func):
@@ -186,7 +187,7 @@ def _metric_tool(*args, **kwargs):
             try:
                 try:
                     f_kwargs = await confirm.confirm_destructive(
-                        ctx, tool_name, f_kwargs, _confirm_tools,
+                        ctx, tool_name, f_kwargs, _confirm_tools, _confirm_strict,
                     )
                 except confirm.ConfirmationDeclined:
                     status = "declined"
