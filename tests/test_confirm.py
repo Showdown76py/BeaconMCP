@@ -283,6 +283,30 @@ def test_new_or_empty_volume_is_not_gated(cfg: dict) -> None:
     assert not _need("proxmox_vm_create", config=cfg)
 
 
+@pytest.mark.parametrize("cfg", [
+    {"features": "nesting=1,keyctl=1"},
+    {"features": "fuse=1"},
+    {"features": "mount=nfs;cifs"},
+    {"features": "mknod=1,nesting=1"},
+    {"features": "force_rw_sys=1"},
+    {"cicustom": "user=local:snippets/user.yaml"},
+])
+def test_host_reaching_features_and_cicustom_are_gated(cfg: dict) -> None:
+    assert _need("proxmox_vm_config", updates=cfg)
+    assert _need("proxmox_vm_create", config=cfg)
+
+
+@pytest.mark.parametrize("cfg", [
+    {"features": "nesting=1"},
+    {"features": "nesting=1,keyctl=0"},
+    {"features": ""},
+    {"cicustom": ""},
+])
+def test_nesting_only_and_empty_values_are_not_gated(cfg: dict) -> None:
+    assert not _need("proxmox_vm_config", updates=cfg)
+    assert not _need("proxmox_vm_create", config=cfg)
+
+
 async def test_strict_with_form_client_elicits_instead_of_refusing() -> None:
     ctx = Ctx(FORM)
     assert await confirm_destructive(ctx, "bmc_power_off", {"a": 1}, strict=True) == {"a": 1}

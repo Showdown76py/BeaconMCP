@@ -90,8 +90,9 @@ _NEW_VOLUME = re.compile(r"^[\w.-]+:\d+(\.\d+)?$")  # <storage>:<size>
 _ISO_VOLUME = re.compile(r"^[\w.-]+:iso/.+$")
 _SENSITIVE_PATTERN = re.compile(r"^(dev|hostpci|usb)\d+$")
 _SENSITIVE_PREFIXES = ("lxc.",)
-# Sensitive whenever set to something non falsy
-_SENSITIVE_KEYS = frozenset({"archive", "hookscript", "args", "restore", "force"})
+# Sensitive whenever set to something non falsy. ``cicustom`` points cloud-init
+# at snippet files read from a storage on the host.
+_SENSITIVE_KEYS = frozenset({"archive", "hookscript", "args", "restore", "force", "cicustom"})
 
 
 def _falsy(value: Any) -> bool:
@@ -112,6 +113,23 @@ def _sensitive_disk(value: Any) -> bool:
     return True
 
 
+def _sensitive_features(value: Any) -> bool:
+    """True when an LXC ``features`` value enables anything besides nesting.
+
+    keyctl, fuse, mknod, force_rw_sys and mount= widen what the container can
+    do against the host kernel; PVE refuses them to API tokens, this keeps the
+    gate if the server runs with a stronger credential.
+    """
+    for part in str(value).split(","):
+        name, sep, flag = part.partition("=")
+        name = name.strip().lower()
+        if not name or name == "nesting":
+            continue
+        if not sep or not _falsy(flag):
+            return True
+    return False
+
+
 def _sensitive_config(cfg: Any) -> bool:
     """True when a Proxmox guest config dict carries a host-reaching key."""
     if not isinstance(cfg, dict):
@@ -126,6 +144,9 @@ def _sensitive_config(cfg: Any) -> bool:
                 return True
         elif k == "rootfs" or _DISK_KEY.match(k):
             if _sensitive_disk(value):
+                return True
+        elif k == "features":
+            if _sensitive_features(value):
                 return True
         elif _SENSITIVE_PATTERN.match(k) or k.startswith(_SENSITIVE_PREFIXES):
             return True
