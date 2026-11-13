@@ -1389,26 +1389,25 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
     async def oauth_oidc_login(request: Request) -> Response:
         """dashboard sign-in through sso: no client id, no secret.
 
-        GET on purpose: the dashboard csp has form-action 'self', and browsers
-        apply it to the redirect after a form post, so a POST here would be
-        silently stopped before reaching the IdP. it only starts a round
-        trip, nothing is granted before the callback."""
+        a plain GET link, like most "sign in with" buttons. it only starts the
+        round trip; nothing is granted before the callback. (a form post
+        would also trip the dashboard's form-action 'self' csp, which
+        browsers apply to the redirect toward the IdP)
+        ``?reauth=1`` sends max_age=0: the IdP must authenticate again, used
+        for the dashboard step-up."""
         if oidc_provider is None or not config.server.sso_identity or "dashboard" not in sso_hooks:
             return JSONResponse({"error": "not_found"}, status_code=404)
         if _oidc_rate_limited(request) is not None:
             return RedirectResponse("/app/login?sso_error=rate", status_code=303)
-        if request.method == "POST":
-            form = await request.form()
-            next_raw = form.get("next", "")
-        else:
-            next_raw = request.query_params.get("next", "")
-        next_url = next_raw.strip() if isinstance(next_raw, str) else ""
+        next_url = request.query_params.get("next", "").strip()
         if not next_url.startswith("/app/"):
             next_url = ""
+        reauth = request.query_params.get("reauth") == "1"
         try:
             url, binding = await oidc_provider.start(
                 redirect_uri=_oidc_redirect_uri(request),
                 payload={"flow": "dashboard", "next": next_url},
+                max_age=0 if reauth else None,
             )
         except oidc.OidcError as exc:
             logging.getLogger("beaconmcp").warning("oidc start failed: %s", exc)
@@ -1447,7 +1446,12 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             "dashboard.login.ok", client_id=user, via="oidc",
             sub=str(claims.get("sub")), ip=ip,
         )
-        response = hook(request, user, pending.payload.get("next", ""))
+        auth_time = claims.get("auth_time")
+        response = hook(
+            request, user, pending.payload.get("next", ""),
+            float(auth_time) if isinstance(auth_time, (int, float))
+            and not isinstance(auth_time, bool) else None,
+        )
         response.delete_cookie(OIDC_COOKIE, path=OIDC_COOKIE_PATH)
         return response
 
@@ -2147,7 +2151,7 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             ),
             Route("/oauth/oidc/start", oauth_oidc_start, methods=["POST"]),
             Route("/oauth/oidc/callback", oauth_oidc_callback, methods=["GET"]),
-            Route("/oauth/oidc/login", oauth_oidc_login, methods=["GET", "POST"]),
+            Route("/oauth/oidc/login", oauth_oidc_login, methods=["GET"]),
             Route("/oauth/passkey/options", oauth_passkey_options, methods=["POST"]),
             Route("/oauth/passkey/verify", oauth_passkey_verify, methods=["POST"]),
             Route(

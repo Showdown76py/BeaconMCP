@@ -8,7 +8,6 @@ Builds the route list and dependencies. Mounted under ``/app/*`` from
 from __future__ import annotations
 
 import asyncio
-import html as _html
 import json
 import math
 import time
@@ -159,7 +158,10 @@ def _set_session_cookie(response: Response, session_id: str, secure: bool) -> No
         max_age=SESSION_TTL_SECONDS,
         httponly=True,
         secure=secure,
-        samesite="strict",
+        # lax, like most panels with sso: the IdP sends the browser back
+        # through a cross-site redirect and a strict cookie would not ride
+        # it. state changes are still guarded by the csrf token
+        samesite="lax",
         path="/app",
     )
 
@@ -304,17 +306,21 @@ def _source_ip(request: Request, deps: DashboardDeps) -> str:
 
 
 def _is_sso_user(deps: DashboardDeps, client_id: str) -> bool:
-    get = getattr(deps.client_store, "get", None)
-    client = get(client_id) if get is not None else None
-    return bool(client is not None and getattr(client, "sso_subject", None))
+    client = deps.client_store.get(client_id)  # type: ignore[attr-defined]
+    return bool(client is not None and client.sso_subject)
 
 
 def _sso_step_up_error(session: Session) -> str | None:
-    """None when the sso sign-in behind this session is fresh enough."""
-    if time.time() - session.created_at < SSO_STEP_UP_WINDOW:
+    """None when the IdP authenticated this sso user recently enough.
+
+    uses the id_token auth_time (OIDC core 2), not when the BeaconMCP session
+    started: an IdP can sign someone in silently from an old session. an IdP
+    that sends no auth_time falls back to the session start."""
+    authenticated_at = session.auth_time or session.created_at
+    if time.time() - authenticated_at < SSO_STEP_UP_WINDOW:
         return None
     return (
-        "Confirm it's you: sign in again with SSO (your sign-in is older "
+        "Confirm it's you: sign in again with SSO (your last sign-in is older "
         "than 10 minutes), then retry."
     )
 
@@ -446,6 +452,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             deps,
             client_id="",
             next=request.query_params.get("next", ""),
+            reauth=bool(reauth),
             banner=_SSO_ERRORS.get(request.query_params.get("sso_error", "")),
             locked=False,
             passkeys_enabled=_passkeys_ready(deps),
@@ -484,6 +491,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         client_secret: str,
         next_url: str,
         as_json: bool | None = None,
+        auth_time: float | None = None,
     ) -> tuple[Session, int, Response]:
         """Mint the MCP bearer + session row and attach the cookies.
 
@@ -498,6 +506,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             mcp_bearer=bearer,
             bearer_ttl_seconds=ttl,
             user_agent=ua,
+            auth_time=auth_time,
         )
         secure = _is_secure(request, deps.trusted_proxies)
         new_csrf = csrf.issue_token()
@@ -620,7 +629,9 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         )
         return response
 
-    def _sso_finish(request: Request, client_id: str, next_url: str) -> Response:
+    def _sso_finish(
+        request: Request, client_id: str, next_url: str, auth_time: float | None,
+    ) -> Response:
         """called by the oidc callback once the sso account is allowed in."""
         if not next_url.startswith("/app/"):
             next_url = _default_landing()
@@ -630,25 +641,10 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             bearer = deps.session_store.delete(old)
             if bearer:
                 deps.token_store.revoke(bearer)  # type: ignore[attr-defined]
-        _, _, redirect = _start_session(
+        _, _, response = _start_session(
             request, client_id=client_id, client_secret="",
-            next_url=next_url, as_json=False,
+            next_url=next_url, as_json=False, auth_time=auth_time,
         )
-        # the IdP round trip is a cross-site redirect chain: a 303 from here
-        # would carry on in that cross-site context and the browser would not
-        # send the SameSite=Strict session cookie it just stored. a page that
-        # navigates on its own starts a fresh same-site navigation
-        target = _html.escape(next_url, quote=True)
-        response = HTMLResponse(
-            "<!doctype html><html><head><meta charset=\"utf-8\">"
-            f'<meta http-equiv="refresh" content="0;url={target}">'
-            "<title>Signing in</title></head><body>"
-            f'<p>Signed in. <a href="{target}">Continue</a></p></body></html>'
-        )
-        for key, value in redirect.raw_headers:
-            if key == b"set-cookie":
-                response.raw_headers.append((key, value))
-        _apply_security_headers(response)
         return response
 
     if deps.sso_hooks is not None and deps.sso_label:

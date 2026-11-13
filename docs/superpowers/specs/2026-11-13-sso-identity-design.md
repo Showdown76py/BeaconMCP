@@ -93,8 +93,11 @@ limited per IP by the login limiter.
   the callback hands the claims to the dashboard, which ensures the SSO user client and starts a
   session (no secret stored).
 - Expired bearer for an SSO user: back through SSO instead of the TOTP refresh page.
-- Step-up actions (new API token, new connector URL, self-update) ask SSO users for a fresh SSO
-  sign-in (session younger than 10 min) instead of a TOTP code.
+- Step-up actions (new API token, new connector URL, self-update) ask SSO users for an IdP
+  authentication less than 10 min old (id_token `auth_time`); "sign in again" sends `max_age=0`
+  and the id_token is refused without a fresh `auth_time` (OIDC Core 3.1.2.1).
+- The session cookie is `SameSite=Lax` (the IdP return is a cross-site navigation); CSRF tokens
+  keep guarding state changes. The SSO button is a plain GET link.
 - Dashboard passkeys are off for SSO users (the IdP owns MFA).
 - Audit `dashboard.login.ok via=oidc sub=...`.
 

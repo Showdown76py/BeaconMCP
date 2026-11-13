@@ -156,7 +156,11 @@ async def _register(b: httpx.AsyncClient) -> httpx.Response:
 async def _idp_round_trip(
     b: httpx.AsyncClient, idp: FakeIdP, path: str, data: dict[str, str],
 ) -> httpx.Response:
-    start = await b.post(path, data=data)
+    # the authorize page posts a form, the dashboard button is a GET link
+    if path == "/oauth/oidc/login":
+        start = await b.get(path, params=data)
+    else:
+        start = await b.post(path, data=data)
     assert start.status_code == 303, start.text
     location = start.headers["location"]
     state = parse_qs(urlparse(location).query)["state"][0]
@@ -289,23 +293,18 @@ async def test_dashboard_sso_sign_in(
         assert 'id="builtin-login" hidden' in login.text
         assert (await b.post("/app/login", data={})).status_code == 403
 
-        # a plain link: a form post would hit the dashboard's form-action csp
         assert 'href="/oauth/oidc/login"' in login.text
-        assert "form-action 'self'" in login.headers.get("content-security-policy", "")
-        start = await b.get("/oauth/oidc/login", params={"next": "/app/tokens"})
-        assert start.status_code == 303
-        location = start.headers["location"]
-        assert location.startswith("https://hydra.example.com/oauth2/auth?")
-        state = parse_qs(urlparse(location).query)["state"][0]
         with caplog.at_level("INFO", logger="beaconmcp.audit"):
-            cb = await b.get(
-                "/oauth/oidc/callback",
-                params={"code": idp.authorize(location), "state": state},
+            cb = await _idp_round_trip(
+                b, idp, "/oauth/oidc/login", {"next": "/app/tokens"},
             )
-        # not a 303: the strict session cookie wouldn't ride a cross-site chain
-        assert cb.status_code == 200
-        assert '<meta http-equiv="refresh" content="0;url=/app/tokens">' in cb.text
-        assert "beaconmcp_session=" in "\n".join(cb.headers.get_list("set-cookie"))
+        assert cb.status_code == 303 and cb.headers["location"] == "/app/tokens"
+        session_cookie = next(
+            c for c in cb.headers.get_list("set-cookie")
+            if c.startswith("beaconmcp_session=")
+        )
+        # lax: the cookie has to ride the redirect back from the IdP
+        assert "samesite=lax" in session_cookie.lower()
 
         tokens = await b.get("/app/tokens")
         assert tokens.status_code == 200
@@ -368,3 +367,80 @@ async def test_sso_mode_drops_builtin_dashboard_sessions(
         r = await b.get("/app/tokens")
     assert r.status_code == 302 and r.headers["location"].startswith("/app/login")
     assert store.load(old.session_id) is None
+
+
+# --- step-up: OIDC max_age / auth_time --------------------------------------
+
+
+async def test_reauth_sends_max_age_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, idp: FakeIdP,
+) -> None:
+    app, _ = _build(tmp_path, monkeypatch, mode="sso")
+    async with _browser(app) as b:
+        plain = await b.get("/oauth/oidc/login")
+        reauth = await b.get("/oauth/oidc/login", params={"reauth": "1", "next": "/app/tokens"})
+        page = await b.get("/app/login", params={"reauth": "1", "next": "/app/tokens"})
+    assert "max_age" not in parse_qs(urlparse(plain.headers["location"]).query)
+    assert parse_qs(urlparse(reauth.headers["location"]).query)["max_age"] == ["0"]
+    assert 'href="/oauth/oidc/login?reauth=1&amp;next=/app/tokens"' in page.text
+
+
+@pytest.mark.parametrize(("auth_time", "ok"), [
+    ("fresh", True),
+    ("stale", False),
+    ("missing", False),
+])
+async def test_max_age_checks_auth_time(
+    idp: FakeIdP, auth_time: str, ok: bool,
+) -> None:
+    provider = oidc.OidcProvider(_cfg(allow=IDENTITY))
+    if auth_time == "fresh":
+        idp.claims["auth_time"] = int(time.time())
+    elif auth_time == "stale":
+        idp.claims["auth_time"] = int(time.time()) - 3600
+    url, binding = await provider.start(
+        redirect_uri="https://mcp.example.com/cb", payload={}, max_age=0,
+    )
+    state = parse_qs(urlparse(url).query)["state"][0]
+    pending = provider.take(state, binding)
+    assert pending is not None
+    if ok:
+        claims = await provider.finish(pending, idp.authorize(url))
+        assert claims["sub"] == "user-123"
+    else:
+        with pytest.raises(oidc.OidcError, match="auth_time"):
+            await provider.finish(pending, idp.authorize(url))
+
+
+async def _create_token(b: httpx.AsyncClient) -> httpx.Response:
+    page = await b.get("/app/tokens")
+    csrf_token = page.text.split('name="csrf_token" value="', 1)[1].split('"', 1)[0]
+    return await b.post("/app/tokens", data={"csrf_token": csrf_token, "name": "ci"})
+
+
+async def test_step_up_follows_idp_auth_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, idp: FakeIdP,
+) -> None:
+    app, _ = _build(tmp_path, monkeypatch, mode="sso")
+    idp.claims["groups"] = ["tsa-beaconmcp"]
+    # the IdP signed this account in silently from an hour-old authentication
+    idp.claims["auth_time"] = int(time.time()) - 3600
+    async with _browser(app) as b:
+        await _idp_round_trip(b, idp, "/oauth/oidc/login", {})
+        stale = await _create_token(b)
+        assert "sign in again with SSO" in stale.text
+        assert "New token: ci" not in stale.text
+
+        idp.claims["auth_time"] = int(time.time())
+        await _idp_round_trip(b, idp, "/oauth/oidc/login", {"reauth": "1"})
+        fresh = await _create_token(b)
+    assert "sign in again with SSO" not in fresh.text
+    assert "New token: ci" in fresh.text and 'class="token-value"' in fresh.text
+
+
+def test_session_migration_adds_auth_time(tmp_path: Path) -> None:
+    from beaconmcp.dashboard.db import Database
+
+    db = Database(tmp_path / "d.db")
+    cols = {r[1] for r in db.conn().execute("PRAGMA table_info(sessions)")}
+    assert "auth_time" in cols

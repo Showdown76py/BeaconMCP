@@ -58,6 +58,8 @@ class Session:
     created_at: float
     last_seen_at: float
     expires_at: float
+    # sso sessions: IdP auth_time of the sign-in. None for builtin sessions
+    auth_time: Optional[float] = None
 
     def is_expired(self, now: float | None = None) -> bool:
         return (now or time.time()) >= self.expires_at
@@ -101,6 +103,7 @@ class SessionStore:
         mcp_bearer: str,
         bearer_ttl_seconds: int,
         user_agent: str | None,
+        auth_time: float | None = None,
     ) -> Session:
         """Create and persist a new session, returning it."""
         session_id = secrets.token_urlsafe(32)
@@ -114,8 +117,8 @@ class SessionStore:
             INSERT INTO sessions (
               session_id, client_id, client_secret_enc,
               mcp_bearer, mcp_bearer_expires_at,
-              created_at, last_seen_at, expires_at, user_agent
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              created_at, last_seen_at, expires_at, user_agent, auth_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -127,6 +130,7 @@ class SessionStore:
                 now,
                 expires,
                 user_agent,
+                auth_time,
             ),
         )
 
@@ -138,6 +142,7 @@ class SessionStore:
             created_at=now,
             last_seen_at=now,
             expires_at=expires,
+            auth_time=auth_time,
         )
 
     def load(self, session_id: str) -> Session | None:
@@ -146,7 +151,7 @@ class SessionStore:
         row = self._db.conn().execute(
             """
             SELECT session_id, client_id, mcp_bearer, mcp_bearer_expires_at,
-                   created_at, last_seen_at, expires_at
+                   created_at, last_seen_at, expires_at, auth_time
               FROM sessions WHERE session_id = ?
             """,
             (session_id,),
@@ -161,6 +166,7 @@ class SessionStore:
             created_at=row["created_at"],
             last_seen_at=row["last_seen_at"],
             expires_at=row["expires_at"],
+            auth_time=row["auth_time"],
         )
         if session.is_expired():
             self.delete(session_id)
@@ -231,7 +237,7 @@ class SessionStore:
         rows = self._db.conn().execute(
             """
             SELECT session_id, client_id, mcp_bearer, mcp_bearer_expires_at,
-                   created_at, last_seen_at, expires_at
+                   created_at, last_seen_at, expires_at, auth_time
               FROM sessions WHERE client_id = ?
               ORDER BY last_seen_at DESC
             """,
@@ -246,6 +252,7 @@ class SessionStore:
                 created_at=r["created_at"],
                 last_seen_at=r["last_seen_at"],
                 expires_at=r["expires_at"],
+                auth_time=r["auth_time"],
             )
             for r in rows
         ]

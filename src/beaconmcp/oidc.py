@@ -55,6 +55,8 @@ class PendingLogin:
     redirect_uri: str
     payload: dict[str, str]
     expires_at: float
+    # OIDC core 3.1.2.1: asked the IdP for an authentication this recent
+    max_age: int | None = None
 
 
 def _b64url(raw: bytes) -> str:
@@ -204,8 +206,13 @@ class OidcProvider:
 
     async def start(
         self, *, redirect_uri: str, payload: dict[str, str],
+        max_age: int | None = None,
     ) -> tuple[str, str]:
-        """returns ``(idp_url, binding)``. ``binding`` goes in a cookie and must come back on callback."""
+        """returns ``(idp_url, binding)``. ``binding`` goes in a cookie and must come back on callback.
+
+        ``max_age`` asks the IdP to re-authenticate the user if their last
+        authentication is older (0 = always); ``finish`` then checks auth_time.
+        """
         meta = await self.metadata()
         state = secrets.token_urlsafe(32)
         nonce = secrets.token_urlsafe(32)
@@ -222,6 +229,7 @@ class OidcProvider:
                 redirect_uri=redirect_uri,
                 payload=dict(payload),
                 expires_at=self._clock() + PENDING_TTL,
+                max_age=max_age,
             )
         query = {
             "response_type": "code",
@@ -233,6 +241,8 @@ class OidcProvider:
             "code_challenge": _b64url(hashlib.sha256(verifier.encode("ascii")).digest()),
             "code_challenge_method": "S256",
         }
+        if max_age is not None:
+            query["max_age"] = str(max_age)
         endpoint = meta["authorization_endpoint"]
         sep = "&" if "?" in endpoint else "?"
         return f"{endpoint}{sep}{urlencode(query)}", binding
@@ -299,7 +309,16 @@ class OidcProvider:
         id_token = tokens.get("id_token") if isinstance(tokens, dict) else None
         if not isinstance(id_token, str) or not id_token:
             raise OidcError("token response has no id_token (is the openid scope allowed?)")
-        return await self.validate_id_token(id_token, nonce=pending.nonce)
+        claims = await self.validate_id_token(id_token, nonce=pending.nonce)
+        if pending.max_age is not None:
+            # OIDC core 3.1.2.1 / 2: auth_time is required once max_age is
+            # sent, and an IdP that ignored max_age must not pass for fresh
+            auth_time = claims.get("auth_time")
+            if not isinstance(auth_time, (int, float)) or isinstance(auth_time, bool):
+                raise OidcError("id_token has no auth_time although max_age was sent")
+            if self._clock() - float(auth_time) > pending.max_age + CLOCK_LEEWAY:
+                raise OidcError("id_token auth_time is older than the max_age asked for")
+        return claims
 
     async def validate_id_token(self, id_token: str, *, nonce: str) -> dict[str, Any]:
         try:

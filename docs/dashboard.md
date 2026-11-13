@@ -47,6 +47,13 @@ or `(chat: disabled, tokens only)` when the Gemini key is missing, or `disabled`
 With JavaScript disabled the page falls back to the previous behaviour: a plain form POST that
 redirects straight to the landing page, no confirmation screen and no passkeys.
 
+With SSO (`server.auth_mode` `both` or `sso` and an identity rule), the login page also shows
+**Continue with &lt;label&gt;**, the only option in `sso` mode. The provider signs the person in and
+sends them back to their landing page, no confirmation screen needed. When the MCP bearer expires
+they go back through the provider instead of `/app/refresh`, and sensitive actions ask for a recent
+provider sign-in instead of a TOTP code. See
+[configuration.md](configuration.md#dashboard-with-sso).
+
 ## Passkeys
 
 A passkey replaces the 6-digit code, not the client secret — signing in still needs both factors.

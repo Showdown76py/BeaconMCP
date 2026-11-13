@@ -160,7 +160,13 @@ at the provider and keep the rules narrow.
   `beaconmcp auth revoke <their sso user client>` (listed as `sso user`): it drops their
   connectors and tokens too.
 - **Step-up without TOTP.** For an SSO user, a new API token, a new connector URL or a self-update
-  needs a provider sign-in less than 10 minutes old.
+  needs an authentication at the provider less than 10 minutes old, read from the id_token's
+  `auth_time`. "Sign in again" sends `max_age=0`, so the provider must authenticate the person
+  again rather than reuse its own session; an id_token without a fresh `auth_time` is refused.
+- **The dashboard session cookie is `SameSite=Lax`**, like most panels with SSO: the provider
+  sends the browser back through a cross-site redirect, which a `Strict` cookie would not survive.
+  Every state-changing dashboard request still needs the CSRF token, and the cookie stays
+  `HttpOnly`, `Secure` behind HTTPS and scoped to `/app`.
 - **The approval screen still needs a click.** A provider session that signs you in silently lands
   on the same "Finish signing in" screen as TOTP and passkeys, and nothing is issued before it.
 - **TOTP and passkeys stay available**, so a provider outage never locks you out, and a TOTP lockout

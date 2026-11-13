@@ -480,6 +480,9 @@ def test_missing_library_is_reported_with_a_fix(monkeypatch, store):
 # ---------------------------------------------------------------------------
 
 class FakeClientStore:
+    # only builtin clients here: no Client rows, so no sso user either
+    def get(self, client_id): return None
+
     def __init__(self):
         self.clients = {
             "beaconmcp_test": {
