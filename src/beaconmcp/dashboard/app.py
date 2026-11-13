@@ -266,6 +266,13 @@ def _load_session(request: Request, deps: DashboardDeps) -> Session | None:
     if not session_id:
         return None
     session = deps.session_store.load(session_id)
+    if session and not deps.builtin_login and not _is_sso_user(deps, session.client_id):
+        # auth_mode sso: a session opened with a client secret before the
+        # switch would keep its totp powers (refresh, step-up). drop it
+        bearer = deps.session_store.delete(session.session_id)
+        if bearer:
+            deps.token_store.revoke(bearer)  # type: ignore[attr-defined]
+        return None
     if session:
         deps.session_store.touch(session.session_id)
     return session

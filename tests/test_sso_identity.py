@@ -337,3 +337,23 @@ async def test_sso_login_route_404_in_builtin_mode(
         r = await b.post("/oauth/oidc/login", data={})
         login = await b.get("/app/login")
     assert r.status_code == 404 and 'id="sso-btn"' not in login.text
+
+
+async def test_sso_mode_drops_builtin_dashboard_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, builtin_id = _build(tmp_path, monkeypatch, mode="sso")
+    from beaconmcp.dashboard.db import Database
+    from beaconmcp.dashboard.session import SessionStore
+
+    # a session left over from before the switch to sso
+    store = SessionStore(Database(tmp_path / "dashboard.db"))
+    old = store.create(
+        client_id=builtin_id, client_secret="sk_x", mcp_bearer="b",
+        bearer_ttl_seconds=3600, user_agent="t",
+    )
+    async with _browser(app) as b:
+        b.cookies.set("beaconmcp_session", old.session_id)
+        r = await b.get("/app/tokens")
+    assert r.status_code == 302 and r.headers["location"].startswith("/app/login")
+    assert store.load(old.session_id) is None
