@@ -69,8 +69,10 @@ class HPILOBackend:
             self._tunnel = await _connect_to_host(
                 jump_spec, host_key_policy(self._config, jump_spec),
             )
+            # Bind to loopback only: "" would expose the iLO HTTPS on every
+            # interface of this host.
             self._tunnel_listener = await self._tunnel.forward_local_port(
-                "", 0, self._device.host, 443
+                "127.0.0.1", 0, self._device.host, 443
             )
             local_port = int(self._tunnel_listener.get_port())
             self._tunnel_local_port = local_port
