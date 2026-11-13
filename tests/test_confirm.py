@@ -370,3 +370,92 @@ def test_requires_confirmation_public_rule() -> None:
     assert not confirm.requires_confirmation("bmc_power_off", {"dry_run": True})
     assert not confirm.requires_confirmation("proxmox_vm_start", {"vmid": 1})
     assert confirm.requires_confirmation("proxmox_vm_start", {"vmid": 1}, tools={"proxmox_vm_start"})
+
+
+# --- clients that declare elicitation but have no back channel ----------------
+# MCP 2026-07-28 forbids server-initiated requests: such a client declares
+# elicitation in the request _meta, yet the SDK raises NoBackChannelError
+# before anything reaches it. That is a client that cannot show a dialog.
+
+from mcp import Client, types  # noqa: E402
+from mcp.server.mcpserver import Context, MCPServer  # noqa: E402
+from mcp.shared.exceptions import MCPError, NoBackChannelError  # noqa: E402
+
+from beaconmcp import audit  # noqa: E402
+
+
+class NoChannel(Ctx):
+    """Declares form elicitation, but the SDK cannot send it the request."""
+
+    async def elicit(self, message, schema):
+        self.messages.append(message)
+        raise NoBackChannelError("elicitation/create")
+
+
+def _events(monkeypatch) -> list[tuple[str, dict]]:
+    seen: list[tuple[str, dict]] = []
+    monkeypatch.setattr(audit, "emit", lambda event, **fields: seen.append((event, fields)))
+    return seen
+
+
+async def test_no_back_channel_runs_unconfirmed_when_not_strict(monkeypatch) -> None:
+    seen = _events(monkeypatch)
+    kw = {"device_id": "x"}
+    assert await confirm_destructive(NoChannel(FORM), "bmc_power_off", kw) == kw
+    assert seen == [("tool.confirm.no_back_channel", {"tool": "bmc_power_off", "strict": False})]
+
+
+async def test_no_back_channel_refused_when_strict(monkeypatch) -> None:
+    seen = _events(monkeypatch)
+    with pytest.raises(ConfirmationUnavailable, match="confirm_strict"):
+        await confirm_destructive(NoChannel(FORM), "bmc_power_off", {}, strict=True)
+    assert ("tool.confirm.no_back_channel", {"tool": "bmc_power_off", "strict": True}) in seen
+
+
+async def test_no_back_channel_self_update_keeps_its_own_guard() -> None:
+    # no dialog was shown: confirm=True is not injected, the tool asks for it
+    got = await confirm_destructive(NoChannel(FORM), "beaconmcp_self_update", {"restart": True})
+    assert got == {"restart": True}
+
+
+async def test_session_without_back_channel_is_not_asked() -> None:
+    ctx = Ctx(FORM)
+    ctx.request_context.session.can_send_request = False
+    assert await confirm_destructive(ctx, "bmc_power_off", {"a": 1}) == {"a": 1}
+    with pytest.raises(ConfirmationUnavailable, match="confirm_strict"):
+        await confirm_destructive(ctx, "bmc_power_off", {}, strict=True)
+    assert ctx.messages == []
+
+
+async def test_other_client_errors_stay_fail_closed() -> None:
+    class ClientError(Ctx):
+        async def elicit(self, message, schema):
+            raise MCPError(code=-32603, message="client blew up")
+
+    with pytest.raises(ConfirmationUnavailable, match="could not show it"):
+        await confirm_destructive(ClientError(FORM), "bmc_power_off", {})
+
+
+async def test_sdk_2026_client_has_no_back_channel() -> None:
+    """End to end with the real SDK: a 2026-07-28 client is not asked."""
+    server = MCPServer("t")
+    asked: list[str] = []
+
+    @server.tool()
+    async def gated(ctx: Context, strict: bool = False) -> str:
+        kw = await confirm_destructive(ctx, "bmc_power_off", {"device_id": "x"}, strict=strict)
+        return f"ran {kw['device_id']}"
+
+    async def accept(context, params):
+        asked.append(params.message)
+        return types.ElicitResult(action="accept", content={"confirm": True})
+
+    async with Client(server, mode="legacy", elicitation_callback=accept) as client:
+        assert (await client.call_tool("gated", {})).content[0].text == "ran x"
+    assert len(asked) == 1
+    asked.clear()
+    async with Client(server, mode="2026-07-28", elicitation_callback=accept) as client:
+        assert (await client.call_tool("gated", {})).content[0].text == "ran x"
+        refused = await client.call_tool("gated", {"strict": True})
+    assert asked == []
+    assert refused.is_error and "confirm_strict" in refused.content[0].text

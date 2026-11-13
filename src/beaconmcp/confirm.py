@@ -2,7 +2,9 @@
 
 When the client supports form elicitation, the user gets a yes/no dialog
 before the tool runs. When it doesn't, the tool runs as it always did unless
-``server.confirm_strict`` is on, in which case it is refused.
+``server.confirm_strict`` is on, in which case it is refused. A client that
+declares elicitation but cannot be sent a request (no back channel: MCP
+2026-07-28 forbids server-initiated requests) counts as one that doesn't.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from collections.abc import Callable, Collection
 from typing import Any
 
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.shared.exceptions import NoBackChannelError
 from pydantic import BaseModel, Field
 
 from . import audit
@@ -75,6 +78,31 @@ def _supports_form(ctx: Any) -> bool:
         return False
     # a bare {} is the 2025-06-18 form-only declaration
     return elicitation.form is not None or elicitation.url is None
+
+
+def _can_send_request(ctx: Any) -> bool:
+    """False when this request has no channel to send the client a request.
+
+    Declaring elicitation is not enough: a 2026-07-28 client, or streamable
+    HTTP in JSON-response or stateless mode, leaves the server no way to send
+    ``elicitation/create``. Unknown (older or fake session) counts as True;
+    ``elicit`` then raises NoBackChannelError, handled the same way.
+    """
+    try:
+        return bool(getattr(ctx.request_context.session, "can_send_request", True))
+    except (AttributeError, ValueError, LookupError):
+        return True
+
+
+def _without_dialog(tool: str, kwargs: dict, strict: bool, reason: str) -> dict:
+    """The client cannot show a dialog: refused when strict, else run as before."""
+    if strict:
+        audit.emit("tool.confirm.unavailable", tool=tool, error=reason)
+        raise ConfirmationUnavailable(
+            f"{tool} needs a confirmation but this client cannot show a "
+            "confirmation and server.confirm_strict is on. Nothing was run."
+        )
+    return kwargs
 
 
 # Config keys that reach the host or other guests' disks. PVE already refuses
@@ -214,7 +242,8 @@ async def confirm_destructive(
 
     Raises :class:`ConfirmationDeclined` when the user declines or cancels,
     :class:`ConfirmationUnavailable` when the dialog could not be shown, or,
-    with ``strict``, when the client cannot show one at all.
+    with ``strict``, when the client cannot show one at all (no form
+    elicitation, or no back channel to send it the request).
     """
     if not _needs_confirmation(tool, kwargs, tools):
         return kwargs
@@ -227,15 +256,15 @@ async def confirm_destructive(
         except (AttributeError, ValueError, LookupError):
             has_context = False
     if not has_context or not _supports_form(ctx):
-        if strict:
-            audit.emit("tool.confirm.unavailable", tool=tool, error="no form elicitation")
-            raise ConfirmationUnavailable(
-                f"{tool} needs a confirmation but this client cannot show a "
-                "confirmation and server.confirm_strict is on. Nothing was run."
-            )
-        return kwargs
+        return _without_dialog(tool, kwargs, strict, "no form elicitation")
     try:
+        if not _can_send_request(ctx):
+            raise NoBackChannelError("elicitation/create")
         result = await ctx.elicit(message=_message(tool, kwargs), schema=_Confirm)
+    except NoBackChannelError:
+        # raised before anything reaches the client: it cannot show a dialog
+        audit.emit("tool.confirm.no_back_channel", tool=tool, strict=strict)
+        return _without_dialog(tool, kwargs, strict, "no back channel")
     except Exception as exc:  # noqa: BLE001 -- transport, timeout, client error
         audit.emit("tool.confirm.unavailable", tool=tool, error=str(exc)[:200])
         raise ConfirmationUnavailable(
