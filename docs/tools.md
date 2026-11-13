@@ -40,7 +40,7 @@ tools below exist for when you already know what you're looking at.
 | `proxmox_vm_stop` | Stop it, cleanly or forced. |
 | `proxmox_vm_restart` | Restart it. |
 | `proxmox_vm_create` | Provision a new VM or container. |
-| `proxmox_vm_clone` | Clone an existing one. |
+| `proxmox_vm_clone` | Clone an existing one (optional full or linked, target storage, target node). |
 | `proxmox_vm_migrate` | Migrate across nodes. |
 | `proxmox_vm_config` | Read or update the configuration. |
 | `proxmox_snapshot_list` | List snapshots. |
