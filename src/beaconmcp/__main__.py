@@ -1387,13 +1387,21 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         return response
 
     async def oauth_oidc_login(request: Request) -> Response:
-        """dashboard sign-in through sso: no client id, no secret."""
+        """dashboard sign-in through sso: no client id, no secret.
+
+        GET on purpose: the dashboard csp has form-action 'self', and browsers
+        apply it to the redirect after a form post, so a POST here would be
+        silently stopped before reaching the IdP. it only starts a round
+        trip, nothing is granted before the callback."""
         if oidc_provider is None or not config.server.sso_identity or "dashboard" not in sso_hooks:
             return JSONResponse({"error": "not_found"}, status_code=404)
         if _oidc_rate_limited(request) is not None:
             return RedirectResponse("/app/login?sso_error=rate", status_code=303)
-        form = await request.form()
-        next_raw = form.get("next", "")
+        if request.method == "POST":
+            form = await request.form()
+            next_raw = form.get("next", "")
+        else:
+            next_raw = request.query_params.get("next", "")
         next_url = next_raw.strip() if isinstance(next_raw, str) else ""
         if not next_url.startswith("/app/"):
             next_url = ""
@@ -2139,7 +2147,7 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             ),
             Route("/oauth/oidc/start", oauth_oidc_start, methods=["POST"]),
             Route("/oauth/oidc/callback", oauth_oidc_callback, methods=["GET"]),
-            Route("/oauth/oidc/login", oauth_oidc_login, methods=["POST"]),
+            Route("/oauth/oidc/login", oauth_oidc_login, methods=["GET", "POST"]),
             Route("/oauth/passkey/options", oauth_passkey_options, methods=["POST"]),
             Route("/oauth/passkey/verify", oauth_passkey_verify, methods=["POST"]),
             Route(

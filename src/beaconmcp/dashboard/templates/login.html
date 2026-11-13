@@ -18,12 +18,12 @@
         <div class="banner banner-{{ banner_kind|default('error') }}">{{ banner }}</div>
       {% endif %}
     {% endif %}
-    <form method="POST" action="/oauth/oidc/login" id="sso-form">
-      {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
-      <button type="submit" class="{{ 'btn-ghost' if builtin_login else 'btn-primary' }}" id="sso-btn">
-        <span class="btn-label">Continue with {{ sso_label }}</span>
-      </button>
-    </form>
+    {# a link, not a form: form-action 'self' would block the redirect to the IdP #}
+    <a href="/oauth/oidc/login{% if next %}?next={{ next|urlencode }}{% endif %}"
+       class="{{ 'btn-ghost' if builtin_login else 'btn-primary' }}" id="sso-btn"
+       role="button" style="text-decoration:none">
+      <span class="btn-label">Continue with {{ sso_label }}</span>
+    </a>
     {% if builtin_login %}<div class="alt-divider"><span>or client credentials</span></div>{% endif %}
   </section>
   {% endif %}

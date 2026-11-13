@@ -289,9 +289,18 @@ async def test_dashboard_sso_sign_in(
         assert 'id="builtin-login" hidden' in login.text
         assert (await b.post("/app/login", data={})).status_code == 403
 
+        # a plain link: a form post would hit the dashboard's form-action csp
+        assert 'href="/oauth/oidc/login"' in login.text
+        assert "form-action 'self'" in login.headers.get("content-security-policy", "")
+        start = await b.get("/oauth/oidc/login", params={"next": "/app/tokens"})
+        assert start.status_code == 303
+        location = start.headers["location"]
+        assert location.startswith("https://hydra.example.com/oauth2/auth?")
+        state = parse_qs(urlparse(location).query)["state"][0]
         with caplog.at_level("INFO", logger="beaconmcp.audit"):
-            cb = await _idp_round_trip(
-                b, idp, "/oauth/oidc/login", {"next": "/app/tokens"},
+            cb = await b.get(
+                "/oauth/oidc/callback",
+                params={"code": idp.authorize(location), "state": state},
             )
         assert cb.status_code == 303 and cb.headers["location"] == "/app/tokens"
         assert "beaconmcp_session" in cb.headers.get("set-cookie", "") or b.cookies
