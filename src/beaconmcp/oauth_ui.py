@@ -730,10 +730,11 @@ def client_pair(logo_url: str, client_name: str) -> str:
     )
 
 
-def oidc_block(label: str | None, hidden_inputs: str) -> str:
+def oidc_block(label: str | None, hidden_inputs: str, *, alternatives: bool = True) -> str:
     """sso button. never disabled by the TOTP lockout: an IdP login can't be guessed."""
     if not label:
         return ""
+    divider = '<div class="alt-divider"><span>or</span></div>' if alternatives else ""
     return (
         '<div id="oidc-block">'
         '<form method="POST" action="/oauth/oidc/start" id="oidc-form">'
@@ -745,7 +746,7 @@ def oidc_block(label: str | None, hidden_inputs: str) -> str:
         '<path d="M15 12H3"/></svg>'
         f'<span class="btn-label">Continue with {html.escape(label)}</span>'
         "</button></form>"
-        '<div class="alt-divider"><span>or</span></div>'
+        f"{divider}"
         "</div>"
     )
 
@@ -886,12 +887,15 @@ def render_authorize_page(
     redirect_uri: str, kinds: list[str], hidden_inputs: str, banner: str,
     locked: bool, approved: bool, passkeys_on: bool, ticket: str,
     access_expiry: str, ticket_expiry: str, oidc_label: str | None = None,
+    builtin_on: bool = True,
 ) -> str:
     """``/oauth/authorize``: connect step, then the post-2FA confirmation.
 
     ``hidden_inputs`` and ``banner`` are pre-escaped HTML; ``access_expiry``
     and ``ticket_expiry`` too. Element ids are what ``AUTHORIZE_JS`` binds to.
     ``oidc_label`` adds the sso button (plain form post, no JS) when set.
+    ``builtin_on`` false hides the TOTP form and passkeys (auth_mode sso, or
+    a client only sso can authorize).
     """
     e = html.escape
     disabled = " disabled" if locked else ""
@@ -909,14 +913,15 @@ def render_authorize_page(
     {banner}
     {permissions_list(kinds)}
     <div class="banner" id="verify-error" hidden></div>
-    {oidc_block(oidc_label, hidden_inputs)}
+    {oidc_block(oidc_label, hidden_inputs, alternatives=builtin_on)}
+    {'' if builtin_on or oidc_label else '<div class="banner">No sign-in method is available for this client on this server.</div>'}
     <div id="passkey-block" hidden>
       <button type="button" class="btn-primary" id="passkey-btn"{disabled}>
         {PASSKEY_ICON}<span class="btn-label">Continue with passkey</span>
       </button>
       <div class="alt-divider"><span>or 6-digit code</span></div>
     </div>
-    <form method="POST" action="/oauth/authorize" id="authorize-form">
+    <form method="POST" action="/oauth/authorize" id="authorize-form"{'' if builtin_on else ' hidden'}>
 {hidden_inputs}
       {totp_boxes(locked)}
       <input type="hidden" name="totp" id="totp" pattern="\\d{{6}}" required>

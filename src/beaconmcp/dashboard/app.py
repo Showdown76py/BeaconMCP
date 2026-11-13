@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import quote
 
 from starlette.requests import Request
 from starlette.responses import (
@@ -112,6 +113,29 @@ class DashboardDeps:
     updates_enabled: bool = True
     allow_self_update: bool = True
     config_path: Path | None = None
+    # sso identity (server.auth_mode both/sso). ``sso_label`` set = the login
+    # page offers "Continue with <label>"; ``sso_hooks["dashboard"]`` is
+    # registered here and called by the oidc callback in __main__
+    sso_hooks: dict[str, Any] | None = None
+    sso_label: str | None = None
+    # false in auth_mode sso: no client secret / totp / passkey login
+    builtin_login: bool = True
+
+
+# ?sso_error=<code> on /app/login, set by the oidc callback. fixed strings:
+# the IdP's own error text is never echoed
+_SSO_ERRORS = {
+    "cancelled": "SSO sign-in was cancelled or refused.",
+    "failed": "SSO sign-in failed. Try again.",
+    "not_allowed": "Your SSO account isn't allowed to use this server.",
+    "unreachable": "The SSO provider can't be reached right now.",
+    "rate": "Too many attempts. Wait a moment and retry.",
+}
+
+
+# a step-up action (new token, connector url, self-update) by an sso user
+# needs a sign-in this recent, in place of a totp code
+SSO_STEP_UP_WINDOW = 600.0
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +214,8 @@ def _render(
         token = csrf.issue_token()
     context["csrf_token"] = token
     context["asset_v"] = ASSET_VERSION
+    context.setdefault("sso_label", deps.sso_label)
+    context.setdefault("builtin_login", deps.builtin_login)
     response = _TEMPLATES.TemplateResponse(
         request, template, context, status_code=status_code
     )
@@ -267,6 +293,22 @@ def _source_ip(request: Request, deps: DashboardDeps) -> str:
     """Client IP used to key the TOTP lockout (honours trusted proxies)."""
     from ..ratelimit import client_ip  # local import: avoid cycle at module load
     return client_ip(request, deps.trusted_proxies)
+
+
+def _is_sso_user(deps: DashboardDeps, client_id: str) -> bool:
+    get = getattr(deps.client_store, "get", None)
+    client = get(client_id) if get is not None else None
+    return bool(client is not None and getattr(client, "sso_subject", None))
+
+
+def _sso_step_up_error(session: Session) -> str | None:
+    """None when the sso sign-in behind this session is fresh enough."""
+    if time.time() - session.created_at < SSO_STEP_UP_WINDOW:
+        return None
+    return (
+        "Confirm it's you: sign in again with SSO (your sign-in is older "
+        "than 10 minutes), then retry."
+    )
 
 
 def _check_totp(
@@ -379,13 +421,16 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         return RedirectResponse("/app/login", status_code=302)
 
     async def login_get(request: Request) -> Response:
-        # If a valid session already exists, send to the default landing.
+        # reauth: an sso user re-signing in for a step-up or a stale bearer
+        reauth = request.query_params.get("reauth") == "1" and deps.sso_label
         session = _load_session(request, deps)
-        if session and _bearer_live(deps, session):
-            return RedirectResponse(_default_landing(), status_code=302)
-        if session:
-            # Session valid but bearer stale -> refresh page is the right one.
-            return RedirectResponse("/app/refresh", status_code=302)
+        if not reauth:
+            # If a valid session already exists, send to the default landing.
+            if session and _bearer_live(deps, session):
+                return RedirectResponse(_default_landing(), status_code=302)
+            if session:
+                # Session valid but bearer stale -> refresh page is the right one.
+                return RedirectResponse("/app/refresh", status_code=302)
 
         return _render(
             "login.html",
@@ -393,7 +438,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             deps,
             client_id="",
             next=request.query_params.get("next", ""),
-            banner=None,
+            banner=_SSO_ERRORS.get(request.query_params.get("sso_error", "")),
             locked=False,
             passkeys_enabled=_passkeys_ready(deps),
             secure_context=is_secure_context(request, deps.trusted_proxies),
@@ -464,6 +509,11 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
     async def login_post(request: Request) -> Response:
         if not await csrf.verify(request):
             return JSONResponse({"error": "csrf"}, status_code=403)
+        if not deps.builtin_login:
+            return _json(
+                {"ok": False, "error": "Sign in with SSO.", "locked": False},
+                status=403,
+            )
 
         # Per-IP rate limit. Comes before CSRF was fine too, but putting it
         # after CSRF keeps the error ordering consistent with /oauth/token.
@@ -562,12 +612,39 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         )
         return response
 
+    def _sso_finish(request: Request, client_id: str, next_url: str) -> Response:
+        """called by the oidc callback once the sso account is allowed in."""
+        if not next_url.startswith("/app/"):
+            next_url = _default_landing()
+        # a re-sign-in replaces the old session instead of piling up
+        old = request.cookies.get(SESSION_COOKIE)
+        if old:
+            bearer = deps.session_store.delete(old)
+            if bearer:
+                deps.token_store.revoke(bearer)  # type: ignore[attr-defined]
+        _, _, response = _start_session(
+            request, client_id=client_id, client_secret="",
+            next_url=next_url, as_json=False,
+        )
+        return response
+
+    if deps.sso_hooks is not None and deps.sso_label:
+        deps.sso_hooks["dashboard"] = _sso_finish
+
+    def _sso_reauth_redirect(next_url: str) -> Response:
+        if not next_url.startswith("/app/"):
+            next_url = ""
+        query = "reauth=1" + (f"&next={quote(next_url, safe='/')}" if next_url else "")
+        return RedirectResponse(f"/app/login?{query}", status_code=302)
+
     async def refresh_get(request: Request) -> Response:
         session = _load_session(request, deps)
         if not session:
             return RedirectResponse("/app/login", status_code=302)
         if _bearer_live(deps, session):
             return RedirectResponse(_default_landing(), status_code=302)
+        if _is_sso_user(deps, session.client_id):
+            return _sso_reauth_redirect(request.query_params.get("next", ""))
 
         client_name = (
             deps.client_store.get_name(session.client_id)  # type: ignore[attr-defined]
@@ -591,6 +668,8 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         session = _load_session(request, deps)
         if not session:
             return RedirectResponse("/app/login", status_code=302)
+        if _is_sso_user(deps, session.client_id):
+            return _sso_reauth_redirect("")
 
         form = await request.form()
         totp_value = form.get("totp", "")
@@ -736,26 +815,33 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                 form_error="Name cannot exceed 60 characters.",
                 form_name=name,
             )
-        if not totp:
-            return _render_tokens_page(
-                request, session, deps,
-                form_error="2FA code is required.",
-                form_name=name,
-            )
-        if deps.totp_locked(session.client_id, _source_ip(request, deps)):
-            return _render_tokens_page(
-                request, session, deps,
-                form_error="Too many 2FA attempts; try again in 5 minutes.",
-                form_name=name,
-            )
-        totp_result = _check_totp(deps, session.client_id, totp, request)
-        if totp_result is not TotpResult.OK:
-            return _render_tokens_page(
-                request, session, deps,
-                form_error=_totp_error(totp_result, "Invalid 2FA code."),
-                form_name=name,
-            )
-        deps.totp_record_success(session.client_id, _source_ip(request, deps))
+        if _is_sso_user(deps, session.client_id):
+            step_up = _sso_step_up_error(session)
+            if step_up is not None:
+                return _render_tokens_page(
+                    request, session, deps, form_error=step_up, form_name=name,
+                )
+        else:
+            if not totp:
+                return _render_tokens_page(
+                    request, session, deps,
+                    form_error="2FA code is required.",
+                    form_name=name,
+                )
+            if deps.totp_locked(session.client_id, _source_ip(request, deps)):
+                return _render_tokens_page(
+                    request, session, deps,
+                    form_error="Too many 2FA attempts; try again in 5 minutes.",
+                    form_name=name,
+                )
+            totp_result = _check_totp(deps, session.client_id, totp, request)
+            if totp_result is not TotpResult.OK:
+                return _render_tokens_page(
+                    request, session, deps,
+                    form_error=_totp_error(totp_result, "Invalid 2FA code."),
+                    form_name=name,
+                )
+            deps.totp_record_success(session.client_id, _source_ip(request, deps))
 
         try:
             token, ttl = deps.token_store.issue(  # type: ignore[attr-defined]
@@ -830,6 +916,7 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             form_error=form_error,
             form_label=form_label,
             just_created=just_created,
+            sso_user=_is_sso_user(deps, session.client_id),
             locked=deps.totp_locked(session.client_id, _source_ip(request, deps)),
         )
 
@@ -874,20 +961,27 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
                 form_error="Label cannot exceed 60 characters.",
                 form_label=label,
             )
-        if deps.totp_locked(session.client_id, _source_ip(request, deps)):
-            return _render_connectors_page(
-                request, session,
-                form_error="Too many 2FA attempts; try again in 5 minutes.",
-                form_label=label,
-            )
-        totp_result = _check_totp(deps, session.client_id, totp_code, request)
-        if totp_result is not TotpResult.OK:
-            return _render_connectors_page(
-                request, session,
-                form_error=_totp_error(totp_result, "Invalid 2FA code."),
-                form_label=label,
-            )
-        deps.totp_record_success(session.client_id, _source_ip(request, deps))
+        if _is_sso_user(deps, session.client_id):
+            step_up = _sso_step_up_error(session)
+            if step_up is not None:
+                return _render_connectors_page(
+                    request, session, form_error=step_up, form_label=label,
+                )
+        else:
+            if deps.totp_locked(session.client_id, _source_ip(request, deps)):
+                return _render_connectors_page(
+                    request, session,
+                    form_error="Too many 2FA attempts; try again in 5 minutes.",
+                    form_label=label,
+                )
+            totp_result = _check_totp(deps, session.client_id, totp_code, request)
+            if totp_result is not TotpResult.OK:
+                return _render_connectors_page(
+                    request, session,
+                    form_error=_totp_error(totp_result, "Invalid 2FA code."),
+                    form_label=label,
+                )
+            deps.totp_record_success(session.client_id, _source_ip(request, deps))
 
         store = deps.dyn_reg
         assert store is not None
@@ -993,6 +1087,10 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             return session
         if not await csrf.verify(request):
             return _json({"error": "csrf"}, status=403)
+        if _is_sso_user(deps, session.client_id):
+            return _json(
+                {"error": "Passkeys are handled by your SSO provider."}, status=403,
+            )
         service = _passkey_service()
         if isinstance(service, Response):
             return service
@@ -1118,6 +1216,8 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         """
         if not await csrf.verify(request):
             return _json({"error": "csrf"}, status=403)
+        if not deps.builtin_login:
+            return _json({"ok": False, "error": "Sign in with SSO."}, status=403)
         limited = _passkey_login_rate_limited(request)
         if limited is not None:
             return limited
@@ -1142,6 +1242,8 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
     async def api_passkeys_auth_verify(request: Request) -> Response:
         if not await csrf.verify(request):
             return _json({"error": "csrf"}, status=403)
+        if not deps.builtin_login:
+            return _json({"ok": False, "error": "Sign in with SSO."}, status=403)
         limited = _passkey_login_rate_limited(request)
         if limited is not None:
             return limited
@@ -1216,6 +1318,8 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
         payload = info.to_json()
         payload["enabled"] = True
         payload["self_update_allowed"] = deps.allow_self_update
+        # the banner asks sso users for no totp: a fresh sso sign-in is the step-up
+        payload["sso_user"] = _is_sso_user(deps, session.client_id)
         if not deps.allow_self_update:
             payload["can_self_update"] = False
         return _json(payload)
@@ -1245,20 +1349,25 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
 
         body = await _read_json(request)
         totp = str(body.get("totp") or "").strip()
-        if not totp:
-            return _json({"ok": False, "error": "2FA code is required."}, status=400)
-        if deps.totp_locked(session.client_id, _source_ip(request, deps)):
-            return _json(
-                {"ok": False, "error": "Too many 2FA attempts; try again in 5 minutes."},
-                status=429,
-            )
-        totp_result = _check_totp(deps, session.client_id, totp, request)
-        if totp_result is not TotpResult.OK:
-            return _json(
-                {"ok": False, "error": _totp_error(totp_result, "Invalid 2FA code.")},
-                status=401,
-            )
-        deps.totp_record_success(session.client_id, _source_ip(request, deps))
+        if _is_sso_user(deps, session.client_id):
+            step_up = _sso_step_up_error(session)
+            if step_up is not None:
+                return _json({"ok": False, "error": step_up}, status=401)
+        else:
+            if not totp:
+                return _json({"ok": False, "error": "2FA code is required."}, status=400)
+            if deps.totp_locked(session.client_id, _source_ip(request, deps)):
+                return _json(
+                    {"ok": False, "error": "Too many 2FA attempts; try again in 5 minutes."},
+                    status=429,
+                )
+            totp_result = _check_totp(deps, session.client_id, totp, request)
+            if totp_result is not TotpResult.OK:
+                return _json(
+                    {"ok": False, "error": _totp_error(totp_result, "Invalid 2FA code.")},
+                    status=401,
+                )
+            deps.totp_record_success(session.client_id, _source_ip(request, deps))
 
         from .. import updates as updates_mod
 
@@ -1930,7 +2039,10 @@ def _render_tokens_page(
         locked=deps.totp_locked(session.client_id, _source_ip(request, deps)),
         chat_enabled=deps.engine is not None,
         dcr_enabled=deps.dyn_reg is not None,
-        passkeys_enabled=_passkeys_ready(deps),
+        sso_user=_is_sso_user(deps, session.client_id),
+        passkeys_enabled=(
+            _passkeys_ready(deps) and not _is_sso_user(deps, session.client_id)
+        ),
         passkeys=(
             [
                 {

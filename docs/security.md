@@ -137,15 +137,30 @@ someone burns the client's TOTP budget.
 ## SSO (OpenID Connect)
 
 With `server.oidc` on, a sign-in at your identity provider can stand in for the 6-digit code on
-`/oauth/authorize` (setup in [configuration.md](configuration.md#sso-openid-connect)). That moves
-trust to the provider: whoever controls an account matched by an `allow` rule can authorize the
-client that rule names, so require MFA at the provider and keep the rules narrow.
+`/oauth/authorize`, and with an identity rule it becomes the account itself: dashboard, own
+connectors, no client secret at all (setup in
+[configuration.md](configuration.md#sso-openid-connect)). That moves trust to the provider:
+whoever controls an account matched by an `allow` rule gets what that rule grants, so require MFA
+at the provider and keep the rules narrow.
 
 - **Deny by default.** No rule, no access. A rule names one BeaconMCP client; an account that
   matches a rule for another client is refused. `client: "*"` is the explicit exception: it covers
   every client, see below.
 - **Unverified emails don't count** unless you turn `require_email_verified` off, because an
   unverified email is whatever the user typed at the provider.
+- **`auth_mode: sso` closes the builtin paths for humans.** `/app/login` and `/oauth/authorize`
+  refuse client secrets, TOTP codes and passkeys. `client_credentials` stays for scripts, so keep
+  those clients few and their secrets in a vault.
+- **SSO users are isolated from each other.** Each identity gets its own hidden client; an SSO
+  account can only authorize its own connectors, never a builtin client without a matching
+  `client` rule, and never a connector another SSO account already authorized.
+- **Access ends with the session, not with the provider.** BeaconMCP doesn't hear about an account
+  disabled at the provider. Rules are checked at every sign-in, an OAuth sign-in lasts 24 h at
+  most, and a dashboard session ends at its TTL. To cut someone off now, run
+  `beaconmcp auth revoke <their sso user client>` (listed as `sso user`): it drops their
+  connectors and tokens too.
+- **Step-up without TOTP.** For an SSO user, a new API token, a new connector URL or a self-update
+  needs a provider sign-in less than 10 minutes old.
 - **The approval screen still needs a click.** A provider session that signs you in silently lands
   on the same "Finish signing in" screen as TOTP and passkeys, and nothing is issued before it.
 - **TOTP and passkeys stay available**, so a provider outage never locks you out, and a TOTP lockout
@@ -169,10 +184,12 @@ authorize link, and your provider session signs you in silently. With an exact r
 would get no SSO button; with a wildcard it does, and the only thing standing between it and a
 token is the approval screen. What limits it:
 
-- DCR is not open on the main issuer (`/oauth/register` answers 403). Registration only goes through
-  a single-use bootstrap slug minted by a signed-in dashboard user, and the proposed `redirect_uris`
-  must already be on the trusted-origin allowlist (`server.allowed_origins`), so a code can only
-  be sent to an origin you listed.
+- Without an identity rule, DCR is not open on the main issuer (`/oauth/register` answers 403).
+  Registration only goes through a single-use bootstrap slug minted by a signed-in dashboard user.
+  With an identity rule and `allow_dynamic_registration`, anyone can register, but such a client
+  has no TOTP or passkey path: only an SSO identity can authorize it, and it then belongs to that
+  account. Either way the proposed `redirect_uris` must already be on the trusted-origin allowlist
+  (`server.allowed_origins`), so a code can only be sent to an origin you listed.
 - The approval screen always needs a click, and it puts the redirect host first. Don't finish an
   authorization you didn't start, or one whose host you don't recognize.
 - Scope the wildcard to an admin-only group that your provider grants with fresh MFA, and watch the

@@ -44,24 +44,54 @@ Tailscale IP, a VPN address, a bastion.
 | `server.confirm_strict` | Default `false`. When `true`, a tool that needs a confirmation is refused instead of run if the client cannot show it (no form elicitation, or no request context). Turn it on once your clients support elicitation, or accept that those clients cannot use the gated tools. The dashboard chat and panels keep working: their MCP sessions accept the dialog because the chat approval card (which also covers every tool in `confirm_tools`) or the panel click already asked the human. |
 | `server.audit_log` | JSON-lines audit log covering tool calls, dashboard logins, OAuth authorize and client revokes. Created owner-only (0600). Default `/opt/beaconmcp/audit.log`; `-` keeps stderr only. Env override: `BEACONMCP_AUDIT_LOG`. |
 | `server.transfers_max_mb` | Size cap for `proxmox_upload_file` / `proxmox_download_file` / `proxmox_upload_link` / `proxmox_fetch_url`. Default 500. Behind Cloudflare, an upload link request body is also capped by Cloudflare (100 MB on the free plan, 413 from Cloudflare above that); `proxmox_fetch_url` is not affected. |
-| `server.oidc` | Optional SSO on `/oauth/authorize` through an external OpenID Connect provider (Ory Hydra, Keycloak, Authentik...). Off by default. See [SSO (OpenID Connect)](#sso-openid-connect). |
+| `server.oidc` | Optional SSO through an external OpenID Connect provider (Ory Hydra, Keycloak, Authentik...). Off by default. See [SSO (OpenID Connect)](#sso-openid-connect). |
+| `server.auth_mode` | `builtin`, `both` or `sso`: how humans sign in. Defaults to `both` with `server.oidc` on, `builtin` otherwise. See [SSO (OpenID Connect)](#sso-openid-connect). |
 
 ## SSO (OpenID Connect)
 
-`server.oidc` adds a **Continue with SSO** button to `/oauth/authorize`. The operator signs in at
-your identity provider instead of typing a 6-digit code, and BeaconMCP then shows the usual approval
-screen. BeaconMCP stays the OAuth server that MCP clients (claude.ai, ChatGPT, Claude Code...) talk
-to, so nothing changes on their side, and TOTP and passkeys keep working next to it. The dashboard
-login (`/app/login`) is not covered: it still takes the client secret plus TOTP or a passkey.
+`server.oidc` plugs an identity provider into BeaconMCP. BeaconMCP stays the OAuth server that MCP
+clients (claude.ai, ChatGPT, Claude Code...) talk to, so nothing changes on their side.
+`server.auth_mode` picks how humans sign in:
 
-Access is denied by default. Only accounts matched by an `allow` rule get in, and each rule names
-the BeaconMCP client it may authorize (a client created through the ChatGPT bootstrap is covered by
-its owner's rules). `client: "*"` covers every client, those created later and those registered
-through dynamic client registration included, so a connector can register itself and you only sign
-in at the provider. The button only shows for clients covered by a rule.
+| `auth_mode` | What humans use |
+|-------------|-----------------|
+| `builtin` | Client id + client secret, then TOTP or a passkey. Default when `server.oidc` is off. |
+| `both` | Builtin, plus **Continue with SSO** on `/oauth/authorize` and `/app/login`. Default when `server.oidc` is on. |
+| `sso` | SSO only. No human path takes a client secret, a TOTP code or a passkey. |
+
+Scripts using the `client_credentials` grant keep working in every mode: they have no browser, and
+their clients still come from `beaconmcp auth create`.
+
+Access is denied by default. Only accounts matched by an `allow` rule get in. A rule comes in one
+of three forms:
+
+- **No `client` key: identity rule.** The account signs in as itself. On first sign-in BeaconMCP
+  creates a hidden client for it (listed as `sso user` by `beaconmcp auth list`), with no secret
+  anyone knows and no TOTP seed. The account then has its own dashboard (conversations, API tokens,
+  connectors) and its own connectors. That's the "no client id, no secret" mode, and `sso` mode
+  needs at least one such rule.
+- **`client: <id>`.** SSO stands in for that builtin client's TOTP on `/oauth/authorize` (a client
+  created through the dashboard connector bootstrap is covered by its owner's rules).
+- **`client: "*"`.** Same, for every builtin client, present and future.
+
+With an identity rule and `server.allow_dynamic_registration: true`, the main issuer advertises
+`registration_endpoint` and `POST /oauth/register` is open: a connector pointed at the plain
+`https://<host>/mcp` URL registers itself (claude.ai's "register automatically", ChatGPT, Claude
+Code, ...). Such a client can only be authorized through SSO, and it belongs to the first SSO
+account that authorizes it; anyone else is refused. Its `redirect_uris` must be on
+`server.allowed_origins`, like the slug-based registration. Clients nobody authorized are dropped
+after 24 h.
+
+In the dashboard, an SSO user confirms sensitive actions (new API token, new connector URL,
+self-update) with a sign-in less than 10 minutes old instead of a TOTP code, and gets back to SSO
+when the MCP bearer expires. Dashboard passkeys are off for SSO users: the provider owns MFA.
+
+The SSO button only shows on `/oauth/authorize` for clients a rule covers.
 
 ```yaml
 server:
+  # auth_mode: both                           # builtin | both | sso
+  # allow_dynamic_registration: true          # + an identity rule = open DCR on /oauth/register
   oidc:
     enabled: true
     issuer: https://hydra.example.com/        # exactly as in the provider's discovery doc
@@ -74,6 +104,7 @@ server:
     # groups_claim: groups
     # require_email_verified: true
     allow:
+      - groups: [beaconmcp-users]              # identity rule: sign in as yourself
       - client: beaconmcp_7f3a...              # from `beaconmcp auth list`
         emails: [alice@example.com]
       - client: beaconmcp_7f3a...
@@ -90,13 +121,14 @@ server:
 | `client_id` / `client_secret` | The confidential client registered for BeaconMCP at the provider. |
 | `redirect_uri` | Defaults to `<public URL>/oauth/oidc/callback`, built from the request host (`X-Forwarded-Host` from `server.trusted_proxies`). Set it when the provider needs one fixed value. |
 | `token_auth_method` | How BeaconMCP authenticates at the token endpoint. Hydra's default is `client_secret_basic`. |
-| `allow` | Required, at least one rule. A rule matches when any of its `emails`, `groups` or `subjects` matches the id_token. Emails count only with `email_verified: true` unless `require_email_verified` is `false`. Groups are read from `groups_claim`. `client` is an exact client id or `"*"` alone for every client; there is no globbing, so `beaconmcp_*` or an empty value is refused at load. |
+| `allow` | Required, at least one rule. A rule matches when any of its `emails`, `groups` or `subjects` matches the id_token. Emails count only with `email_verified: true` unless `require_email_verified` is `false`. Groups are read from `groups_claim`. `client` is left out (identity rule), an exact client id, or `"*"` alone for every client; there is no globbing, so `beaconmcp_*`, an empty or a null value is refused at load. |
 
 A wildcard rule hands every client, present and future, to whoever matches it. Keep it to a group
 your provider only grants to admins with strong MFA, and read the redirect host on the approval
 screen before you click (see [security.md](security.md#sso-openid-connect)). The audit log tells
-the two kinds apart: `auth.authorize.2fa` carries `rule=<client id>` for an exact rule and `rule=*`
-when only the wildcard let the account in.
+the kinds apart: `auth.authorize.2fa` carries `rule=<client id>` for an exact rule, `rule=*` when
+only the wildcard let the account in, and `rule=user` for an SSO user's own clients. Dashboard SSO
+sign-ins are `dashboard.login.ok` with `via=oidc`, open registrations `auth.register` with `via=dcr`.
 
 The id_token is checked before anything is granted: signature against the provider's JWKS
 (asymmetric algorithms only, key rotation picked up automatically), `iss`, `aud`, `azp`, expiry and

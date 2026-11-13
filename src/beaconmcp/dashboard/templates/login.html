@@ -9,6 +9,27 @@
     <span class="name">BeaconMCP</span>
   </div>
 
+  {% if sso_label %}
+  <section id="sso-block">
+    {% if not builtin_login %}
+      <h1>Sign in</h1>
+      <p class="sub">Use your organization account.</p>
+      {% if banner %}
+        <div class="banner banner-{{ banner_kind|default('error') }}">{{ banner }}</div>
+      {% endif %}
+    {% endif %}
+    <form method="POST" action="/oauth/oidc/login" id="sso-form">
+      {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+      <button type="submit" class="{{ 'btn-ghost' if builtin_login else 'btn-primary' }}" id="sso-btn">
+        <span class="btn-label">Continue with {{ sso_label }}</span>
+      </button>
+    </form>
+    {% if builtin_login %}<div class="alt-divider"><span>or client credentials</span></div>{% endif %}
+  </section>
+  {% endif %}
+
+  {# kept in the DOM when builtin login is off: login.js binds to it #}
+  <div id="builtin-login"{% if not builtin_login %} hidden{% endif %}>
   <form method="POST" action="/app/login" autocomplete="on" id="login-form">
     <input type="hidden" name="csrf_token" id="csrf-token" value="{{ csrf_token }}">
     {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
@@ -108,6 +129,7 @@
       {% endif %}
     </section>
   </form>
+  </div>
 
   {# Step 3 — signed in: session lifetime, passkey enrolment, finish #}
   <section id="step-3" hidden>

@@ -88,11 +88,24 @@ class OidcProvider:
     def covers(self, *client_ids: str) -> bool:
         """true when some rule could let an account authorize one of these clients."""
         return any(
-            r.client == WILDCARD or r.client in client_ids for r in self.cfg.allow
+            r.client is not None and (r.client == WILDCARD or r.client in client_ids)
+            for r in self.cfg.allow
         )
 
     def configured_clients(self) -> set[str]:
-        return {r.client for r in self.cfg.allow}
+        return {r.client for r in self.cfg.allow if r.client is not None}
+
+    @property
+    def has_identity_rules(self) -> bool:
+        return bool(self.cfg.identity_rules)
+
+    def identity_allowed(self, claims: dict[str, Any]) -> bool:
+        """an identity rule lets this account sign in as itself."""
+        return any(self._rule_matches(r, claims) for r in self.cfg.identity_rules)
+
+    def subject_key(self, claims: dict[str, Any]) -> str:
+        """stable id of the account across sign-ins: issuer + sub."""
+        return f"{self.cfg.issuer.rstrip('/')}#{claims.get('sub')}"
 
     def _rule_matches(self, rule: OidcRule, claims: dict[str, Any]) -> bool:
         sub = str(claims.get("sub") or "")
@@ -116,7 +129,10 @@ class OidcProvider:
 
     def allowed_clients(self, claims: dict[str, Any]) -> set[str]:
         """rule clients these claims match (may hold ``*``). empty = nobody."""
-        return {r.client for r in self.cfg.allow if self._rule_matches(r, claims)}
+        return {
+            r.client for r in self.cfg.allow
+            if r.client is not None and self._rule_matches(r, claims)
+        }
 
     def matching_rule(self, claims: dict[str, Any], *client_ids: str) -> str | None:
         """which rule lets these claims authorize one of ``client_ids``: the exact

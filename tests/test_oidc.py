@@ -168,9 +168,8 @@ def test_wildcard_rule_parses() -> None:
 
 @pytest.mark.parametrize("client", ["", "   ", "abc*", "*,c1", "**", None, ["*"], 3])
 def test_rule_client_ambiguous_or_empty_refused(client: Any) -> None:
-    entry: dict[str, Any] = {"groups": ["ops"]}
-    if client is not None:
-        entry["client"] = client
+    # a present-but-null client is refused, only a missing key is an identity rule
+    entry: dict[str, Any] = {"groups": ["ops"], "client": client}
     with pytest.raises(ConfigError, match=r"allow\[0\]\.client"):
         _parse_oidc({
             "enabled": True, "issuer": ISSUER, "client_id": CLIENT_ID,

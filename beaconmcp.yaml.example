@@ -131,12 +131,16 @@ server:
   # (Ory Hydra, Keycloak...): a "Continue with SSO" button next to the TOTP
   # code and passkeys. Deny by default: only accounts matched by an allow
   # rule may authorize the client the rule names. See docs/configuration.md.
+  # How humans sign in: builtin (client secret + 2FA), both, or sso (SSO
+  # only). Defaults to both when oidc is on, builtin otherwise.
+  # auth_mode: both
   # oidc:
   #   enabled: true
   #   issuer: https://hydra.example.com/
   #   client_id: beaconmcp
   #   client_secret: ${BEACONMCP_OIDC_CLIENT_SECRET}
   #   allow:
+  #     - groups: [beaconmcp-users]     # no client: sign in as yourself (no secret)
   #     - client: beaconmcp_xxxx        # from `beaconmcp auth list`
   #       emails: [you@example.com]
   #     - client: "*"                   # every client, DCR ones included (quote it)
