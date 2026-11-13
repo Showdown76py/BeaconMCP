@@ -40,6 +40,24 @@ class _Confirm(BaseModel):
     confirm: bool = Field(default=False, description="Yes, do it")
 
 
+def _clip(text: Any, limit: int) -> str:
+    """One line, no control characters, capped at ``limit`` characters."""
+    flat = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", str(text)).split())
+    return flat if len(flat) <= limit else flat[:limit] + "..."
+
+
+def _flagged(cfg: Any) -> str:
+    """Sensitive config keys for a dialog. Only disk and mount values are shown
+    (clipped); other values may hold secrets such as cipassword."""
+    if not isinstance(cfg, dict):
+        return ""
+    by_key = {str(k).strip().lower(): v for k, v in cfg.items()}
+    return ", ".join(
+        f"{k}={_clip(by_key[k], 80)}" if k == "rootfs" or _DISK_KEY.match(k) else k
+        for k in _sensitive_keys(cfg)
+    )
+
+
 def _message(tool: str, kw: dict) -> str:
     device = kw.get("device_id") or "the server"
     vm = f"VM {kw.get('vmid')} on {kw.get('node')}"
@@ -56,6 +74,15 @@ def _message(tool: str, kw: dict) -> str:
         return f"Restore {kw.get('archive')} over {vm}? This overwrites it."
     if tool == "beaconmcp_self_update":
         return "Update BeaconMCP" + (" and restart the server?" if kw.get("restart", True) else "?")
+    if tool == "proxmox_vm_create":
+        what = f"Create {kw.get('vm_type', 'qemu')} {kw.get('vmid')} on {kw.get('node')}"
+        return f"{what}? Sensitive settings: {_flagged(kw.get('config'))}."
+    if tool == "proxmox_vm_config":
+        return f"Change the config of {vm}? Sensitive settings: {_flagged(kw.get('updates'))}."
+    if tool == "ssh_run":
+        return f"Run on {kw.get('host')}: {_clip(kw.get('command'), 200)}"
+    if tool == "proxmox_run":
+        return f"Run in guest {kw.get('vmid')} on {kw.get('node')}: {_clip(kw.get('command'), 200)}"
     return f"Run {tool}?"
 
 
@@ -133,30 +160,33 @@ def _sensitive_features(value: Any) -> bool:
     return False
 
 
-def _sensitive_config(cfg: Any) -> bool:
-    """True when a Proxmox guest config dict carries a host-reaching key."""
+def _sensitive_keys(cfg: Any) -> list[str]:
+    """Keys (lowercased) of a Proxmox guest config that reach the host."""
     if not isinstance(cfg, dict):
-        return False
+        return []
+    found: list[str] = []
     for key, value in cfg.items():
         k = str(key).strip().lower()
         if k in _SENSITIVE_KEYS:
-            if not _falsy(value):
-                return True
+            hit = not _falsy(value)
         elif k == "unprivileged":
-            if _falsy(value):
-                return True
+            hit = _falsy(value)
         elif k == "rootfs" or _DISK_KEY.match(k):
-            if _sensitive_disk(value):
-                return True
+            hit = _sensitive_disk(value)
         elif k == "features":
-            if _sensitive_features(value):
-                return True
+            hit = _sensitive_features(value)
         elif _SERIAL_KEY.match(k):
-            if str(value).strip().lower() != "socket":
-                return True
-        elif _SENSITIVE_PATTERN.match(k) or k.startswith(_SENSITIVE_PREFIXES):
-            return True
-    return False
+            hit = str(value).strip().lower() != "socket"
+        else:
+            hit = bool(_SENSITIVE_PATTERN.match(k) or k.startswith(_SENSITIVE_PREFIXES))
+        if hit:
+            found.append(k)
+    return found
+
+
+def _sensitive_config(cfg: Any) -> bool:
+    """True when a Proxmox guest config dict carries a host-reaching key."""
+    return bool(_sensitive_keys(cfg))
 
 
 def _runs_command(kw: dict) -> bool:

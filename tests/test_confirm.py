@@ -370,3 +370,50 @@ def test_requires_confirmation_public_rule() -> None:
     assert not confirm.requires_confirmation("bmc_power_off", {"dry_run": True})
     assert not confirm.requires_confirmation("proxmox_vm_start", {"vmid": 1})
     assert confirm.requires_confirmation("proxmox_vm_start", {"vmid": 1}, tools={"proxmox_vm_start"})
+
+
+# ---- dialog text names the target ----
+
+from beaconmcp.confirm import _message, _sensitive_config, _sensitive_keys  # noqa: E402
+
+
+def test_message_vm_create_names_target_and_keys_without_secrets() -> None:
+    msg = _message(
+        "proxmox_vm_create",
+        {
+            "node": "pve1",
+            "vmid": 120,
+            "vm_type": "lxc",
+            "config": {"hostname": "x", "cipassword": "hunter2", "hookscript": "local:snippets/h.pl", "mp0": "local:102/vm-102-disk-9.raw,mp=/mnt"},
+        },
+    )
+    assert "pve1" in msg and "120" in msg and "lxc" in msg
+    assert "hookscript" in msg and "mp0=local:102/vm-102-disk-9.raw" in msg
+    assert "hunter2" not in msg and "cipassword" not in msg and "snippets/h.pl" not in msg
+
+
+def test_message_vm_config_lists_sensitive_update_keys() -> None:
+    msg = _message("proxmox_vm_config", {"node": "pve1", "vmid": 7, "updates": {"memory": 512, "hostpci0": "0000:01:00"}})
+    assert "pve1" in msg and "7" in msg and "hostpci0" in msg and "memory" not in msg
+
+
+def test_message_ssh_run_truncates_and_flattens_command() -> None:
+    msg = _message("ssh_run", {"host": "web1", "command": "echo a\nrm -rf /\n" + "x" * 500})
+    assert "web1" in msg and "\n" not in msg and "echo a" in msg
+    assert len(msg) < 400 and "..." in msg
+
+
+def test_message_proxmox_run_names_node_vmid_command() -> None:
+    msg = _message("proxmox_run", {"node": "pve1", "vmid": 101, "command": "id"})
+    assert "pve1" in msg and "101" in msg and "id" in msg
+
+
+def test_message_unknown_tool_falls_back() -> None:
+    assert _message("something_else", {}) == "Run something_else?"
+
+
+def test_sensitive_keys_matches_bool_rule() -> None:
+    assert _sensitive_keys({"memory": 1, "args": "-x", "unprivileged": 0}) == ["args", "unprivileged"]
+    assert _sensitive_keys(None) == []
+    assert _sensitive_config({"memory": 1}) is False
+    assert _sensitive_config({"args": "-x"}) is True
