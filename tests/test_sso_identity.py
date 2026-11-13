@@ -302,8 +302,10 @@ async def test_dashboard_sso_sign_in(
                 "/oauth/oidc/callback",
                 params={"code": idp.authorize(location), "state": state},
             )
-        assert cb.status_code == 303 and cb.headers["location"] == "/app/tokens"
-        assert "beaconmcp_session" in cb.headers.get("set-cookie", "") or b.cookies
+        # not a 303: the strict session cookie wouldn't ride a cross-site chain
+        assert cb.status_code == 200
+        assert '<meta http-equiv="refresh" content="0;url=/app/tokens">' in cb.text
+        assert "beaconmcp_session=" in "\n".join(cb.headers.get_list("set-cookie"))
 
         tokens = await b.get("/app/tokens")
         assert tokens.status_code == 200

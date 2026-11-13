@@ -8,6 +8,7 @@ Builds the route list and dependencies. Mounted under ``/app/*`` from
 from __future__ import annotations
 
 import asyncio
+import html as _html
 import json
 import math
 import time
@@ -629,10 +630,25 @@ def build_dashboard_routes(deps: DashboardDeps) -> list[Route | Mount]:
             bearer = deps.session_store.delete(old)
             if bearer:
                 deps.token_store.revoke(bearer)  # type: ignore[attr-defined]
-        _, _, response = _start_session(
+        _, _, redirect = _start_session(
             request, client_id=client_id, client_secret="",
             next_url=next_url, as_json=False,
         )
+        # the IdP round trip is a cross-site redirect chain: a 303 from here
+        # would carry on in that cross-site context and the browser would not
+        # send the SameSite=Strict session cookie it just stored. a page that
+        # navigates on its own starts a fresh same-site navigation
+        target = _html.escape(next_url, quote=True)
+        response = HTMLResponse(
+            "<!doctype html><html><head><meta charset=\"utf-8\">"
+            f'<meta http-equiv="refresh" content="0;url={target}">'
+            "<title>Signing in</title></head><body>"
+            f'<p>Signed in. <a href="{target}">Continue</a></p></body></html>'
+        )
+        for key, value in redirect.raw_headers:
+            if key == b"set-cookie":
+                response.raw_headers.append((key, value))
+        _apply_security_headers(response)
         return response
 
     if deps.sso_hooks is not None and deps.sso_label:
