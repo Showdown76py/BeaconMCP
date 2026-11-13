@@ -126,6 +126,8 @@ class SSHConfig:
 
 
 OIDC_TOKEN_AUTH_METHODS = ("client_secret_basic", "client_secret_post")
+# ``client: "*"`` in an allow rule = every client, DCR-registered ones included
+OIDC_WILDCARD = "*"
 
 
 @dataclass
@@ -133,6 +135,7 @@ class OidcRule:
     """one ``server.oidc.allow`` entry: who may authorize ``client``.
 
     a rule matches when any of its lists matches the id_token claims.
+    ``client`` is an exact client id or ``*`` for every client.
     """
 
     client: str
@@ -1013,6 +1016,23 @@ def _str_list(value: Any, ctx: str) -> list[str]:
     return [str(v).strip() for v in value if str(v).strip()]
 
 
+def _oidc_rule_client(entry: dict[str, Any], rctx: str) -> str:
+    raw = entry.get("client")
+    # yaml turns a bare ``client: *`` into an alias error, a list/number is a typo
+    if not isinstance(raw, str) or not raw.strip():
+        raise ConfigError(
+            f"{rctx}.client: required, a client id or \"*\" (quoted) for every client."
+        )
+    client = raw.strip()
+    if OIDC_WILDCARD in client and client != OIDC_WILDCARD:
+        # no globbing: "abc*" would look like a prefix match it isn't
+        raise ConfigError(
+            f"{rctx}.client: {client!r} is ambiguous. use an exact client id "
+            f"or \"*\" alone for every client."
+        )
+    return client
+
+
 def _parse_oidc(raw: Any) -> OidcConfig:
     """``server.oidc``. validated only when enabled, so a parked block never breaks boot."""
     if raw is None:
@@ -1061,7 +1081,7 @@ def _parse_oidc(raw: Any) -> OidcConfig:
         if not isinstance(entry, dict):
             raise ConfigError(f"{rctx}: expected a mapping.")
         rule = OidcRule(
-            client=_required(entry, "client", rctx).strip(),
+            client=_oidc_rule_client(entry, rctx),
             emails=[e.lower() for e in _str_list(entry.get("emails"), f"{rctx}.emails")],
             groups=_str_list(entry.get("groups"), f"{rctx}.groups"),
             subjects=_str_list(entry.get("subjects"), f"{rctx}.subjects"),

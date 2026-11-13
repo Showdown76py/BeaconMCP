@@ -139,6 +139,8 @@ server:
   #   allow:
   #     - client: beaconmcp_xxxx        # from `beaconmcp auth list`
   #       emails: [you@example.com]
+  #     - client: "*"                   # every client, DCR ones included (quote it)
+  #       groups: [beaconmcp-admins]    # keep a wildcard to an admin-only group
 
 # -------- Proxmox capability (optional) ------------------------------------
 # Delete this section if you have no Proxmox cluster. Tools starting with

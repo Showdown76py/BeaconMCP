@@ -272,6 +272,20 @@ h1 { margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015e
   margin: 0; font-size: 13px; font-weight: 550;
   color: var(--fg); text-align: right;
 }
+.redirect-check {
+  margin: 0 0 14px; padding: 12px 14px;
+  border: 1px solid var(--border-strong); border-radius: 10px;
+}
+.redirect-check .rc-label { font-size: 12px; color: var(--fg-muted); }
+.redirect-check .rc-host {
+  margin: 2px 0 4px; font-family: var(--font-mono); font-size: 17px;
+  font-weight: 700; color: var(--fg); overflow-wrap: anywhere;
+}
+.redirect-check .url { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-muted); overflow-wrap: anywhere; }
+.redirect-check .url strong { color: var(--fg); font-weight: 700; }
+.redirect-check .rc-client { margin-top: 8px; font-size: 12px; color: var(--fg-muted); overflow-wrap: anywhere; }
+.redirect-check .rc-client b { color: var(--fg); font-weight: 600; }
+.redirect-check .rc-client code { font-family: var(--font-mono); font-size: 11.5px; }
 #passkey-add-block { margin-top: 18px; }
 #finalize-form { margin-top: 20px; }
 """
@@ -848,6 +862,25 @@ def redirect_display(redirect_uri: str) -> str:
     )
 
 
+def redirect_check(redirect_uri: str, client_name: str, client_id: str) -> str:
+    """where "Finish signing in" sends the code, host first. with open DCR any
+    site can register a client and push this page, so the host is what the
+    operator must recognize before clicking."""
+    from urllib.parse import urlsplit
+
+    e = html.escape
+    host = urlsplit(redirect_uri).hostname or redirect_uri
+    return (
+        '<div class="redirect-check" id="redirect-check">'
+        "<div class=\"rc-label\">Finish sends the authorization to</div>"
+        f'<div class="rc-host" id="redirect-host">{e(host)}</div>'
+        f"{redirect_display(redirect_uri)}"
+        f'<div class="rc-client">Client <b>{e(client_name)}</b> &middot; '
+        f"<code>{e(client_id)}</code></div>"
+        "</div>"
+    )
+
+
 def render_authorize_page(
     *, host: str, client_id: str, client_name: str, logo_url: str,
     redirect_uri: str, kinds: list[str], hidden_inputs: str, banner: str,
@@ -908,11 +941,12 @@ def render_authorize_page(
     <p class="sub">You're about to grant <strong>{name}</strong> access to this BeaconMCP server.</p>
     <div class="banner" id="done-error" hidden></div>
     <div class="banner banner-success" id="done-ok" hidden></div>
+    {redirect_check(redirect_uri, client_name, client_id)}
     <dl class="expiry-card">
       <div class="expiry-row"><dt>Access expires</dt><dd id="access-expiry">{access_expiry}</dd></div>
       <div class="expiry-row"><dt>This approval expires</dt><dd id="ticket-expiry">{ticket_expiry}</dd></div>
     </dl>
-    <p class="hint">The client will have to go through two-factor again once its access expires.</p>
+    <p class="hint">Only finish if you recognize this address and started this connection yourself. The client will have to go through two-factor again once its access expires.</p>
     <div id="passkey-add-block" hidden>
       <button type="button" class="btn-ghost" id="add-passkey-btn">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="8" r="4"/><path d="M10.9 13.1A6 6 0 0 0 4 19v1h7"/><path d="M18 13v6M15 16h6"/></svg>

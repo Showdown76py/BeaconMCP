@@ -56,7 +56,9 @@ login (`/app/login`) is not covered: it still takes the client secret plus TOTP 
 
 Access is denied by default. Only accounts matched by an `allow` rule get in, and each rule names
 the BeaconMCP client it may authorize (a client created through the ChatGPT bootstrap is covered by
-its owner's rules). The button only shows for clients that have a rule.
+its owner's rules). `client: "*"` covers every client, those created later and those registered
+through dynamic client registration included, so a connector can register itself and you only sign
+in at the provider. The button only shows for clients covered by a rule.
 
 ```yaml
 server:
@@ -78,6 +80,8 @@ server:
         groups: [infra-admins]
       - client: beaconmcp_91bc...
         subjects: [3f2a9c4e-...]               # the provider's `sub`
+      - client: "*"                            # every client, quoted (a bare * is YAML syntax)
+        groups: [beaconmcp-admins]
 ```
 
 | Key | Notes |
@@ -86,7 +90,13 @@ server:
 | `client_id` / `client_secret` | The confidential client registered for BeaconMCP at the provider. |
 | `redirect_uri` | Defaults to `<public URL>/oauth/oidc/callback`, built from the request host (`X-Forwarded-Host` from `server.trusted_proxies`). Set it when the provider needs one fixed value. |
 | `token_auth_method` | How BeaconMCP authenticates at the token endpoint. Hydra's default is `client_secret_basic`. |
-| `allow` | Required, at least one rule. A rule matches when any of its `emails`, `groups` or `subjects` matches the id_token. Emails count only with `email_verified: true` unless `require_email_verified` is `false`. Groups are read from `groups_claim`. |
+| `allow` | Required, at least one rule. A rule matches when any of its `emails`, `groups` or `subjects` matches the id_token. Emails count only with `email_verified: true` unless `require_email_verified` is `false`. Groups are read from `groups_claim`. `client` is an exact client id or `"*"` alone for every client; there is no globbing, so `beaconmcp_*` or an empty value is refused at load. |
+
+A wildcard rule hands every client, present and future, to whoever matches it. Keep it to a group
+your provider only grants to admins with strong MFA, and read the redirect host on the approval
+screen before you click (see [security.md](security.md#sso-openid-connect)). The audit log tells
+the two kinds apart: `auth.authorize.2fa` carries `rule=<client id>` for an exact rule and `rule=*`
+when only the wildcard let the account in.
 
 The id_token is checked before anything is granted: signature against the provider's JWKS
 (asymmetric algorithms only, key rotation picked up automatically), `iss`, `aud`, `azp`, expiry and

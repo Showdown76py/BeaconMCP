@@ -142,16 +142,43 @@ trust to the provider: whoever controls an account matched by an `allow` rule ca
 client that rule names, so require MFA at the provider and keep the rules narrow.
 
 - **Deny by default.** No rule, no access. A rule names one BeaconMCP client; an account that
-  matches a rule for another client is refused.
+  matches a rule for another client is refused. `client: "*"` is the explicit exception: it covers
+  every client, see below.
 - **Unverified emails don't count** unless you turn `require_email_verified` off, because an
   unverified email is whatever the user typed at the provider.
 - **The approval screen still needs a click.** A provider session that signs you in silently lands
   on the same "Finish signing in" screen as TOTP and passkeys, and nothing is issued before it.
 - **TOTP and passkeys stay available**, so a provider outage never locks you out, and a TOTP lockout
   does not block SSO (an IdP login cannot be guessed).
-- SSO sign-ins are audited as `auth.authorize.2fa` with `via=oidc` and the provider's `sub`;
-  failures as `auth.authorize.fail` with an `oidc:` reason. The round trip shares the per-IP login
-  limiter.
+- **The approval screen shows where the code goes.** Above "Finish signing in" it prints the
+  redirect host in large type, then the full redirect URI and the client name and id. That host is
+  what you check before you click.
+- SSO sign-ins are audited as `auth.authorize.2fa` with `via=oidc`, the provider's `sub` and the
+  rule that let them in (`rule=<client id>`, or `rule=*` for the wildcard); failures as
+  `auth.authorize.fail` with an `oidc:` reason. The round trip shares the per-IP login limiter.
+
+### Wildcard rules and dynamic registration
+
+A `client: "*"` rule lets a matching account authorize any BeaconMCP client, including one created
+after the rule was written or registered through DCR. That is what makes "register automatically"
+connectors work without a client id or secret typed by hand, and it is also the trade-off: the
+client identity no longer narrows anything, the SSO account and the click do.
+
+The phishing case is a client you did not set up: someone gets a client registered, sends you an
+authorize link, and your provider session signs you in silently. With an exact rule that client
+would get no SSO button; with a wildcard it does, and the only thing standing between it and a
+token is the approval screen. What limits it:
+
+- DCR is not open on the main issuer (`/oauth/register` answers 403). Registration only goes through
+  a single-use bootstrap slug minted by a signed-in dashboard user, and the proposed `redirect_uris`
+  must already be on the trusted-origin allowlist (`server.allowed_origins`), so a code can only
+  be sent to an origin you listed.
+- The approval screen always needs a click, and it puts the redirect host first. Don't finish an
+  authorization you didn't start, or one whose host you don't recognize.
+- Scope the wildcard to an admin-only group that your provider grants with fresh MFA, and watch the
+  audit log for `rule=*` on clients you don't know.
+
+If you can't accept that, keep exact rules: a DCR client is still covered by its owner's rule.
 
 Manage enrolled credentials from `/app/tokens`, or drop them all for a client with:
 

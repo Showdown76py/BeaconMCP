@@ -74,3 +74,15 @@ def test_locked_disables_inputs() -> None:
 def test_approved_shows_done_step() -> None:
     page = _render(approved=True, ticket="t1")
     assert 'id="step-verify" hidden' in page and 'value="t1"' in page
+
+
+def test_approval_screen_shows_redirect_host() -> None:
+    page = _render(
+        approved=True, ticket="t",
+        redirect_uri="https://evil.example.net/cb?x=1",
+    )
+    done = page.split('id="step-done"', 1)[1]
+    assert '<div class="rc-host" id="redirect-host">evil.example.net</div>' in done
+    assert "https://<strong>evil.example.net</strong>/cb?x=1" in done
+    assert "<code>beaconmcp_7f3a</code>" in done
+    assert done.index('id="redirect-check"') < done.index('id="finish-btn"')

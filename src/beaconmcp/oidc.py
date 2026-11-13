@@ -23,7 +23,8 @@ from urllib.parse import quote, urlencode
 import httpx
 import jwt
 
-from .config import OidcConfig
+from .config import OIDC_WILDCARD as WILDCARD
+from .config import OidcConfig, OidcRule
 
 _logger = logging.getLogger("beaconmcp.oidc")
 
@@ -84,11 +85,16 @@ class OidcProvider:
 
     # --- allowlist -------------------------------------------------------
 
+    def covers(self, *client_ids: str) -> bool:
+        """true when some rule could let an account authorize one of these clients."""
+        return any(
+            r.client == WILDCARD or r.client in client_ids for r in self.cfg.allow
+        )
+
     def configured_clients(self) -> set[str]:
         return {r.client for r in self.cfg.allow}
 
-    def allowed_clients(self, claims: dict[str, Any]) -> set[str]:
-        """clients these claims may authorize, per ``allow``. empty = nobody."""
+    def _rule_matches(self, rule: OidcRule, claims: dict[str, Any]) -> bool:
         sub = str(claims.get("sub") or "")
         email = claims.get("email")
         email = email.strip().lower() if isinstance(email, str) else ""
@@ -102,16 +108,25 @@ class OidcProvider:
             groups = {g for g in raw_groups if isinstance(g, str)}
         else:
             groups = set()
+        return bool(
+            (sub and sub in rule.subjects)
+            or (email and email in rule.emails)
+            or (groups & set(rule.groups))
+        )
 
-        out: set[str] = set()
-        for rule in self.cfg.allow:
-            if (
-                (sub and sub in rule.subjects)
-                or (email and email in rule.emails)
-                or (groups & set(rule.groups))
-            ):
-                out.add(rule.client)
-        return out
+    def allowed_clients(self, claims: dict[str, Any]) -> set[str]:
+        """rule clients these claims match (may hold ``*``). empty = nobody."""
+        return {r.client for r in self.cfg.allow if self._rule_matches(r, claims)}
+
+    def matching_rule(self, claims: dict[str, Any], *client_ids: str) -> str | None:
+        """which rule lets these claims authorize one of ``client_ids``: the exact
+        id, or ``*`` when only a wildcard rule does. None = refused."""
+        allowed = self.allowed_clients(claims)
+        for cid in client_ids:
+            if cid and cid in allowed:
+                return cid
+        # exact rule wins over the wildcard so the audit names the precise one
+        return WILDCARD if WILDCARD in allowed else None
 
     # --- discovery -------------------------------------------------------
 

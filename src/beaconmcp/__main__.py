@@ -943,8 +943,7 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         """button label when sso can authorize this client, else None (no button)."""
         if oidc_provider is None:
             return None
-        allowed = oidc_provider.configured_clients()
-        if client_id in allowed or _passkey_owner(client_id) in allowed:
+        if oidc_provider.covers(client_id, _passkey_owner(client_id)):
             return config.server.oidc.label
         return None
 
@@ -1283,8 +1282,10 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             logging.getLogger("beaconmcp").warning("oidc sign-in failed: %s", exc)
             return _fail("invalid", "SSO sign-in failed. Use your 2FA code instead.")
 
-        allowed = oidc_provider.allowed_clients(claims)
-        if client_id not in allowed and _passkey_owner(client_id) not in allowed:
+        rule = oidc_provider.matching_rule(
+            claims, client_id, _passkey_owner(client_id),
+        )
+        if rule is None:
             return _fail(
                 "not_allowed",
                 "Your SSO account isn't allowed to authorize this client.",
@@ -1294,7 +1295,7 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         totp_record_success(client_id, ip)
         audit.emit(
             "auth.authorize.2fa", client_id=client_id, via="oidc",
-            sub=str(claims.get("sub")), ip=ip,
+            sub=str(claims.get("sub")), rule=rule, ip=ip,
         )
         response = _authorize_approved(request, normalized)
         response.delete_cookie(OIDC_COOKIE, path=OIDC_COOKIE_PATH)
