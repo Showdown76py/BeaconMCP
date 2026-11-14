@@ -226,6 +226,44 @@ async def test_open_dcr_connector_refused_for_another_account(
     assert "allowed to authorize this client" in cb.text
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="bind_owner runs at the oidc callback, before the human clicks "
+    "(review of #72, point 5). Drop this marker with the fix.",
+)
+async def test_open_dcr_binds_at_finalize_not_at_callback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, idp: FakeIdP,
+) -> None:
+    """a cross-site post to /oauth/oidc/start plus a live IdP session must not
+    be enough to put someone else's client in an sso user's connectors."""
+    app, _ = _build(tmp_path, monkeypatch)
+    idp.claims["groups"] = ["tsa-beaconmcp"]
+    clients = tmp_path / "clients.json"
+
+    def _owner(client_id: str) -> str | None:
+        return ClientStore(clients).get(client_id).owner_client_id or None
+
+    # registered by someone else, from another browser
+    async with _browser(app) as other:
+        client_id = (await _register(other)).json()["client_id"]
+    params = _authorize_params(client_id)
+
+    cross_site = {"Origin": "https://other.example", "Sec-Fetch-Site": "cross-site"}
+    async with _browser(app) as b:
+        b.headers.update(cross_site)
+        cb = await _idp_round_trip(b, idp, "/oauth/oidc/start", params)
+        assert "Two-factor confirmed" in cb.text
+        # no click yet: the client must still be nobody's
+        assert _owner(client_id) is None
+
+        ticket = cb.text.split('id="ticket" value="', 1)[1].split('"', 1)[0]
+        done = await b.post("/oauth/authorize/finalize", data={"ticket": ticket})
+        assert done.status_code == 302
+
+    owner = ClientStore(clients).get(_owner(client_id) or "")
+    assert owner is not None and owner.sso_subject == f"{ISSUER.rstrip('/')}#user-123"
+
+
 async def test_open_dcr_needs_the_group(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, idp: FakeIdP,
 ) -> None:
