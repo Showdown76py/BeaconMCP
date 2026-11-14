@@ -40,10 +40,37 @@ class _Confirm(BaseModel):
     confirm: bool = Field(default=False, description="Yes, do it")
 
 
-def _clip(text: Any, limit: int) -> str:
-    """One line, no control characters, capped at ``limit`` characters."""
-    flat = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", str(text)).split())
-    return flat if len(flat) <= limit else flat[:limit] + "..."
+_LINE_BREAK = " ⏎ "
+
+
+def _flat(text: Any) -> str:
+    """One line, no control characters, runs of whitespace collapsed."""
+    return " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", str(text)).split())
+
+
+def _clip(text: str, limit: int) -> str:
+    """Cap at ``limit`` characters, keeping both ends.
+
+    The cut is in the middle and says how much it hides, so that neither a
+    padded start nor a padded end can push the rest out of the dialog unseen.
+    """
+    if len(text) <= limit:
+        return text
+    head = limit * 3 // 5
+    tail = limit - head
+    return f"{text[:head]} [... {len(text) - limit} chars not shown ...] {text[-tail:]}"
+
+
+def _command(text: Any, limit: int = 200) -> str:
+    """A shell command on one dialog line, with its line breaks left visible.
+
+    A newline separates two commands for the shell, so it is rendered as a
+    mark instead of a space: ``echo a`` + newline + ``rm -rf /srv`` must not
+    read as a single echo.
+    """
+    lines = re.split(r"\r\n|\r|\n", str(text).strip())
+    # the second split drops the double space an empty line leaves behind
+    return _clip(" ".join(_LINE_BREAK.join(_flat(line) for line in lines).split()), limit)
 
 
 def _flagged(cfg: Any) -> str:
@@ -53,7 +80,7 @@ def _flagged(cfg: Any) -> str:
         return ""
     by_key = {str(k).strip().lower(): v for k, v in cfg.items()}
     return ", ".join(
-        f"{k}={_clip(by_key[k], 80)}" if k == "rootfs" or _DISK_KEY.match(k) else k
+        f"{k}={_clip(_flat(by_key[k]), 80)}" if k == "rootfs" or _DISK_KEY.match(k) else k
         for k in _sensitive_keys(cfg)
     )
 
@@ -80,9 +107,9 @@ def _message(tool: str, kw: dict) -> str:
     if tool == "proxmox_vm_config":
         return f"Change the config of {vm}? Sensitive settings: {_flagged(kw.get('updates'))}."
     if tool == "ssh_run":
-        return f"Run on {kw.get('host')}: {_clip(kw.get('command'), 200)}"
+        return f"Run on {kw.get('host')}: {_command(kw.get('command'))}"
     if tool == "proxmox_run":
-        return f"Run in guest {kw.get('vmid')} on {kw.get('node')}: {_clip(kw.get('command'), 200)}"
+        return f"Run in guest {kw.get('vmid')} on {kw.get('node')}: {_command(kw.get('command'))}"
     return f"Run {tool}?"
 
 
