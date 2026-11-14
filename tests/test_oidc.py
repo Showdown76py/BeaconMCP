@@ -154,6 +154,37 @@ def test_enabled_validation(raw: dict[str, Any], msg: str) -> None:
         _parse_oidc(full)
 
 
+def test_wildcard_rule_parses() -> None:
+    cfg = _parse_oidc({
+        "enabled": True, "issuer": ISSUER, "client_id": CLIENT_ID,
+        "client_secret": SECRET,
+        "allow": [
+            {"client": " * ", "groups": ["tsa-beaconmcp"]},
+            {"client": "c1", "subjects": ["x"]},
+        ],
+    })
+    assert [r.client for r in cfg.allow] == ["*", "c1"]
+
+
+@pytest.mark.parametrize("client", ["", "   ", "abc*", "*,c1", "**", None, ["*"], 3])
+def test_rule_client_ambiguous_or_empty_refused(client: Any) -> None:
+    # a present-but-null client is refused, only a missing key is an identity rule
+    entry: dict[str, Any] = {"groups": ["ops"], "client": client}
+    with pytest.raises(ConfigError, match=r"allow\[0\]\.client"):
+        _parse_oidc({
+            "enabled": True, "issuer": ISSUER, "client_id": CLIENT_ID,
+            "client_secret": SECRET, "allow": [entry],
+        })
+
+
+def test_wildcard_rule_still_needs_a_matcher() -> None:
+    with pytest.raises(ConfigError, match="emails, groups or subjects"):
+        _parse_oidc({
+            "enabled": True, "issuer": ISSUER, "client_id": CLIENT_ID,
+            "client_secret": SECRET, "allow": [{"client": "*"}],
+        })
+
+
 def test_example_config_has_oidc_off() -> None:
     import yaml
 
@@ -177,6 +208,32 @@ def test_allowlist_matching() -> None:
     assert p.allowed_clients({"sub": "u", "groups": "ops"}) == {"c2"}
     assert p.allowed_clients({"sub": "user-9"}) == {"c3"}
     assert p.allowed_clients({"sub": "nobody"}) == set()
+
+
+def test_wildcard_rule_matching() -> None:
+    p = oidc.OidcProvider(_cfg(allow=[
+        OidcRule(client="c1", emails=["alice@example.com"]),
+        OidcRule(client="*", groups=["tsa-beaconmcp"]),
+    ]))
+    sysadmin = {"sub": "u", "groups": ["tsa-beaconmcp"]}
+    alice = {"sub": "u", "email": "alice@example.com", "email_verified": True}
+    # any client id, a DCR one included
+    assert p.covers("dyn_abc") and p.covers("whatever")
+    assert p.matching_rule(sysadmin, "dyn_abc", "owner_1") == "*"
+    # group mismatch: the wildcard gives nothing
+    assert p.matching_rule({"sub": "u", "groups": ["dev"]}, "dyn_abc") is None
+    # exact rules unaffected, and named in the audit over the wildcard
+    assert p.matching_rule(alice, "c1") == "c1"
+    assert p.matching_rule(alice, "c2") is None
+    both = {**alice, "groups": ["tsa-beaconmcp"]}
+    assert p.matching_rule(both, "c1") == "c1"
+    assert p.matching_rule(both, "dyn_abc", "c1") == "c1"
+
+
+def test_exact_rules_cover_only_their_clients() -> None:
+    p = oidc.OidcProvider(_cfg())
+    assert p.covers("c1") and not p.covers("c2")
+    assert p.covers("dyn_abc", "c1")
 
 
 def test_unverified_email_ok_when_opted_out() -> None:
@@ -306,7 +363,10 @@ HOST = "mcp.example.com"
 REDIRECT = "https://claude.ai/api/mcp/auth_callback"
 
 
-def _build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, rule_for_client: bool = True):
+def _build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, rule_for_client: bool = True,
+    rules: list[OidcRule] | None = None, dynamic: bool = False,
+):
     from test_mcp_http_stack import _CI_ENV, ROOT
 
     for key, value in _CI_ENV.items():
@@ -322,10 +382,20 @@ def _build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, rule_for_client: 
     from beaconmcp import auth
     from beaconmcp.server import config, mcp
 
-    client_id, _secret, _totp = auth.ClientStore(tmp_path / "clients.json").create("t")
-    monkeypatch.setattr(config.server, "oidc", _cfg(allow=[
-        OidcRule(client=client_id if rule_for_client else "other", emails=["alice@example.com"]),
-    ]))
+    store = auth.ClientStore(tmp_path / "clients.json")
+    client_id, _secret, _totp = store.create("t")
+    if dynamic:
+        # what /oauth/register/c/<slug> provisions for a connector
+        client_id, _ = store.create_dynamic(
+            owner_client_id=client_id, name="Claude (claude.ai)",
+            registration_source="chatgpt:slug",
+        )
+    if rules is None:
+        rules = [OidcRule(
+            client=client_id if rule_for_client else "other",
+            emails=["alice@example.com"],
+        )]
+    monkeypatch.setattr(config.server, "oidc", _cfg(allow=rules))
     captured: dict[str, Any] = {}
     monkeypatch.setattr(uvicorn, "run", lambda app, **kw: captured.update(app=app))
     entry._run_http(mcp, "127.0.0.1", 8420)
@@ -445,3 +515,82 @@ async def test_routes_404_when_disabled(
         r1 = await b.post("/oauth/oidc/start", data={})
         r2 = await b.get("/oauth/oidc/callback")
     assert r1.status_code == 404 and r2.status_code == 404
+
+
+WILDCARD_RULES = [OidcRule(client="*", groups=["tsa-beaconmcp"])]
+
+
+async def _sso_callback(b: httpx.AsyncClient, idp: FakeIdP, params: dict[str, str]) -> httpx.Response:
+    start = await b.post("/oauth/oidc/start", data=params)
+    assert start.status_code == 303
+    location = start.headers["location"]
+    state = parse_qs(urlparse(location).query)["state"][0]
+    return await b.get(
+        "/oauth/oidc/callback", params={"code": idp.authorize(location), "state": state},
+    )
+
+
+async def test_wildcard_rule_authorizes_dcr_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, idp: FakeIdP,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app, client_id = _build(tmp_path, monkeypatch, rules=WILDCARD_RULES, dynamic=True)
+    idp.claims["groups"] = ["tsa-beaconmcp"]
+    params = _authorize_params(client_id)
+    async with _browser(app) as b:
+        page = await b.get("/oauth/authorize", params=params)
+        assert 'id="oidc-btn"' in page.text
+        with caplog.at_level("INFO", logger="beaconmcp.audit"):
+            cb = await _sso_callback(b, idp, params)
+        assert "Two-factor confirmed" in cb.text
+        # approval screen names where the code goes, host first
+        assert '<div class="rc-host" id="redirect-host">claude.ai</div>' in cb.text
+        ticket = cb.text.split('id="ticket" value="', 1)[1].split('"', 1)[0]
+        done = await b.post("/oauth/authorize/finalize", data={"ticket": ticket})
+    assert done.status_code == 302 and done.headers["location"].startswith(REDIRECT)
+    events = [
+        json.loads(r.getMessage()) for r in caplog.records
+        if r.name == "beaconmcp.audit" and '"auth.authorize.2fa"' in r.getMessage()
+    ]
+    assert len(events) == 1
+    assert events[0]["via"] == "oidc" and events[0]["rule"] == "*"
+    assert events[0]["client_id"] == client_id
+
+
+async def test_wildcard_rule_group_mismatch_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, idp: FakeIdP,
+) -> None:
+    app, client_id = _build(tmp_path, monkeypatch, rules=WILDCARD_RULES, dynamic=True)
+    idp.claims["groups"] = ["dev"]
+    async with _browser(app) as b:
+        cb = await _sso_callback(b, idp, _authorize_params(client_id))
+    assert "allowed to authorize this client" in cb.text
+    assert 'id="ticket" value=""' in cb.text
+
+
+async def test_exact_rule_audit_names_the_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, idp: FakeIdP,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app, client_id = _build(tmp_path, monkeypatch)
+    async with _browser(app) as b:
+        with caplog.at_level("INFO", logger="beaconmcp.audit"):
+            cb = await _sso_callback(b, idp, _authorize_params(client_id))
+    assert "Two-factor confirmed" in cb.text
+    events = [
+        json.loads(r.getMessage()) for r in caplog.records
+        if r.name == "beaconmcp.audit" and '"auth.authorize.2fa"' in r.getMessage()
+    ]
+    assert [e["rule"] for e in events] == [client_id]
+
+
+async def test_no_button_for_dcr_client_without_matching_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, idp: FakeIdP,
+) -> None:
+    app, client_id = _build(
+        tmp_path, monkeypatch, dynamic=True,
+        rules=[OidcRule(client="other", groups=["tsa-beaconmcp"])],
+    )
+    async with _browser(app) as b:
+        page = await b.get("/oauth/authorize", params=_authorize_params(client_id))
+    assert 'id="oidc-btn"' not in page.text

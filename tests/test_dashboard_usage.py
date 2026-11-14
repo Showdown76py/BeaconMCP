@@ -36,6 +36,9 @@ from beaconmcp.dashboard.usage import Budget, UsageMeter, UsageStore
 
 
 class FakeClientStore:
+    # only builtin clients here: no Client rows, so no sso user either
+    def get(self, client_id): return None
+
     def verify(self, cid, sec): return cid == "c" and sec == "s"
     def check_totp(self, cid, code):
         return TotpResult.OK if code == "123456" else TotpResult.INVALID

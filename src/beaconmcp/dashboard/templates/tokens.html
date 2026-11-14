@@ -214,6 +214,10 @@
                          value="{{ form_name or '' }}"
                          {% if locked %}disabled{% endif %}>
                 </label>
+{% if sso_user %}
+                <p class="muted">Confirmed by your SSO sign-in. Older than 10 minutes?
+                  <a href="/app/sso?reauth=1&amp;next=/app/tokens">Sign in again</a> first.</p>
+                {% else %}
                 <label>
                   <span>2FA code</span>
                   <input type="text" name="totp" inputmode="numeric"
@@ -221,6 +225,7 @@
                          autocomplete="one-time-code" required
                          placeholder="000000" {% if locked %}disabled{% endif %}>
                 </label>
+                {% endif %}
                 <button type="submit" {% if locked %}disabled{% endif %}>Create token</button>
               </form>
               {% else %}

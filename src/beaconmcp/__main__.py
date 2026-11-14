@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -147,11 +148,17 @@ def _log_cloudflare_unauthorized(cf_ray: str) -> None:
     )
 
 
-def _oauth_server_metadata(issuer: str) -> dict:
+def _oauth_server_metadata(issuer: str, *, open_registration: bool = False) -> dict:
     """RFC 8414 authorization-server metadata for the main issuer."""
-    # registration_endpoint is intentionally omitted: dynamic client
-    # registration is disabled, clients must be provisioned via CLI.
+    # registration_endpoint only with open dcr (sso identity on): those
+    # clients can only be authorized through sso. otherwise clients come
+    # from the CLI or a dashboard slug
+    extra = (
+        {"registration_endpoint": f"{issuer}/oauth/register"}
+        if open_registration else {}
+    )
     return {
+        **extra,
         "issuer": issuer,
         "authorization_endpoint": f"{issuer}/oauth/authorize",
         "token_endpoint": f"{issuer}/oauth/token",
@@ -490,7 +497,7 @@ def _cmd_serve(args):
 
 
 def _cmd_auth(args):
-    from .auth import ClientStore
+    from .auth import OPEN_DCR_SOURCE, ClientStore
 
     store = ClientStore(getattr(args, "clients_file", None))
 
@@ -530,12 +537,23 @@ def _cmd_auth(args):
         if not clients:
             print("No clients registered.")
             return
-        print(f"\n{'Client ID':<30} {'Name':<25} {'Created'}")
-        print("-" * 75)
+        print(f"\n{'Client ID':<30} {'Name':<25} {'Kind':<10} {'Created'}")
+        print("-" * 86)
         from datetime import datetime
         for c in clients:
             created = datetime.fromtimestamp(c["created_at"]).strftime("%Y-%m-%d %H:%M")
-            print(f"{c['client_id']:<30} {c['name']:<25} {created}")
+            if c.get("sso_subject"):
+                kind = "sso user"
+            elif c.get("registration_source") == OPEN_DCR_SOURCE:
+                kind = "dcr"
+            elif c.get("owner_client_id"):
+                kind = "connector"
+            else:
+                kind = "builtin"
+            print(f"{c['client_id']:<30} {c['name'][:25]:<25} {kind:<10} {created}")
+            if c.get("sso_subject"):
+                # the name comes from the IdP; the subject is what identifies them
+                print(f"{'':<30} sso subject: {c['sso_subject']}")
         print()
 
     elif args.auth_command == "revoke":
@@ -618,7 +636,7 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
     from starlette.middleware import Middleware
     from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.requests import Request
-    from starlette.responses import HTMLResponse, JSONResponse, Response
+    from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
     from starlette.routing import Mount, Route
 
     from urllib.parse import urlencode, urlparse
@@ -772,6 +790,12 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
     oidc_provider = (
         oidc.OidcProvider(config.server.oidc) if config.server.oidc.enabled else None
     )
+    # anyone may register a client, but only an sso identity can authorize it
+    open_dcr_enabled = (
+        config.server.allow_dynamic_registration and config.server.sso_identity
+    )
+    # filled by the dashboard: finishes a dashboard sso sign-in
+    sso_hooks: dict[str, Any] = {}
 
     # In-memory TOTP brute-force guard, keyed on (client_id, source IP): 5
     # wrong codes from one IP lock that IP out for 5 minutes, and 10 from any
@@ -811,7 +835,9 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         return f"{scheme}://{host_header}"
 
     async def oauth_metadata(request: Request) -> Response:
-        return JSONResponse(_oauth_server_metadata(_issuer(request)))
+        return JSONResponse(_oauth_server_metadata(
+            _issuer(request), open_registration=open_dcr_enabled,
+        ))
 
     async def protected_resource_metadata(request: Request) -> Response:
         # RFC 9728 - required by the MCP 2025-06-18 spec so that clients
@@ -898,10 +924,16 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
     pending_authorizations: dict[str, tuple[dict[str, str], float]] = {}
     PENDING_AUTHORIZATION_TTL = 600.0
 
+    # ticket -> sso user client that takes an unowned open dcr client on
+    # "Finish signing in". kept off the params so it never reaches a form
+    pending_binds: dict[str, str] = {}
+
     def _prune_pending() -> None:
         now = time.time()
         for key in [k for k, (_, exp) in pending_authorizations.items() if now > exp]:
             del pending_authorizations[key]
+        for key in [k for k in pending_binds if k not in pending_authorizations]:
+            del pending_binds[key]
 
     def _issue_pending(normalized: dict[str, str]) -> tuple[str, float]:
         _prune_pending()
@@ -939,14 +971,75 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             return client.owner_client_id
         return client_id
 
+    def _sso_owned(client_id: str) -> bool:
+        """sso user, its connectors, or an open dcr client: sso is the only way in."""
+        client = client_store.get(client_id)
+        if client is None:
+            return False
+        if client.is_sso_user or client.is_open_dcr:
+            return True
+        owner = client_store.get(client.owner_client_id) if client.owner_client_id else None
+        return owner is not None and owner.is_sso_user
+
+    def _builtin_factors(client_id: str) -> bool:
+        """TOTP / passkeys usable for this client on /oauth/authorize."""
+        return config.server.builtin_login and not _sso_owned(client_id)
+
     def _oidc_label_for(client_id: str) -> str | None:
         """button label when sso can authorize this client, else None (no button)."""
         if oidc_provider is None:
             return None
-        allowed = oidc_provider.configured_clients()
-        if client_id in allowed or _passkey_owner(client_id) in allowed:
+        if _sso_owned(client_id):
+            return config.server.oidc.label if config.server.sso_identity else None
+        if oidc_provider.covers(client_id, _passkey_owner(client_id)):
             return config.server.oidc.label
         return None
+
+    def _sso_display_name(claims: dict[str, Any]) -> str:
+        # an unverified email is whatever the user typed at the IdP: not a label
+        # an admin should trust in `auth list`
+        keys = ("email", "name", "preferred_username")
+        if config.server.oidc.require_email_verified and claims.get("email_verified") is not True:
+            keys = ("name", "preferred_username")
+        for key in keys:
+            value = claims.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return str(claims.get("sub") or "")
+
+    def _sso_user_for(claims: dict[str, Any]) -> str | None:
+        """hidden client of this sso account, when an identity rule lets it in."""
+        if (
+            oidc_provider is None or not config.server.sso_identity
+            or not oidc_provider.identity_allowed(claims)
+        ):
+            return None
+        return client_store.ensure_sso_user(
+            oidc_provider.subject_key(claims), _sso_display_name(claims),
+        )
+
+    def _sso_rule_for(
+        client_id: str, claims: dict[str, Any],
+    ) -> tuple[str | None, str | None]:
+        """``(rule, bind_owner)``. rule: a client id, ``*``, or ``user`` (sso
+        identity), None = refused. bind_owner: the sso user that takes this
+        unowned open dcr client once the human clicks finish (not before: the
+        IdP round trip alone must not change anything)."""
+        assert oidc_provider is not None
+        if not _sso_owned(client_id):
+            rule = oidc_provider.matching_rule(
+                claims, client_id, _passkey_owner(client_id),
+            )
+            return rule, None
+        user = _sso_user_for(claims)
+        client = client_store.get(client_id)
+        if user is None or client is None:
+            return None, None
+        if client.is_sso_user:
+            return ("user" if client.client_id == user else None), None
+        if client.is_open_dcr and client.owner_client_id is None:
+            return "user", user
+        return ("user" if client.owner_client_id == user else None), None
 
     def _authorize_passkeys_enabled(request: Request, client_id: str) -> bool:
         if passkey_service is None or not passkey_service.available:
@@ -990,7 +1083,8 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             banner = f'<div class="banner">{html.escape(error)}</div>'
 
         approved = ticket is not None
-        passkeys_on = _authorize_passkeys_enabled(request, client_id)
+        builtin_on = _builtin_factors(client_id)
+        passkeys_on = builtin_on and _authorize_passkeys_enabled(request, client_id)
 
         def _fmt(ts: float | None) -> str:
             if not ts:
@@ -1023,6 +1117,7 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             locked=locked,
             approved=approved,
             passkeys_on=passkeys_on,
+            builtin_on=builtin_on,
             oidc_label=None if approved else _oidc_label_for(client_id),
             ticket=ticket or "",
             access_expiry=_fmt(access_expires_at),
@@ -1049,14 +1144,18 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
 
     def _authorize_approved(
         request: Request, normalized: dict[str, str], *, as_json: bool = False,
+        bind_owner: str | None = None,
     ) -> Response:
         """Second factor cleared: hand the operator the confirmation screen.
 
         ``as_json`` forces the JSON shape for callers that are JSON-only by
         construction (the passkey endpoints), independently of whether the
-        client remembered to send the mode header.
+        client remembered to send the mode header. ``bind_owner`` is applied
+        at finalize, once the human clicked.
         """
         ticket, ticket_expires_at = _issue_pending(normalized)
+        if bind_owner is not None:
+            pending_binds[ticket] = bind_owner
         access_expires_at = time.time() + TokenStore.TOKEN_TTL
         if as_json or _wants_json_authorize(request):
             return JSONResponse({
@@ -1124,6 +1223,11 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             return response
 
         client_id = normalized["client_id"]
+        if not _builtin_factors(client_id):
+            return _authorize_failed(
+                request, normalized,
+                "Sign in with SSO to authorize this client.", status=403,
+            )
         if totp_locked(client_id, ip):
             return _authorize_failed(
                 request, normalized,
@@ -1160,6 +1264,7 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         form = await request.form()
         ticket_raw = form.get("ticket", "")
         ticket = ticket_raw.strip() if isinstance(ticket_raw, str) else ""
+        bind_owner = pending_binds.pop(ticket, None) if ticket else None
         normalized = _consume_pending(ticket) if ticket else None
         if normalized is None:
             return JSONResponse(
@@ -1171,6 +1276,17 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
                     ),
                 },
                 status_code=400,
+            )
+        if bind_owner is not None and not client_store.bind_owner(
+            normalized["client_id"], bind_owner,
+        ):
+            # another sso account finished first
+            return JSONResponse(
+                {
+                    "error": "access_denied",
+                    "error_description": "This connector belongs to another account.",
+                },
+                status_code=403,
             )
         audit.emit(
             "auth.authorize.ok", client_id=normalized["client_id"],
@@ -1257,6 +1373,8 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
                 },
                 status_code=400,
             )
+        if pending.payload.get("flow") == "dashboard":
+            return await _oidc_dashboard_callback(request, pending, params)
         normalized = pending.payload
         client_id = normalized["client_id"]
         ip = _ip(request)
@@ -1283,8 +1401,8 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             logging.getLogger("beaconmcp").warning("oidc sign-in failed: %s", exc)
             return _fail("invalid", "SSO sign-in failed. Use your 2FA code instead.")
 
-        allowed = oidc_provider.allowed_clients(claims)
-        if client_id not in allowed and _passkey_owner(client_id) not in allowed:
+        rule, bind_owner = _sso_rule_for(client_id, claims)
+        if rule is None:
             return _fail(
                 "not_allowed",
                 "Your SSO account isn't allowed to authorize this client.",
@@ -1294,9 +1412,76 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         totp_record_success(client_id, ip)
         audit.emit(
             "auth.authorize.2fa", client_id=client_id, via="oidc",
+            sub=str(claims.get("sub")), rule=rule, ip=ip,
+        )
+        response = _authorize_approved(request, normalized, bind_owner=bind_owner)
+        response.delete_cookie(OIDC_COOKIE, path=OIDC_COOKIE_PATH)
+        return response
+
+    async def _dashboard_sso_start(
+        request: Request, *, next_url: str, reauth: bool, replaces: str,
+    ) -> Response:
+        """called by the dashboard's /app/sso. ``reauth`` sends max_age=0 so
+        the IdP has to authenticate again (step-up); ``replaces`` is the
+        browser's current session, swapped for the new one at the callback."""
+        if oidc_provider is None or not config.server.sso_identity:
+            return RedirectResponse("/app/login", status_code=303)
+        if _oidc_rate_limited(request) is not None:
+            return RedirectResponse("/app/login?sso_error=rate", status_code=303)
+        try:
+            url, binding = await oidc_provider.start(
+                redirect_uri=_oidc_redirect_uri(request),
+                payload={"flow": "dashboard", "next": next_url, "replaces": replaces},
+                max_age=0 if reauth else None,
+            )
+        except oidc.OidcError as exc:
+            logging.getLogger("beaconmcp").warning("oidc start failed: %s", exc)
+            return RedirectResponse("/app/login?sso_error=unreachable", status_code=303)
+        response = Response(status_code=303, headers={"Location": url})
+        response.set_cookie(
+            OIDC_COOKIE, binding,
+            max_age=int(oidc.PENDING_TTL), path=OIDC_COOKIE_PATH,
+            httponly=True, samesite="lax",
+            secure=forwarded_scheme(request, tuple(config.server.trusted_proxies)) == "https",
+        )
+        return response
+
+    sso_hooks["start"] = _dashboard_sso_start
+
+    async def _oidc_dashboard_callback(request: Request, pending, params) -> Response:
+        assert oidc_provider is not None
+        ip = _ip(request)
+
+        def _fail(code: str, reason: str) -> Response:
+            audit.emit("dashboard.login.fail", reason=f"oidc:{reason}", ip=ip)
+            response = RedirectResponse(f"/app/login?sso_error={code}", status_code=303)
+            response.delete_cookie(OIDC_COOKIE, path=OIDC_COOKIE_PATH)
+            return response
+
+        if params.get("error"):
+            return _fail("cancelled", str(params.get("error"))[:64])
+        try:
+            claims = await oidc_provider.finish(pending, params.get("code", ""))
+        except oidc.OidcError as exc:
+            logging.getLogger("beaconmcp").warning("oidc sign-in failed: %s", exc)
+            return _fail("failed", "invalid")
+        user = _sso_user_for(claims)
+        hook = sso_hooks.get("dashboard")
+        if user is None or hook is None:
+            return _fail("not_allowed", "not_allowed")
+        audit.emit(
+            "dashboard.login.ok", client_id=user, via="oidc",
             sub=str(claims.get("sub")), ip=ip,
         )
-        response = _authorize_approved(request, normalized)
+        # signed by the IdP like the rest of the id_token; the only thing the
+        # dashboard step-up trusts
+        auth_time = claims.get("auth_time")
+        response = hook(
+            request, user, pending.payload.get("next", ""),
+            float(auth_time) if isinstance(auth_time, (int, float))
+            and not isinstance(auth_time, bool) else None,
+            pending.payload.get("replaces", ""),
+        )
         response.delete_cookie(OIDC_COOKIE, path=OIDC_COOKIE_PATH)
         return response
 
@@ -1338,6 +1523,11 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             return JSONResponse(
                 {"ok": False, "error": "Unknown client."}, status_code=400,
             )
+        if not _builtin_factors(client_id):
+            return JSONResponse(
+                {"ok": False, "error": "Sign in with SSO to authorize this client."},
+                status_code=403,
+            )
         # No TOTP-lockout check on the passkey path: a passkey cannot be
         # guessed, so it stays the owner's way in while someone burns the
         # client's TOTP budget. The per-IP guard above still applies.
@@ -1369,6 +1559,11 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
                 status_code=400,
             )
         client_id = normalized["client_id"]
+        if not _builtin_factors(client_id):
+            return JSONResponse(
+                {"ok": False, "error": "Sign in with SSO to authorize this client."},
+                status_code=403,
+            )
         credential = body.get("credential")
         state = str(body.get("state") or "")
         if not isinstance(credential, dict) or not state:
@@ -1411,6 +1606,11 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             return JSONResponse(
                 {"ok": False, "error": "This approval expired. Start again."},
                 status_code=400,
+            )
+        if not _builtin_factors(normalized["client_id"]):
+            return JSONResponse(
+                {"ok": False, "error": "Passkeys are handled by your SSO provider."},
+                status_code=403,
             )
         owner = _passkey_owner(normalized["client_id"])
         try:
@@ -1573,7 +1773,9 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
 
         return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
 
-    async def oauth_register(_request: Request) -> Response:
+    async def oauth_register(request: Request) -> Response:
+        if open_dcr_enabled:
+            return await _open_dcr_register(request)
         # Dynamic client registration is disabled by design. Respond explicitly
         # instead of letting the request fall through to a generic 404.
         return JSONResponse(
@@ -1583,6 +1785,38 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             },
             status_code=403,
         )
+
+    async def _open_dcr_register(request: Request) -> Response:
+        """RFC 7591 without a slug. the client is unowned and only sso can
+        authorize it; the first sso user who does owns it."""
+        ip = _ip(request)
+        if not _login_limiter.check(ip):
+            return JSONResponse({"error": "too_many_requests"}, status_code=429)
+        meta = await _read_dcr_metadata(request, default_name="MCP connector")
+        if isinstance(meta, Response):
+            return meta
+        try:
+            new_id, new_secret = client_store.create_open_dcr(
+                name=meta["client_name"],
+                logo_uri=meta["logo_uri"],
+                client_uri=meta["client_uri"],
+            )
+        except auth.OpenDcrFull:
+            return JSONResponse(
+                {"error": "temporarily_unavailable",
+                 "error_description": "too many pending registrations, retry later"},
+                status_code=503,
+            )
+        audit.emit("auth.register", client_id=new_id, via="dcr", ip=ip)
+        return JSONResponse({
+            "client_id": new_id,
+            "client_secret": new_secret,
+            "client_id_issued_at": int(time.time()),
+            "token_endpoint_auth_method": "client_secret_post",
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "redirect_uris": meta["redirect_uris"],
+        }, status_code=201)
 
     async def health(_request: Request) -> Response:
         return JSONResponse({"status": "ok", "server": "beaconmcp"})
@@ -1747,26 +1981,21 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             "token_endpoint_auth_methods_supported": ["client_secret_post"],
         })
 
-    async def dcr_register(request: Request) -> Response:
-        if dyn_reg_store is None:
-            return JSONResponse({"error": "registration_not_supported"}, status_code=403)
-        slug = request.path_params["slug"]
-        row = dyn_reg_store.load(slug)
-        if row is None:
-            return JSONResponse(
-                {"error": "invalid_client_metadata",
-                 "error_description": "unknown bootstrap slug"},
-                status_code=404,
-            )
+    async def _read_dcr_metadata(
+        request: Request, *, default_name: str,
+    ) -> dict[str, Any] | Response:
+        """RFC 7591 body shared by the slug and the open registration:
+        client_name, redirect_uris (checked), https logo_uri / client_uri."""
         try:
             body = await request.json()
         except Exception:
             body = {}
-        client_name = "ChatGPT connector"
-        if isinstance(body, dict):
-            candidate = body.get("client_name")
-            if isinstance(candidate, str) and candidate.strip():
-                client_name = candidate.strip()[:60]
+        if not isinstance(body, dict):
+            body = {}
+        client_name = default_name
+        candidate = body.get("client_name")
+        if isinstance(candidate, str) and candidate.strip():
+            client_name = candidate.strip()[:60]
 
         # Validate redirect_uris BEFORE provisioning a client. The MCP spec
         # lets the caller propose arbitrary redirect URIs during DCR; if we
@@ -1774,16 +2003,14 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         # redirect_uri=https://evil.example/cb and later phish an
         # authorization code out of us. Reject anything not on the trusted
         # allowlist (server.allowed_origins + non-origin OAuth exceptions).
-        redirect_uris_raw = None
-        if isinstance(body, dict):
-            redirect_uris_raw = body.get("redirect_uris")
-        if not isinstance(redirect_uris_raw, list) or not redirect_uris_raw:
+        redirect_uris = body.get("redirect_uris")
+        if not isinstance(redirect_uris, list) or not redirect_uris:
             return JSONResponse(
                 {"error": "invalid_redirect_uri",
                  "error_description": "redirect_uris is required"},
                 status_code=400,
             )
-        bad = [u for u in redirect_uris_raw
+        bad = [u for u in redirect_uris
                if not auth.is_trusted_redirect_uri(u, redirect_origins)]
         if bad:
             return JSONResponse(
@@ -1797,18 +2024,40 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             )
 
         def _https_meta(key: str) -> str | None:
-            value = body.get(key) if isinstance(body, dict) else None
+            value = body.get(key)
             if isinstance(value, str) and value.startswith("https://") and len(value) <= 2048:
                 return value
             return None
 
+        return {
+            "client_name": client_name,
+            "redirect_uris": redirect_uris,
+            "logo_uri": _https_meta("logo_uri"),
+            "client_uri": _https_meta("client_uri"),
+        }
+
+    async def dcr_register(request: Request) -> Response:
+        if dyn_reg_store is None:
+            return JSONResponse({"error": "registration_not_supported"}, status_code=403)
+        slug = request.path_params["slug"]
+        row = dyn_reg_store.load(slug)
+        if row is None:
+            return JSONResponse(
+                {"error": "invalid_client_metadata",
+                 "error_description": "unknown bootstrap slug"},
+                status_code=404,
+            )
+        meta = await _read_dcr_metadata(request, default_name="ChatGPT connector")
+        if isinstance(meta, Response):
+            return meta
+
         try:
             new_client_id, new_client_secret = client_store.create_dynamic(
                 owner_client_id=row.owner_client_id,
-                name=f"{row.label} ({client_name})"[:120],
+                name=f"{row.label} ({meta['client_name']})"[:120],
                 registration_source=f"chatgpt:{slug}",
-                logo_uri=_https_meta("logo_uri"),
-                client_uri=_https_meta("client_uri"),
+                logo_uri=meta["logo_uri"],
+                client_uri=meta["client_uri"],
             )
         except ValueError:
             return JSONResponse({"error": "invalid_client_metadata"}, status_code=400)
@@ -1835,7 +2084,7 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             "token_endpoint_auth_method": "client_secret_post",
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
-            "redirect_uris": redirect_uris_raw,
+            "redirect_uris": meta["redirect_uris"],
         }, status_code=201)
 
     class _McpSlugRewriteApp:
@@ -1901,6 +2150,9 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         passkey_service=passkey_service,
         updates=config.features.updates,
         config_path=config.source_path,
+        sso_hooks=sso_hooks,
+        sso_label=config.server.oidc.label if config.server.sso_identity else None,
+        builtin_login=config.server.builtin_login,
     )
 
     app = Starlette(
@@ -2005,7 +2257,8 @@ def _build_dashboard_routes(client_store, token_store, totp_locked,
                              *, dyn_reg=None, shared_database=None,
                              login_limiter=None, trusted_proxies=(),
                              passkey_service=None, updates=None,
-                             config_path=None):
+                             config_path=None, sso_hooks=None, sso_label=None,
+                             builtin_login=True):
     """Build dashboard routes if enabled. Returns [] when disabled."""
     from . import dashboard
     if not dashboard.is_enabled():
@@ -2084,6 +2337,9 @@ def _build_dashboard_routes(client_store, token_store, totp_locked,
             updates.allow_self_update if updates is not None else True
         ),
         config_path=config_path,
+        sso_hooks=sso_hooks,
+        sso_label=sso_label,
+        builtin_login=builtin_login,
     )
     return build_dashboard_routes(deps)
 

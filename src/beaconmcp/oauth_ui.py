@@ -272,6 +272,20 @@ h1 { margin: 0 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -0.015e
   margin: 0; font-size: 13px; font-weight: 550;
   color: var(--fg); text-align: right;
 }
+.redirect-check {
+  margin: 0 0 14px; padding: 12px 14px;
+  border: 1px solid var(--border-strong); border-radius: 10px;
+}
+.redirect-check .rc-label { font-size: 12px; color: var(--fg-muted); }
+.redirect-check .rc-host {
+  margin: 2px 0 4px; font-family: var(--font-mono); font-size: 17px;
+  font-weight: 700; color: var(--fg); overflow-wrap: anywhere;
+}
+.redirect-check .url { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-muted); overflow-wrap: anywhere; }
+.redirect-check .url strong { color: var(--fg); font-weight: 700; }
+.redirect-check .rc-client { margin-top: 8px; font-size: 12px; color: var(--fg-muted); overflow-wrap: anywhere; }
+.redirect-check .rc-client b { color: var(--fg); font-weight: 600; }
+.redirect-check .rc-client code { font-family: var(--font-mono); font-size: 11.5px; }
 #passkey-add-block { margin-top: 18px; }
 #finalize-form { margin-top: 20px; }
 """
@@ -716,10 +730,11 @@ def client_pair(logo_url: str, client_name: str) -> str:
     )
 
 
-def oidc_block(label: str | None, hidden_inputs: str) -> str:
+def oidc_block(label: str | None, hidden_inputs: str, *, alternatives: bool = True) -> str:
     """sso button. never disabled by the TOTP lockout: an IdP login can't be guessed."""
     if not label:
         return ""
+    divider = '<div class="alt-divider"><span>or</span></div>' if alternatives else ""
     return (
         '<div id="oidc-block">'
         '<form method="POST" action="/oauth/oidc/start" id="oidc-form">'
@@ -731,7 +746,7 @@ def oidc_block(label: str | None, hidden_inputs: str) -> str:
         '<path d="M15 12H3"/></svg>'
         f'<span class="btn-label">Continue with {html.escape(label)}</span>'
         "</button></form>"
-        '<div class="alt-divider"><span>or</span></div>'
+        f"{divider}"
         "</div>"
     )
 
@@ -848,17 +863,39 @@ def redirect_display(redirect_uri: str) -> str:
     )
 
 
+def redirect_check(redirect_uri: str, client_name: str, client_id: str) -> str:
+    """where "Finish signing in" sends the code, host first. with open DCR any
+    site can register a client and push this page, so the host is what the
+    operator must recognize before clicking."""
+    from urllib.parse import urlsplit
+
+    e = html.escape
+    host = urlsplit(redirect_uri).hostname or redirect_uri
+    return (
+        '<div class="redirect-check" id="redirect-check">'
+        "<div class=\"rc-label\">Finish sends the authorization to</div>"
+        f'<div class="rc-host" id="redirect-host">{e(host)}</div>'
+        f"{redirect_display(redirect_uri)}"
+        f'<div class="rc-client">Client <b>{e(client_name)}</b> &middot; '
+        f"<code>{e(client_id)}</code></div>"
+        "</div>"
+    )
+
+
 def render_authorize_page(
     *, host: str, client_id: str, client_name: str, logo_url: str,
     redirect_uri: str, kinds: list[str], hidden_inputs: str, banner: str,
     locked: bool, approved: bool, passkeys_on: bool, ticket: str,
     access_expiry: str, ticket_expiry: str, oidc_label: str | None = None,
+    builtin_on: bool = True,
 ) -> str:
     """``/oauth/authorize``: connect step, then the post-2FA confirmation.
 
     ``hidden_inputs`` and ``banner`` are pre-escaped HTML; ``access_expiry``
     and ``ticket_expiry`` too. Element ids are what ``AUTHORIZE_JS`` binds to.
     ``oidc_label`` adds the sso button (plain form post, no JS) when set.
+    ``builtin_on`` false hides the TOTP form and passkeys (auth_mode sso, or
+    a client only sso can authorize).
     """
     e = html.escape
     disabled = " disabled" if locked else ""
@@ -876,14 +913,15 @@ def render_authorize_page(
     {banner}
     {permissions_list(kinds)}
     <div class="banner" id="verify-error" hidden></div>
-    {oidc_block(oidc_label, hidden_inputs)}
+    {oidc_block(oidc_label, hidden_inputs, alternatives=builtin_on)}
+    {'' if builtin_on or oidc_label else '<div class="banner">No sign-in method is available for this client on this server.</div>'}
     <div id="passkey-block" hidden>
       <button type="button" class="btn-primary" id="passkey-btn"{disabled}>
         {PASSKEY_ICON}<span class="btn-label">Continue with passkey</span>
       </button>
       <div class="alt-divider"><span>or 6-digit code</span></div>
     </div>
-    <form method="POST" action="/oauth/authorize" id="authorize-form">
+    <form method="POST" action="/oauth/authorize" id="authorize-form"{'' if builtin_on else ' hidden'}>
 {hidden_inputs}
       {totp_boxes(locked)}
       <input type="hidden" name="totp" id="totp" pattern="\\d{{6}}" required>
@@ -908,11 +946,12 @@ def render_authorize_page(
     <p class="sub">You're about to grant <strong>{name}</strong> access to this BeaconMCP server.</p>
     <div class="banner" id="done-error" hidden></div>
     <div class="banner banner-success" id="done-ok" hidden></div>
+    {redirect_check(redirect_uri, client_name, client_id)}
     <dl class="expiry-card">
       <div class="expiry-row"><dt>Access expires</dt><dd id="access-expiry">{access_expiry}</dd></div>
       <div class="expiry-row"><dt>This approval expires</dt><dd id="ticket-expiry">{ticket_expiry}</dd></div>
     </dl>
-    <p class="hint">The client will have to go through two-factor again once its access expires.</p>
+    <p class="hint">Only finish if you recognize this address and started this connection yourself. The client will have to go through two-factor again once its access expires.</p>
     <div id="passkey-add-block" hidden>
       <button type="button" class="btn-ghost" id="add-passkey-btn">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="8" r="4"/><path d="M10.9 13.1A6 6 0 0 0 4 19v1h7"/><path d="M18 13v6M15 16h6"/></svg>
