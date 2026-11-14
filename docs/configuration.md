@@ -129,7 +129,8 @@ allow:
 
 Emails count only with `email_verified: true`, unless `require_email_verified` is `false`. Groups
 are read from the `groups_claim` claim (default `groups`); your provider has to put it in the
-id_token.
+id_token. A rule only accepts `client`, `emails`, `groups` and `subjects`: any other key (a
+misspelt `client`, say) is refused at load, so a typo can't turn into an identity rule.
 
 ### Connectors registering themselves
 
@@ -140,26 +141,30 @@ automatically" and most MCP clients expect.
 
 - A registration grants nothing by itself: such a client has no TOTP or passkey path, only an SSO
   sign-in matched by an identity rule can authorize it.
-- It belongs to the first SSO account that authorizes it. Anyone else is refused.
+- It belongs to the first SSO account that clicks **Finish signing in** for it. Signing in at the
+  provider alone doesn't claim it, and anyone else is refused afterwards.
 - Its `redirect_uris` must be on `server.allowed_origins` (loopback and `vscode://`-style
   callbacks are built in), otherwise registration fails with `invalid_redirect_uri`.
-- A client nobody authorized is deleted after 24 hours. Registration shares the per-IP login
-  rate limit.
+- A client nobody authorized is deleted after 24 hours, and at most 200 can be waiting at once
+  (registration answers 503 above that). Registration shares the per-IP login rate limit.
 
 Without an identity rule, `/oauth/register` answers 403 and only the dashboard's single-use
 bootstrap URLs (`/mcp/c/<slug>`) can register a client.
 
 ### Dashboard with SSO
 
-- **Sign-in:** the **Continue with &lt;label&gt;** button is a plain link to `/oauth/oidc/login`, which
-  sends the browser to the provider. The provider sends it back to `/oauth/oidc/callback`.
-- **Expired MCP bearer** (every 24 h): an SSO user goes back through the provider instead of the
-  TOTP refresh page.
+- **Sign-in:** the **Continue with &lt;label&gt;** button is a plain link to `/app/sso`, which
+  sends the browser to the provider. The provider sends it back to `/oauth/oidc/callback`, and
+  the new session replaces the one the browser had.
+- **Expired MCP bearer** (every 24 h): an SSO user goes straight back through the provider, which
+  usually signs them in again without a prompt. If it fails, `/app/login` shows why.
 - **Sensitive actions** (new API token, new connector URL, self-update) need an authentication at
-  the provider less than 10 minutes old. BeaconMCP reads it from the id_token's `auth_time` claim,
-  so a silent sign-in from an old provider session doesn't count. **Sign in again** sends
-  `max_age=0`, which asks the provider to authenticate the person again (OpenID Connect Core
-  3.1.2.1). The id_token is refused if `auth_time` is missing or too old.
+  the provider less than 10 minutes old, read from the id_token's `auth_time` claim. Neither a
+  silent sign-in from an old provider session nor a fresh BeaconMCP session counts on its own.
+  **Sign in again** sends `max_age=0`, which asks the provider to authenticate the person again
+  (OpenID Connect Core 3.1.2.1), and the id_token is refused if `auth_time` is missing or too old.
+  **Your provider has to send `auth_time` and honour `max_age`** (Ory Hydra and Keycloak
+  do). Without them, sign-in works but these actions stay refused.
 - **Passkeys** on the dashboard are off for SSO users: the provider owns MFA.
 - **Switching to `auth_mode: sso`** ends dashboard sessions opened with a client secret.
 

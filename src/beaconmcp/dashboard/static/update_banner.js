@@ -150,7 +150,7 @@
     if (ssoUser) {
       box.innerHTML = '' +
         '<p class="ut-note">Your SSO sign-in confirms this if it is less than ' +
-        '10 minutes old. Otherwise <a href="/app/login?reauth=1">sign in again</a> first.</p>' +
+        '10 minutes old. Otherwise <a href="/app/sso?reauth=1">sign in again</a> first.</p>' +
         '<div class="ut-totp-row"><button type="button" class="ut-primary" id="ut-confirm">' +
           '<span class="btn-label">Update</span></button></div>';
       var ssoConfirm = document.getElementById("ut-confirm");

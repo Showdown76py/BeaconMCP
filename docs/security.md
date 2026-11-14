@@ -156,17 +156,24 @@ at the provider and keep the rules narrow.
   `client` rule, and never a connector another SSO account already authorized.
 - **Access ends with the session, not with the provider.** BeaconMCP doesn't hear about an account
   disabled at the provider. Rules are checked at every sign-in, an OAuth sign-in lasts 24 h at
-  most, and a dashboard session ends at its TTL. To cut someone off now, run
-  `beaconmcp auth revoke <their sso user client>` (listed as `sso user`): it drops their
-  connectors and tokens too.
+  most, and a dashboard session ends at its TTL. To cut someone off now, find their client in
+  `beaconmcp auth list` (kind `sso user`, with the provider subject printed under it) and run
+  `beaconmcp auth revoke <client id>`: it drops their connectors and tokens too.
 - **Step-up without TOTP.** For an SSO user, a new API token, a new connector URL or a self-update
   needs an authentication at the provider less than 10 minutes old, read from the id_token's
-  `auth_time`. "Sign in again" sends `max_age=0`, so the provider must authenticate the person
-  again rather than reuse its own session; an id_token without a fresh `auth_time` is refused.
-- **The dashboard session cookie is `SameSite=Lax`**, like most panels with SSO: the provider
-  sends the browser back through a cross-site redirect, which a `Strict` cookie would not survive.
-  Every state-changing dashboard request still needs the CSRF token, and the cookie stays
-  `HttpOnly`, `Secure` behind HTTPS and scoped to `/app`.
+  `auth_time`, and nothing else. "Sign in again" sends `max_age=0`, so the provider must
+  authenticate the person again rather than reuse its own session; an id_token without a fresh
+  `auth_time` is refused. A provider that sends no `auth_time` leaves these actions refused
+  (fails closed).
+- **API tokens outlive the rules.** A named token an SSO user minted keeps working for its
+  lifetime (`server.named_token_ttl`, forever with `0`) even after the account leaves the
+  provider group. Revoking the SSO user's client (`beaconmcp auth revoke`) drops them.
+- **With SSO on, the dashboard session cookie is `SameSite=Lax`**, like most panels with SSO:
+  the provider sends the browser back through a cross-site redirect, which a `Strict` cookie would
+  not survive. Every state-changing dashboard request still needs the CSRF token, and the cookie
+  stays `HttpOnly`, `Secure` behind HTTPS and scoped to `/app`. Without SSO it stays `Strict`.
+- **A connector is claimed on the click.** An open-DCR client becomes an SSO user's only when they
+  click **Finish signing in**, never on the provider round trip alone.
 - **The approval screen still needs a click.** A provider session that signs you in silently lands
   on the same "Finish signing in" screen as TOTP and passkeys, and nothing is issued before it.
 - **TOTP and passkeys stay available**, so a provider outage never locks you out, and a TOTP lockout

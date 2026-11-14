@@ -129,6 +129,7 @@ OIDC_TOKEN_AUTH_METHODS = ("client_secret_basic", "client_secret_post")
 # ``client: "*"`` in an allow rule = every client, DCR-registered ones included
 OIDC_WILDCARD = "*"
 AUTH_MODES = ("builtin", "both", "sso")
+OIDC_RULE_KEYS = ("client", "emails", "groups", "subjects")
 
 
 @dataclass
@@ -1130,6 +1131,13 @@ def _parse_oidc(raw: Any) -> OidcConfig:
         rctx = f"{ctx}.allow[{i}]"
         if not isinstance(entry, dict):
             raise ConfigError(f"{rctx}: expected a mapping.")
+        # a misspelt `client` must not silently turn into an identity rule
+        unknown = sorted(str(k) for k in entry if k not in OIDC_RULE_KEYS)
+        if unknown:
+            raise ConfigError(
+                f"{rctx}: unknown key(s) {', '.join(unknown)}. "
+                f"expected {', '.join(OIDC_RULE_KEYS)}."
+            )
         rule = OidcRule(
             client=_oidc_rule_client(entry, rctx),
             emails=[e.lower() for e in _str_list(entry.get("emails"), f"{rctx}.emails")],

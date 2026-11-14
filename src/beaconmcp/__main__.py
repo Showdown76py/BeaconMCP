@@ -551,6 +551,9 @@ def _cmd_auth(args):
             else:
                 kind = "builtin"
             print(f"{c['client_id']:<30} {c['name'][:25]:<25} {kind:<10} {created}")
+            if c.get("sso_subject"):
+                # the name comes from the IdP; the subject is what identifies them
+                print(f"{'':<30} sso subject: {c['sso_subject']}")
         print()
 
     elif args.auth_command == "revoke":
@@ -586,7 +589,7 @@ _METRICS_EXACT_PATHS = frozenset({
     "/oauth/passkey/options", "/oauth/passkey/verify",
     "/oauth/passkey/register/options", "/oauth/passkey/register/verify",
     "/oauth/token", "/oauth/register", "/oauth/logo/generic",
-    "/oauth/oidc/start", "/oauth/oidc/callback", "/oauth/oidc/login",
+    "/oauth/oidc/start", "/oauth/oidc/callback",
 })
 # Checked in order; the first prefix wins and its stripped form is the label.
 # The variable tail is a credential or a slug (single-use capability) for
@@ -921,10 +924,16 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
     pending_authorizations: dict[str, tuple[dict[str, str], float]] = {}
     PENDING_AUTHORIZATION_TTL = 600.0
 
+    # ticket -> sso user client that takes an unowned open dcr client on
+    # "Finish signing in". kept off the params so it never reaches a form
+    pending_binds: dict[str, str] = {}
+
     def _prune_pending() -> None:
         now = time.time()
         for key in [k for k, (_, exp) in pending_authorizations.items() if now > exp]:
             del pending_authorizations[key]
+        for key in [k for k in pending_binds if k not in pending_authorizations]:
+            del pending_binds[key]
 
     def _issue_pending(normalized: dict[str, str]) -> tuple[str, float]:
         _prune_pending()
@@ -987,7 +996,12 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         return None
 
     def _sso_display_name(claims: dict[str, Any]) -> str:
-        for key in ("email", "name", "preferred_username"):
+        # an unverified email is whatever the user typed at the IdP: not a label
+        # an admin should trust in `auth list`
+        keys = ("email", "name", "preferred_username")
+        if config.server.oidc.require_email_verified and claims.get("email_verified") is not True:
+            keys = ("name", "preferred_username")
+        for key in keys:
             value = claims.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
@@ -1004,26 +1018,28 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             oidc_provider.subject_key(claims), _sso_display_name(claims),
         )
 
-    def _sso_rule_for(client_id: str, claims: dict[str, Any]) -> str | None:
-        """which rule lets these claims authorize ``client_id``: a client id,
-        ``*``, or ``user`` (sso identity). None = refused."""
+    def _sso_rule_for(
+        client_id: str, claims: dict[str, Any],
+    ) -> tuple[str | None, str | None]:
+        """``(rule, bind_owner)``. rule: a client id, ``*``, or ``user`` (sso
+        identity), None = refused. bind_owner: the sso user that takes this
+        unowned open dcr client once the human clicks finish (not before: the
+        IdP round trip alone must not change anything)."""
         assert oidc_provider is not None
         if not _sso_owned(client_id):
-            return oidc_provider.matching_rule(
+            rule = oidc_provider.matching_rule(
                 claims, client_id, _passkey_owner(client_id),
             )
+            return rule, None
         user = _sso_user_for(claims)
-        if user is None:
-            return None
         client = client_store.get(client_id)
-        if client is None:
-            return None
+        if user is None or client is None:
+            return None, None
         if client.is_sso_user:
-            return "user" if client.client_id == user else None
-        if client.is_open_dcr:
-            # first sso user to authorize an open dcr client owns it
-            return "user" if client_store.bind_owner(client_id, user) else None
-        return "user" if client.owner_client_id == user else None
+            return ("user" if client.client_id == user else None), None
+        if client.is_open_dcr and client.owner_client_id is None:
+            return "user", user
+        return ("user" if client.owner_client_id == user else None), None
 
     def _authorize_passkeys_enabled(request: Request, client_id: str) -> bool:
         if passkey_service is None or not passkey_service.available:
@@ -1128,14 +1144,18 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
 
     def _authorize_approved(
         request: Request, normalized: dict[str, str], *, as_json: bool = False,
+        bind_owner: str | None = None,
     ) -> Response:
         """Second factor cleared: hand the operator the confirmation screen.
 
         ``as_json`` forces the JSON shape for callers that are JSON-only by
         construction (the passkey endpoints), independently of whether the
-        client remembered to send the mode header.
+        client remembered to send the mode header. ``bind_owner`` is applied
+        at finalize, once the human clicked.
         """
         ticket, ticket_expires_at = _issue_pending(normalized)
+        if bind_owner is not None:
+            pending_binds[ticket] = bind_owner
         access_expires_at = time.time() + TokenStore.TOKEN_TTL
         if as_json or _wants_json_authorize(request):
             return JSONResponse({
@@ -1244,6 +1264,7 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         form = await request.form()
         ticket_raw = form.get("ticket", "")
         ticket = ticket_raw.strip() if isinstance(ticket_raw, str) else ""
+        bind_owner = pending_binds.pop(ticket, None) if ticket else None
         normalized = _consume_pending(ticket) if ticket else None
         if normalized is None:
             return JSONResponse(
@@ -1255,6 +1276,17 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
                     ),
                 },
                 status_code=400,
+            )
+        if bind_owner is not None and not client_store.bind_owner(
+            normalized["client_id"], bind_owner,
+        ):
+            # another sso account finished first
+            return JSONResponse(
+                {
+                    "error": "access_denied",
+                    "error_description": "This connector belongs to another account.",
+                },
+                status_code=403,
             )
         audit.emit(
             "auth.authorize.ok", client_id=normalized["client_id"],
@@ -1369,7 +1401,7 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             logging.getLogger("beaconmcp").warning("oidc sign-in failed: %s", exc)
             return _fail("invalid", "SSO sign-in failed. Use your 2FA code instead.")
 
-        rule = _sso_rule_for(client_id, claims)
+        rule, bind_owner = _sso_rule_for(client_id, claims)
         if rule is None:
             return _fail(
                 "not_allowed",
@@ -1382,31 +1414,24 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             "auth.authorize.2fa", client_id=client_id, via="oidc",
             sub=str(claims.get("sub")), rule=rule, ip=ip,
         )
-        response = _authorize_approved(request, normalized)
+        response = _authorize_approved(request, normalized, bind_owner=bind_owner)
         response.delete_cookie(OIDC_COOKIE, path=OIDC_COOKIE_PATH)
         return response
 
-    async def oauth_oidc_login(request: Request) -> Response:
-        """dashboard sign-in through sso: no client id, no secret.
-
-        a plain GET link, like most "sign in with" buttons. it only starts the
-        round trip; nothing is granted before the callback. (a form post
-        would also trip the dashboard's form-action 'self' csp, which
-        browsers apply to the redirect toward the IdP)
-        ``?reauth=1`` sends max_age=0: the IdP must authenticate again, used
-        for the dashboard step-up."""
-        if oidc_provider is None or not config.server.sso_identity or "dashboard" not in sso_hooks:
-            return JSONResponse({"error": "not_found"}, status_code=404)
+    async def _dashboard_sso_start(
+        request: Request, *, next_url: str, reauth: bool, replaces: str,
+    ) -> Response:
+        """called by the dashboard's /app/sso. ``reauth`` sends max_age=0 so
+        the IdP has to authenticate again (step-up); ``replaces`` is the
+        browser's current session, swapped for the new one at the callback."""
+        if oidc_provider is None or not config.server.sso_identity:
+            return RedirectResponse("/app/login", status_code=303)
         if _oidc_rate_limited(request) is not None:
             return RedirectResponse("/app/login?sso_error=rate", status_code=303)
-        next_url = request.query_params.get("next", "").strip()
-        if not next_url.startswith("/app/"):
-            next_url = ""
-        reauth = request.query_params.get("reauth") == "1"
         try:
             url, binding = await oidc_provider.start(
                 redirect_uri=_oidc_redirect_uri(request),
-                payload={"flow": "dashboard", "next": next_url},
+                payload={"flow": "dashboard", "next": next_url, "replaces": replaces},
                 max_age=0 if reauth else None,
             )
         except oidc.OidcError as exc:
@@ -1420,6 +1445,8 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             secure=forwarded_scheme(request, tuple(config.server.trusted_proxies)) == "https",
         )
         return response
+
+    sso_hooks["start"] = _dashboard_sso_start
 
     async def _oidc_dashboard_callback(request: Request, pending, params) -> Response:
         assert oidc_provider is not None
@@ -1446,11 +1473,14 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             "dashboard.login.ok", client_id=user, via="oidc",
             sub=str(claims.get("sub")), ip=ip,
         )
+        # signed by the IdP like the rest of the id_token; the only thing the
+        # dashboard step-up trusts
         auth_time = claims.get("auth_time")
         response = hook(
             request, user, pending.payload.get("next", ""),
             float(auth_time) if isinstance(auth_time, (int, float))
             and not isinstance(auth_time, bool) else None,
+            pending.payload.get("replaces", ""),
         )
         response.delete_cookie(OIDC_COOKIE, path=OIDC_COOKIE_PATH)
         return response
@@ -1762,47 +1792,21 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         ip = _ip(request)
         if not _login_limiter.check(ip):
             return JSONResponse({"error": "too_many_requests"}, status_code=429)
+        meta = await _read_dcr_metadata(request, default_name="MCP connector")
+        if isinstance(meta, Response):
+            return meta
         try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
-        client_name = "MCP connector"
-        candidate = body.get("client_name")
-        if isinstance(candidate, str) and candidate.strip():
-            client_name = candidate.strip()[:60]
-        redirect_uris_raw = body.get("redirect_uris")
-        if not isinstance(redirect_uris_raw, list) or not redirect_uris_raw:
-            return JSONResponse(
-                {"error": "invalid_redirect_uri",
-                 "error_description": "redirect_uris is required"},
-                status_code=400,
+            new_id, new_secret = client_store.create_open_dcr(
+                name=meta["client_name"],
+                logo_uri=meta["logo_uri"],
+                client_uri=meta["client_uri"],
             )
-        bad = [u for u in redirect_uris_raw
-               if not auth.is_trusted_redirect_uri(u, redirect_origins)]
-        if bad:
+        except auth.OpenDcrFull:
             return JSONResponse(
-                {"error": "invalid_redirect_uri",
-                 "error_description": (
-                     "one or more redirect_uris are not on the trusted-origin "
-                     "allowlist; add them to server.allowed_origins in beaconmcp.yaml"
-                 ),
-                 "rejected_redirect_uris": bad},
-                status_code=400,
+                {"error": "temporarily_unavailable",
+                 "error_description": "too many pending registrations, retry later"},
+                status_code=503,
             )
-
-        def _https_meta(key: str) -> str | None:
-            value = body.get(key)
-            if isinstance(value, str) and value.startswith("https://") and len(value) <= 2048:
-                return value
-            return None
-
-        new_id, new_secret = client_store.create_open_dcr(
-            name=client_name,
-            logo_uri=_https_meta("logo_uri"),
-            client_uri=_https_meta("client_uri"),
-        )
         audit.emit("auth.register", client_id=new_id, via="dcr", ip=ip)
         return JSONResponse({
             "client_id": new_id,
@@ -1811,7 +1815,7 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             "token_endpoint_auth_method": "client_secret_post",
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
-            "redirect_uris": redirect_uris_raw,
+            "redirect_uris": meta["redirect_uris"],
         }, status_code=201)
 
     async def health(_request: Request) -> Response:
@@ -1861,7 +1865,7 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         # sso round trip for /oauth/authorize: no bearer yet. guarded by the
         # login limiter, single-use state + cookie binding, and the id_token
         # checks; the approval ticket still needs the human's click.
-        if path in ("/oauth/oidc/start", "/oauth/oidc/callback", "/oauth/oidc/login"):
+        if path in ("/oauth/oidc/start", "/oauth/oidc/callback"):
             return await call_next(request)
 
         # Passkey ceremonies for /oauth/authorize. They are part of signing
@@ -1977,26 +1981,21 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             "token_endpoint_auth_methods_supported": ["client_secret_post"],
         })
 
-    async def dcr_register(request: Request) -> Response:
-        if dyn_reg_store is None:
-            return JSONResponse({"error": "registration_not_supported"}, status_code=403)
-        slug = request.path_params["slug"]
-        row = dyn_reg_store.load(slug)
-        if row is None:
-            return JSONResponse(
-                {"error": "invalid_client_metadata",
-                 "error_description": "unknown bootstrap slug"},
-                status_code=404,
-            )
+    async def _read_dcr_metadata(
+        request: Request, *, default_name: str,
+    ) -> dict[str, Any] | Response:
+        """RFC 7591 body shared by the slug and the open registration:
+        client_name, redirect_uris (checked), https logo_uri / client_uri."""
         try:
             body = await request.json()
         except Exception:
             body = {}
-        client_name = "ChatGPT connector"
-        if isinstance(body, dict):
-            candidate = body.get("client_name")
-            if isinstance(candidate, str) and candidate.strip():
-                client_name = candidate.strip()[:60]
+        if not isinstance(body, dict):
+            body = {}
+        client_name = default_name
+        candidate = body.get("client_name")
+        if isinstance(candidate, str) and candidate.strip():
+            client_name = candidate.strip()[:60]
 
         # Validate redirect_uris BEFORE provisioning a client. The MCP spec
         # lets the caller propose arbitrary redirect URIs during DCR; if we
@@ -2004,16 +2003,14 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         # redirect_uri=https://evil.example/cb and later phish an
         # authorization code out of us. Reject anything not on the trusted
         # allowlist (server.allowed_origins + non-origin OAuth exceptions).
-        redirect_uris_raw = None
-        if isinstance(body, dict):
-            redirect_uris_raw = body.get("redirect_uris")
-        if not isinstance(redirect_uris_raw, list) or not redirect_uris_raw:
+        redirect_uris = body.get("redirect_uris")
+        if not isinstance(redirect_uris, list) or not redirect_uris:
             return JSONResponse(
                 {"error": "invalid_redirect_uri",
                  "error_description": "redirect_uris is required"},
                 status_code=400,
             )
-        bad = [u for u in redirect_uris_raw
+        bad = [u for u in redirect_uris
                if not auth.is_trusted_redirect_uri(u, redirect_origins)]
         if bad:
             return JSONResponse(
@@ -2027,18 +2024,40 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             )
 
         def _https_meta(key: str) -> str | None:
-            value = body.get(key) if isinstance(body, dict) else None
+            value = body.get(key)
             if isinstance(value, str) and value.startswith("https://") and len(value) <= 2048:
                 return value
             return None
 
+        return {
+            "client_name": client_name,
+            "redirect_uris": redirect_uris,
+            "logo_uri": _https_meta("logo_uri"),
+            "client_uri": _https_meta("client_uri"),
+        }
+
+    async def dcr_register(request: Request) -> Response:
+        if dyn_reg_store is None:
+            return JSONResponse({"error": "registration_not_supported"}, status_code=403)
+        slug = request.path_params["slug"]
+        row = dyn_reg_store.load(slug)
+        if row is None:
+            return JSONResponse(
+                {"error": "invalid_client_metadata",
+                 "error_description": "unknown bootstrap slug"},
+                status_code=404,
+            )
+        meta = await _read_dcr_metadata(request, default_name="ChatGPT connector")
+        if isinstance(meta, Response):
+            return meta
+
         try:
             new_client_id, new_client_secret = client_store.create_dynamic(
                 owner_client_id=row.owner_client_id,
-                name=f"{row.label} ({client_name})"[:120],
+                name=f"{row.label} ({meta['client_name']})"[:120],
                 registration_source=f"chatgpt:{slug}",
-                logo_uri=_https_meta("logo_uri"),
-                client_uri=_https_meta("client_uri"),
+                logo_uri=meta["logo_uri"],
+                client_uri=meta["client_uri"],
             )
         except ValueError:
             return JSONResponse({"error": "invalid_client_metadata"}, status_code=400)
@@ -2065,7 +2084,7 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             "token_endpoint_auth_method": "client_secret_post",
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
-            "redirect_uris": redirect_uris_raw,
+            "redirect_uris": meta["redirect_uris"],
         }, status_code=201)
 
     class _McpSlugRewriteApp:
@@ -2151,7 +2170,6 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
             ),
             Route("/oauth/oidc/start", oauth_oidc_start, methods=["POST"]),
             Route("/oauth/oidc/callback", oauth_oidc_callback, methods=["GET"]),
-            Route("/oauth/oidc/login", oauth_oidc_login, methods=["GET"]),
             Route("/oauth/passkey/options", oauth_passkey_options, methods=["POST"]),
             Route("/oauth/passkey/verify", oauth_passkey_verify, methods=["POST"]),
             Route(

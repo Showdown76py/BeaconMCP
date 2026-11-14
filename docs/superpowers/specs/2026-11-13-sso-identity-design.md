@@ -65,7 +65,7 @@ through a dashboard-minted slug.
 | builtin | `beaconmcp auth create` | TOTP / passkey, or SSO via a client rule |
 | slug DCR | `/oauth/register/c/<slug>` | like its builtin owner |
 | SSO user | first SSO sign-in (`sso_subject` set) | SSO identity rule, same `sub` |
-| open DCR | `POST /oauth/register` (`registration_source: dcr`) | SSO identity rule; bound to the first SSO user who authorizes it, refused for anyone else after that |
+| open DCR | `POST /oauth/register` (`registration_source: dcr`) | SSO identity rule; bound to the first SSO user who clicks finish, refused for anyone else after that |
 
 Unbound open-DCR rows older than 24 h are pruned at registration time. The loader keeps SSO-user
 and open-DCR rows although they have no TOTP seed. Their TOTP check always fails (empty seed).
@@ -94,10 +94,12 @@ limited per IP by the login limiter.
   session (no secret stored).
 - Expired bearer for an SSO user: back through SSO instead of the TOTP refresh page.
 - Step-up actions (new API token, new connector URL, self-update) ask SSO users for an IdP
-  authentication less than 10 min old (id_token `auth_time`); "sign in again" sends `max_age=0`
-  and the id_token is refused without a fresh `auth_time` (OIDC Core 3.1.2.1).
-- The session cookie is `SameSite=Lax` (the IdP return is a cross-site navigation); CSRF tokens
-  keep guarding state changes. The SSO button is a plain GET link.
+  authentication less than 10 min old (id_token `auth_time` only, no fallback); "sign in again"
+  sends `max_age=0` and the id_token is refused without a fresh `auth_time` (OIDC Core 3.1.2.1).
+- The dashboard entry is `/app/sso` (under the session cookie's path) so the new session can
+  replace the old one. A stale bearer renews through the IdP without `max_age`.
+- With SSO on, the session cookie is `SameSite=Lax` (the IdP return is a cross-site navigation);
+  CSRF tokens keep guarding state changes. The SSO button is a plain GET link.
 - Dashboard passkeys are off for SSO users (the IdP owns MFA).
 - Audit `dashboard.login.ok via=oidc sub=...`.
 

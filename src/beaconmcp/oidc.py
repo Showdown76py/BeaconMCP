@@ -94,13 +94,6 @@ class OidcProvider:
             for r in self.cfg.allow
         )
 
-    def configured_clients(self) -> set[str]:
-        return {r.client for r in self.cfg.allow if r.client is not None}
-
-    @property
-    def has_identity_rules(self) -> bool:
-        return bool(self.cfg.identity_rules)
-
     def identity_allowed(self, claims: dict[str, Any]) -> bool:
         """an identity rule lets this account sign in as itself."""
         return any(self._rule_matches(r, claims) for r in self.cfg.identity_rules)

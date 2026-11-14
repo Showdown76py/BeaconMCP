@@ -220,6 +220,12 @@ class Client:
 OPEN_DCR_SOURCE = "dcr"
 # an open dcr client nobody authorized within this is dropped
 OPEN_DCR_UNBOUND_TTL = 24 * 3600
+# cap on open dcr clients nobody authorized yet: registration is anonymous
+OPEN_DCR_UNBOUND_MAX = 200
+
+
+class OpenDcrFull(Exception):
+    """too many unowned open dcr clients pending; registration refused."""
 
 
 @dataclass
@@ -720,6 +726,14 @@ class ClientStore:
             ]
             for cid in stale:
                 del self._clients[cid]
+            unbound = sum(
+                1 for c in self._clients.values()
+                if c.is_open_dcr and c.owner_client_id is None
+            )
+            if unbound >= OPEN_DCR_UNBOUND_MAX:
+                if stale:
+                    self._save()
+                raise OpenDcrFull()
             client_id = "beaconmcp_" + secrets.token_hex(8)
             client_secret = "sk_" + secrets.token_hex(32)
             self._clients[client_id] = Client(

@@ -157,7 +157,7 @@ async def _idp_round_trip(
     b: httpx.AsyncClient, idp: FakeIdP, path: str, data: dict[str, str],
 ) -> httpx.Response:
     # the authorize page posts a form, the dashboard button is a GET link
-    if path == "/oauth/oidc/login":
+    if path == "/app/sso":
         start = await b.get(path, params=data)
     else:
         start = await b.post(path, data=data)
@@ -167,6 +167,10 @@ async def _idp_round_trip(
     return await b.get(
         "/oauth/oidc/callback", params={"code": idp.authorize(location), "state": state},
     )
+
+
+def _ticket(page: httpx.Response) -> str:
+    return page.text.split('id="ticket" value="', 1)[1].split('"', 1)[0]
 
 
 def _audit(caplog: pytest.LogCaptureFixture, event: str) -> list[dict[str, Any]]:
@@ -218,12 +222,35 @@ async def test_open_dcr_connector_refused_for_another_account(
     async with _browser(app) as b:
         client_id = (await _register(b)).json()["client_id"]
         params = _authorize_params(client_id)
-        assert "Two-factor confirmed" in (
-            await _idp_round_trip(b, idp, "/oauth/oidc/start", params)
-        ).text
+        first = await _idp_round_trip(b, idp, "/oauth/oidc/start", params)
+        await b.post("/oauth/authorize/finalize", data={"ticket": _ticket(first)})
         idp.claims["sub"] = "someone-else"
         cb = await _idp_round_trip(b, idp, "/oauth/oidc/start", params)
     assert "allowed to authorize this client" in cb.text
+
+
+async def test_open_dcr_bind_waits_for_the_click(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, idp: FakeIdP,
+) -> None:
+    # a sign-in started from elsewhere and never finished must not claim the client
+    app, _ = _build(tmp_path, monkeypatch)
+    idp.claims["groups"] = ["tsa-beaconmcp"]
+    async with _browser(app) as b:
+        client_id = (await _register(b)).json()["client_id"]
+        params = _authorize_params(client_id)
+        alice = await _idp_round_trip(b, idp, "/oauth/oidc/start", params)
+        assert "Two-factor confirmed" in alice.text
+        assert ClientStore(tmp_path / "clients.json").get(client_id).owner_client_id is None
+
+        # bob also gets a ticket, finishes first and owns it
+        idp.claims["sub"] = "bob"
+        bob = await _idp_round_trip(b, idp, "/oauth/oidc/start", params)
+        done = await b.post("/oauth/authorize/finalize", data={"ticket": _ticket(bob)})
+        assert done.status_code == 302
+        late = await b.post("/oauth/authorize/finalize", data={"ticket": _ticket(alice)})
+    assert late.status_code == 403
+    store = ClientStore(tmp_path / "clients.json")
+    assert store.get(store.get(client_id).owner_client_id).sso_subject.endswith("#bob")
 
 
 async def test_open_dcr_needs_the_group(
@@ -293,10 +320,10 @@ async def test_dashboard_sso_sign_in(
         assert 'id="builtin-login" hidden' in login.text
         assert (await b.post("/app/login", data={})).status_code == 403
 
-        assert 'href="/oauth/oidc/login"' in login.text
+        assert 'href="/app/sso"' in login.text
         with caplog.at_level("INFO", logger="beaconmcp.audit"):
             cb = await _idp_round_trip(
-                b, idp, "/oauth/oidc/login", {"next": "/app/tokens"},
+                b, idp, "/app/sso", {"next": "/app/tokens"},
             )
         assert cb.status_code == 303 and cb.headers["location"] == "/app/tokens"
         session_cookie = next(
@@ -321,7 +348,7 @@ async def test_dashboard_sso_not_allowed(
     app, _ = _build(tmp_path, monkeypatch, mode="sso")
     idp.claims["groups"] = ["dev"]
     async with _browser(app) as b:
-        cb = await _idp_round_trip(b, idp, "/oauth/oidc/login", {})
+        cb = await _idp_round_trip(b, idp, "/app/sso", {})
         assert cb.headers["location"] == "/app/login?sso_error=not_allowed"
         page = await b.get(cb.headers["location"])
     assert "isn&#39;t allowed to use this server" in page.text or "isn't allowed" in page.text
@@ -344,9 +371,10 @@ async def test_sso_login_route_404_in_builtin_mode(
 
     app = _build_stack(tmp_path, monkeypatch)["app"]
     async with _browser(app) as b:
-        r = await b.post("/oauth/oidc/login", data={})
+        r = await b.get("/app/sso")
         login = await b.get("/app/login")
-    assert r.status_code == 404 and 'id="sso-btn"' not in login.text
+    assert r.status_code == 302 and r.headers["location"] == "/app/login"
+    assert 'id="sso-btn"' not in login.text
 
 
 async def test_sso_mode_drops_builtin_dashboard_sessions(
@@ -377,12 +405,10 @@ async def test_reauth_sends_max_age_zero(
 ) -> None:
     app, _ = _build(tmp_path, monkeypatch, mode="sso")
     async with _browser(app) as b:
-        plain = await b.get("/oauth/oidc/login")
-        reauth = await b.get("/oauth/oidc/login", params={"reauth": "1", "next": "/app/tokens"})
-        page = await b.get("/app/login", params={"reauth": "1", "next": "/app/tokens"})
+        plain = await b.get("/app/sso")
+        reauth = await b.get("/app/sso", params={"reauth": "1", "next": "/app/tokens"})
     assert "max_age" not in parse_qs(urlparse(plain.headers["location"]).query)
     assert parse_qs(urlparse(reauth.headers["location"]).query)["max_age"] == ["0"]
-    assert 'href="/oauth/oidc/login?reauth=1&amp;next=/app/tokens"' in page.text
 
 
 @pytest.mark.parametrize(("auth_time", "ok"), [
@@ -426,13 +452,13 @@ async def test_step_up_follows_idp_auth_time(
     # the IdP signed this account in silently from an hour-old authentication
     idp.claims["auth_time"] = int(time.time()) - 3600
     async with _browser(app) as b:
-        await _idp_round_trip(b, idp, "/oauth/oidc/login", {})
+        await _idp_round_trip(b, idp, "/app/sso", {})
         stale = await _create_token(b)
         assert "sign in again with SSO" in stale.text
         assert "New token: ci" not in stale.text
 
         idp.claims["auth_time"] = int(time.time())
-        await _idp_round_trip(b, idp, "/oauth/oidc/login", {"reauth": "1"})
+        await _idp_round_trip(b, idp, "/app/sso", {"reauth": "1"})
         fresh = await _create_token(b)
     assert "sign in again with SSO" not in fresh.text
     assert "New token: ci" in fresh.text and 'class="token-value"' in fresh.text
@@ -444,3 +470,125 @@ def test_session_migration_adds_auth_time(tmp_path: Path) -> None:
     db = Database(tmp_path / "d.db")
     cols = {r[1] for r in db.conn().execute("PRAGMA table_info(sessions)")}
     assert "auth_time" in cols
+
+
+# --- review #72: edges --------------------------------------------------------
+
+
+def test_unknown_rule_key_refused() -> None:
+    # a misspelt `client` used to become an identity rule
+    with pytest.raises(ConfigError, match="unknown key"):
+        _oidc([{"clinet": "beaconmcp_7f3a", "emails": ["alice@example.com"]}])
+
+
+async def test_step_up_fails_closed_without_auth_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, idp: FakeIdP,
+) -> None:
+    app, _ = _build(tmp_path, monkeypatch, mode="sso")
+    idp.claims["groups"] = ["tsa-beaconmcp"]
+    idp.claims.pop("auth_time", None)
+    async with _browser(app) as b:
+        await _idp_round_trip(b, idp, "/app/sso", {})
+        # a brand-new session proves nothing about when the IdP authenticated
+        r = await _create_token(b)
+    assert "sign in again with SSO" in r.text and "New token: ci" not in r.text
+
+
+def _sessions(tmp_path: Path):
+    from beaconmcp.dashboard.db import Database
+    from beaconmcp.dashboard.session import SessionStore
+
+    return SessionStore(Database(tmp_path / "dashboard.db"))
+
+
+async def test_sso_sign_in_replaces_the_previous_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, idp: FakeIdP,
+) -> None:
+    app, _ = _build(tmp_path, monkeypatch, mode="sso")
+    idp.claims["groups"] = ["tsa-beaconmcp"]
+    async with _browser(app) as b:
+        await _idp_round_trip(b, idp, "/app/sso", {})
+        first = b.cookies.get("beaconmcp_session")
+        await _idp_round_trip(b, idp, "/app/sso", {})
+        second = b.cookies.get("beaconmcp_session")
+    assert first and second and first != second
+    store = _sessions(tmp_path)
+    assert store.load(first) is None and store.load(second) is not None
+
+
+async def test_stale_bearer_renews_without_max_age_and_errors_show(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, idp: FakeIdP,
+) -> None:
+    app, _ = _build(tmp_path, monkeypatch, mode="sso")
+    idp.claims["groups"] = ["tsa-beaconmcp"]
+    async with _browser(app) as b:
+        await _idp_round_trip(b, idp, "/app/sso", {})
+        sid = b.cookies.get("beaconmcp_session")
+        _sessions(tmp_path).update_bearer(sid, mcp_bearer="gone", bearer_ttl_seconds=-1)
+
+        refresh = await b.get("/app/refresh", params={"next": "/app/tokens"})
+        assert refresh.status_code == 302
+        assert refresh.headers["location"] == "/app/sso?next=/app/tokens"
+        renew = await b.get(refresh.headers["location"])
+        assert "max_age" not in parse_qs(urlparse(renew.headers["location"]).query)
+
+        # the IdP failing must land on a page, not bounce back to it
+        failed = await b.get("/app/login", params={"sso_error": "failed"})
+    assert failed.status_code == 200 and "SSO sign-in failed" in failed.text
+
+
+async def test_sso_session_dropped_when_sso_identity_is_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, _ = _build(
+        tmp_path, monkeypatch, mode="both",
+        rules=[OidcRule(client="*", groups=["tsa-beaconmcp"])],
+    )
+    user = ClientStore(tmp_path / "clients.json").ensure_sso_user("https://idp#u1", "alice")
+    store = _sessions(tmp_path)
+    old = store.create(
+        client_id=user, client_secret="", mcp_bearer="b",
+        bearer_ttl_seconds=-1, user_agent="t",
+    )
+    async with _browser(app) as b:
+        b.cookies.set("beaconmcp_session", old.session_id)
+        first = await b.get("/app/refresh")
+        login = await b.get("/app/login")
+    assert first.status_code == 302 and first.headers["location"] == "/app/login"
+    assert login.status_code == 200
+    assert store.load(old.session_id) is None
+
+
+def test_session_cookie_lax_only_with_sso() -> None:
+    from starlette.responses import Response
+
+    from beaconmcp.dashboard.app import _set_session_cookie
+
+    strict, lax = Response(), Response()
+    _set_session_cookie(strict, "s", True)
+    _set_session_cookie(lax, "s", True, lax=True)
+    assert "samesite=strict" in strict.headers["set-cookie"].lower()
+    assert "samesite=lax" in lax.headers["set-cookie"].lower()
+
+
+def test_open_dcr_unbound_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(auth, "OPEN_DCR_UNBOUND_MAX", 2)
+    store = ClientStore(tmp_path / "clients.json")
+    store.create_open_dcr(name="a")
+    store.create_open_dcr(name="b")
+    with pytest.raises(auth.OpenDcrFull):
+        store.create_open_dcr(name="c")
+
+
+async def test_unverified_email_not_used_as_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, idp: FakeIdP,
+) -> None:
+    app, _ = _build(tmp_path, monkeypatch, mode="sso")
+    idp.claims.update({
+        "groups": ["tsa-beaconmcp"], "email": "ceo@example.com",
+        "email_verified": False, "name": "Mallory",
+    })
+    async with _browser(app) as b:
+        await _idp_round_trip(b, idp, "/app/sso", {})
+    users = [c for c in ClientStore(tmp_path / "clients.json").list_clients() if c["sso_subject"]]
+    assert [u["name"] for u in users] == ["Mallory"]
