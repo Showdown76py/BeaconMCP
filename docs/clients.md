@@ -15,6 +15,14 @@ auth paths the dashboard helps you drive:
 - **Static bearer token** — Mistral Vibe, any HTTP-only MCP client that
   can't do OAuth. Fallback only.
 
+> **Running with SSO (`server.auth_mode: sso` or `both` with an identity
+> rule)?** Skip the client id / secret steps below. Add
+> `https://<your-host>/mcp` to the client, leave the OAuth client id and
+> secret empty, and sign in with your identity provider when the browser
+> opens. The client registers itself (needs
+> `server.allow_dynamic_registration: true`). See
+> [configuration.md](configuration.md#sso-openid-connect).
+
 > **Security note — always type the TOTP by hand from your phone.**
 > The TOTP seed belongs in an authenticator app on a device you physically
 > control. Do **not** generate codes programmatically with `oathtool` /

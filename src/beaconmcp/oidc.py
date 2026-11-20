@@ -23,7 +23,8 @@ from urllib.parse import quote, urlencode
 import httpx
 import jwt
 
-from .config import OidcConfig
+from .config import OIDC_WILDCARD as WILDCARD
+from .config import OidcConfig, OidcRule
 
 _logger = logging.getLogger("beaconmcp.oidc")
 
@@ -54,6 +55,8 @@ class PendingLogin:
     redirect_uri: str
     payload: dict[str, str]
     expires_at: float
+    # OIDC core 3.1.2.1: asked the IdP for an authentication this recent
+    max_age: int | None = None
 
 
 def _b64url(raw: bytes) -> str:
@@ -84,11 +87,22 @@ class OidcProvider:
 
     # --- allowlist -------------------------------------------------------
 
-    def configured_clients(self) -> set[str]:
-        return {r.client for r in self.cfg.allow}
+    def covers(self, *client_ids: str) -> bool:
+        """true when some rule could let an account authorize one of these clients."""
+        return any(
+            r.client is not None and (r.client == WILDCARD or r.client in client_ids)
+            for r in self.cfg.allow
+        )
 
-    def allowed_clients(self, claims: dict[str, Any]) -> set[str]:
-        """clients these claims may authorize, per ``allow``. empty = nobody."""
+    def identity_allowed(self, claims: dict[str, Any]) -> bool:
+        """an identity rule lets this account sign in as itself."""
+        return any(self._rule_matches(r, claims) for r in self.cfg.identity_rules)
+
+    def subject_key(self, claims: dict[str, Any]) -> str:
+        """stable id of the account across sign-ins: issuer + sub."""
+        return f"{self.cfg.issuer.rstrip('/')}#{claims.get('sub')}"
+
+    def _rule_matches(self, rule: OidcRule, claims: dict[str, Any]) -> bool:
         sub = str(claims.get("sub") or "")
         email = claims.get("email")
         email = email.strip().lower() if isinstance(email, str) else ""
@@ -102,16 +116,28 @@ class OidcProvider:
             groups = {g for g in raw_groups if isinstance(g, str)}
         else:
             groups = set()
+        return bool(
+            (sub and sub in rule.subjects)
+            or (email and email in rule.emails)
+            or (groups & set(rule.groups))
+        )
 
-        out: set[str] = set()
-        for rule in self.cfg.allow:
-            if (
-                (sub and sub in rule.subjects)
-                or (email and email in rule.emails)
-                or (groups & set(rule.groups))
-            ):
-                out.add(rule.client)
-        return out
+    def allowed_clients(self, claims: dict[str, Any]) -> set[str]:
+        """rule clients these claims match (may hold ``*``). empty = nobody."""
+        return {
+            r.client for r in self.cfg.allow
+            if r.client is not None and self._rule_matches(r, claims)
+        }
+
+    def matching_rule(self, claims: dict[str, Any], *client_ids: str) -> str | None:
+        """which rule lets these claims authorize one of ``client_ids``: the exact
+        id, or ``*`` when only a wildcard rule does. None = refused."""
+        allowed = self.allowed_clients(claims)
+        for cid in client_ids:
+            if cid and cid in allowed:
+                return cid
+        # exact rule wins over the wildcard so the audit names the precise one
+        return WILDCARD if WILDCARD in allowed else None
 
     # --- discovery -------------------------------------------------------
 
@@ -173,8 +199,13 @@ class OidcProvider:
 
     async def start(
         self, *, redirect_uri: str, payload: dict[str, str],
+        max_age: int | None = None,
     ) -> tuple[str, str]:
-        """returns ``(idp_url, binding)``. ``binding`` goes in a cookie and must come back on callback."""
+        """returns ``(idp_url, binding)``. ``binding`` goes in a cookie and must come back on callback.
+
+        ``max_age`` asks the IdP to re-authenticate the user if their last
+        authentication is older (0 = always); ``finish`` then checks auth_time.
+        """
         meta = await self.metadata()
         state = secrets.token_urlsafe(32)
         nonce = secrets.token_urlsafe(32)
@@ -191,6 +222,7 @@ class OidcProvider:
                 redirect_uri=redirect_uri,
                 payload=dict(payload),
                 expires_at=self._clock() + PENDING_TTL,
+                max_age=max_age,
             )
         query = {
             "response_type": "code",
@@ -202,6 +234,8 @@ class OidcProvider:
             "code_challenge": _b64url(hashlib.sha256(verifier.encode("ascii")).digest()),
             "code_challenge_method": "S256",
         }
+        if max_age is not None:
+            query["max_age"] = str(max_age)
         endpoint = meta["authorization_endpoint"]
         sep = "&" if "?" in endpoint else "?"
         return f"{endpoint}{sep}{urlencode(query)}", binding
@@ -268,7 +302,16 @@ class OidcProvider:
         id_token = tokens.get("id_token") if isinstance(tokens, dict) else None
         if not isinstance(id_token, str) or not id_token:
             raise OidcError("token response has no id_token (is the openid scope allowed?)")
-        return await self.validate_id_token(id_token, nonce=pending.nonce)
+        claims = await self.validate_id_token(id_token, nonce=pending.nonce)
+        if pending.max_age is not None:
+            # OIDC core 3.1.2.1 / 2: auth_time is required once max_age is
+            # sent, and an IdP that ignored max_age must not pass for fresh
+            auth_time = claims.get("auth_time")
+            if not isinstance(auth_time, (int, float)) or isinstance(auth_time, bool):
+                raise OidcError("id_token has no auth_time although max_age was sent")
+            if self._clock() - float(auth_time) > pending.max_age + CLOCK_LEEWAY:
+                raise OidcError("id_token auth_time is older than the max_age asked for")
+        return claims
 
     async def validate_id_token(self, id_token: str, *, nonce: str) -> dict[str, Any]:
         try:

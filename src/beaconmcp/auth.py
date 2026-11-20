@@ -203,6 +203,29 @@ class Client:
     # RFC 7591 metadata a DCR client may send; display only
     logo_uri: str | None = None
     client_uri: str | None = None
+    # "<issuer>#<sub>" for the hidden client of an sso user (see
+    # ClientStore.ensure_sso_user). no secret anyone knows, no totp seed
+    sso_subject: str | None = None
+
+    @property
+    def is_sso_user(self) -> bool:
+        return bool(self.sso_subject)
+
+    @property
+    def is_open_dcr(self) -> bool:
+        return self.registration_source == OPEN_DCR_SOURCE
+
+
+# registration_source of clients created by the open POST /oauth/register
+OPEN_DCR_SOURCE = "dcr"
+# an open dcr client nobody authorized within this is dropped
+OPEN_DCR_UNBOUND_TTL = 24 * 3600
+# cap on open dcr clients nobody authorized yet: registration is anonymous
+OPEN_DCR_UNBOUND_MAX = 200
+
+
+class OpenDcrFull(Exception):
+    """too many unowned open dcr clients pending; registration refused."""
 
 
 @dataclass
@@ -394,7 +417,11 @@ class ClientStore:
         for c in data.get("clients", []):
             has_secret = bool(c.get("totp_secret"))
             has_owner = bool(c.get("owner_client_id"))
-            if not has_secret and not has_owner:
+            # sso users and open dcr clients never had a seed, that's not pre-2FA
+            no_seed_by_design = bool(c.get("sso_subject")) or (
+                c.get("registration_source") == OPEN_DCR_SOURCE
+            )
+            if not has_secret and not has_owner and not no_seed_by_design:
                 revoked.append(f"{c.get('client_id', '?')} ({c.get('name', '?')})")
                 continue
             try:
@@ -408,6 +435,7 @@ class ClientStore:
                     registration_source=c.get("registration_source"),
                     logo_uri=c.get("logo_uri"),
                     client_uri=c.get("client_uri"),
+                    sso_subject=c.get("sso_subject"),
                 )
             except (KeyError, TypeError):
                 revoked.append(f"{c.get('client_id', '?')} ({c.get('name', '?')})")
@@ -437,6 +465,7 @@ class ClientStore:
                     "registration_source": c.registration_source,
                     **({"logo_uri": c.logo_uri} if c.logo_uri else {}),
                     **({"client_uri": c.client_uri} if c.client_uri else {}),
+                    **({"sso_subject": c.sso_subject} if c.sso_subject else {}),
                 }
                 for c in self._clients.values()
             ]
@@ -576,6 +605,7 @@ class ClientStore:
                 "created_at": c.created_at,
                 "owner_client_id": c.owner_client_id,
                 "registration_source": c.registration_source,
+                "sso_subject": c.sso_subject,
             }
             for c in self._clients.values()
         ]
@@ -650,6 +680,89 @@ class ClientStore:
     def get(self, client_id: str) -> Client | None:
         self._maybe_reload()
         return self._clients.get(client_id)
+
+    def ensure_sso_user(self, subject: str, name: str) -> str:
+        """hidden client of the sso account ``subject`` ("<issuer>#<sub>"),
+        created on first sign-in. returns its client_id."""
+        self._maybe_reload()
+        with self._lock:
+            for c in self._clients.values():
+                if c.sso_subject == subject:
+                    if name and c.name != name:
+                        c.name = name[:120]
+                        self._save()
+                    return c.client_id
+            client_id = "beaconmcp_" + secrets.token_hex(8)
+            self._clients[client_id] = Client(
+                client_id=client_id,
+                # random and thrown away: an sso user has no usable secret
+                client_secret_hash=_hash_secret(secrets.token_hex(32)),
+                name=(name or subject)[:120],
+                created_at=time.time(),
+                totp_secret="",
+                registration_source="sso",
+                sso_subject=subject,
+            )
+            self._save()
+        return client_id
+
+    def create_open_dcr(
+        self,
+        *,
+        name: str,
+        logo_uri: str | None = None,
+        client_uri: str | None = None,
+    ) -> tuple[str, str]:
+        """client from the open ``POST /oauth/register``. unowned until the
+        first sso user authorizes it (see ``bind_owner``). returns (id, secret)."""
+        self._maybe_reload()
+        now = time.time()
+        with self._lock:
+            # a registration grants nothing, but nobody should fill the file
+            stale = [
+                c.client_id for c in self._clients.values()
+                if c.is_open_dcr and c.owner_client_id is None
+                and now - c.created_at > OPEN_DCR_UNBOUND_TTL
+            ]
+            for cid in stale:
+                del self._clients[cid]
+            unbound = sum(
+                1 for c in self._clients.values()
+                if c.is_open_dcr and c.owner_client_id is None
+            )
+            if unbound >= OPEN_DCR_UNBOUND_MAX:
+                if stale:
+                    self._save()
+                raise OpenDcrFull()
+            client_id = "beaconmcp_" + secrets.token_hex(8)
+            client_secret = "sk_" + secrets.token_hex(32)
+            self._clients[client_id] = Client(
+                client_id=client_id,
+                client_secret_hash=_hash_secret(client_secret),
+                name=name[:120],
+                created_at=now,
+                totp_secret="",
+                registration_source=OPEN_DCR_SOURCE,
+                logo_uri=logo_uri,
+                client_uri=client_uri,
+            )
+            self._save()
+        return client_id, client_secret
+
+    def bind_owner(self, client_id: str, owner_client_id: str) -> bool:
+        """give an unowned open dcr client to an sso user. true when it is
+        (now or already) owned by ``owner_client_id``."""
+        self._maybe_reload()
+        with self._lock:
+            client = self._clients.get(client_id)
+            owner = self._clients.get(owner_client_id)
+            if client is None or owner is None or not client.is_open_dcr:
+                return False
+            if client.owner_client_id is None:
+                client.owner_client_id = owner_client_id
+                self._save()
+                return True
+            return client.owner_client_id == owner_client_id
 
 
 class TokenCapExceeded(Exception):

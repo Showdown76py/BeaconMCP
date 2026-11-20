@@ -19,7 +19,7 @@ def db_path() -> Path:
     return Path(override) if override else DEFAULT_DB_PATH
 
 
-_LATEST_VERSION = 6
+_LATEST_VERSION = 7
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -191,6 +191,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 "UPDATE conversations SET model = ? WHERE model = ?",
                 (new, old),
             )
+
+    if version < 7:
+        # when the IdP last really authenticated an sso user (id_token
+        # auth_time). drives the dashboard step-up, see app._sso_step_up_error
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
+        if cols and "auth_time" not in cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN auth_time REAL")
 
     conn.execute(f"PRAGMA user_version = {_LATEST_VERSION}")
     conn.commit()

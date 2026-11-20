@@ -126,6 +126,10 @@ class SSHConfig:
 
 
 OIDC_TOKEN_AUTH_METHODS = ("client_secret_basic", "client_secret_post")
+# ``client: "*"`` in an allow rule = every client, DCR-registered ones included
+OIDC_WILDCARD = "*"
+AUTH_MODES = ("builtin", "both", "sso")
+OIDC_RULE_KEYS = ("client", "emails", "groups", "subjects")
 
 
 @dataclass
@@ -133,9 +137,11 @@ class OidcRule:
     """one ``server.oidc.allow`` entry: who may authorize ``client``.
 
     a rule matches when any of its lists matches the id_token claims.
+    ``client`` is an exact client id or ``*`` for every client. no client
+    (None) = identity rule: the account signs in as itself.
     """
 
-    client: str
+    client: str | None
     emails: list[str] = field(default_factory=list)
     groups: list[str] = field(default_factory=list)
     subjects: list[str] = field(default_factory=list)
@@ -162,6 +168,10 @@ class OidcConfig:
     groups_claim: str = "groups"
     require_email_verified: bool = True
     allow: list[OidcRule] = field(default_factory=list)
+
+    @property
+    def identity_rules(self) -> list[OidcRule]:
+        return [r for r in self.allow if r.client is None]
 
 
 @dataclass
@@ -215,6 +225,21 @@ class ServerConfig:
     # client cannot show the dialog (no form elicitation, claude.ai today).
     confirm_strict: bool = False
     oidc: OidcConfig = field(default_factory=OidcConfig)
+    # how humans sign in: builtin (client secret + 2FA), both, or sso only
+    auth_mode: str = "builtin"
+
+    @property
+    def sso_identity(self) -> bool:
+        """sso users can sign in as themselves (dashboard, own connectors, open dcr)."""
+        return (
+            self.auth_mode != "builtin"
+            and self.oidc.enabled
+            and bool(self.oidc.identity_rules)
+        )
+
+    @property
+    def builtin_login(self) -> bool:
+        return self.auth_mode != "sso"
 
 
 @dataclass
@@ -642,6 +667,7 @@ class Config:
             confirm_strict=bool(srv_raw.get("confirm_strict", False)),
             oidc=_parse_oidc(srv_raw.get("oidc")),
         )
+        server.auth_mode = _parse_auth_mode(srv_raw.get("auth_mode"), server.oidc)
         if server.named_token_ttl is not None and server.named_token_ttl < 0:
             raise ConfigError(
                 "server.named_token_ttl: must be >= 0 seconds "
@@ -828,6 +854,7 @@ class Config:
                     else self.server.confirm_tools
                 ),
                 "confirm_strict": self.server.confirm_strict,
+                "auth_mode": self.server.auth_mode,
                 "oidc": (
                     {
                         "enabled": True,
@@ -840,7 +867,8 @@ class Config:
                         "token_auth_method": self.server.oidc.token_auth_method,
                         "allow": [
                             {
-                                "client": r.client,
+                                "client": r.client if r.client is not None
+                                else "(identity: sign in as themselves)",
                                 "emails": r.emails,
                                 "groups": r.groups,
                                 "subjects": r.subjects,
@@ -1013,6 +1041,49 @@ def _str_list(value: Any, ctx: str) -> list[str]:
     return [str(v).strip() for v in value if str(v).strip()]
 
 
+def _parse_auth_mode(raw: Any, oidc: OidcConfig) -> str:
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return "both" if oidc.enabled else "builtin"
+    mode = str(raw).strip().lower()
+    if mode not in AUTH_MODES:
+        raise ConfigError(
+            f"server.auth_mode: expected one of {', '.join(AUTH_MODES)}, got {raw!r}."
+        )
+    if mode == "builtin" and oidc.enabled:
+        raise ConfigError(
+            "server.auth_mode: builtin with server.oidc enabled is ambiguous. "
+            "use both, or turn server.oidc off."
+        )
+    if mode != "builtin" and not oidc.enabled:
+        raise ConfigError(f"server.auth_mode: {mode} needs server.oidc enabled.")
+    if mode == "sso" and not oidc.identity_rules:
+        raise ConfigError(
+            "server.auth_mode: sso needs at least one server.oidc.allow rule "
+            "without `client` (who may sign in as themselves)."
+        )
+    return mode
+
+
+def _oidc_rule_client(entry: dict[str, Any], rctx: str) -> str | None:
+    if "client" not in entry:
+        return None
+    raw = entry.get("client")
+    # yaml turns a bare ``client: *`` into an alias error, a list/number is a typo
+    if not isinstance(raw, str) or not raw.strip():
+        raise ConfigError(
+            f"{rctx}.client: a client id, \"*\" (quoted) for every client, "
+            "or leave the key out for an identity rule."
+        )
+    client = raw.strip()
+    if OIDC_WILDCARD in client and client != OIDC_WILDCARD:
+        # no globbing: "abc*" would look like a prefix match it isn't
+        raise ConfigError(
+            f"{rctx}.client: {client!r} is ambiguous. use an exact client id "
+            f"or \"*\" alone for every client."
+        )
+    return client
+
+
 def _parse_oidc(raw: Any) -> OidcConfig:
     """``server.oidc``. validated only when enabled, so a parked block never breaks boot."""
     if raw is None:
@@ -1060,8 +1131,15 @@ def _parse_oidc(raw: Any) -> OidcConfig:
         rctx = f"{ctx}.allow[{i}]"
         if not isinstance(entry, dict):
             raise ConfigError(f"{rctx}: expected a mapping.")
+        # a misspelt `client` must not silently turn into an identity rule
+        unknown = sorted(str(k) for k in entry if k not in OIDC_RULE_KEYS)
+        if unknown:
+            raise ConfigError(
+                f"{rctx}: unknown key(s) {', '.join(unknown)}. "
+                f"expected {', '.join(OIDC_RULE_KEYS)}."
+            )
         rule = OidcRule(
-            client=_required(entry, "client", rctx).strip(),
+            client=_oidc_rule_client(entry, rctx),
             emails=[e.lower() for e in _str_list(entry.get("emails"), f"{rctx}.emails")],
             groups=_str_list(entry.get("groups"), f"{rctx}.groups"),
             subjects=_str_list(entry.get("subjects"), f"{rctx}.subjects"),

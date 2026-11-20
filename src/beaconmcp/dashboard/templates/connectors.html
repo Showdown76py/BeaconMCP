@@ -60,13 +60,18 @@
                value="{{ form_label or '' }}"
                {% if locked %}disabled{% endif %}>
       </label>
-      <label>
+{% if sso_user %}
+                <p class="muted">Confirmed by your SSO sign-in. Older than 10 minutes?
+                  <a href="/app/sso?reauth=1&amp;next=/app/connectors">Sign in again</a> first.</p>
+                {% else %}
+                <label>
         <span>2FA code</span>
         <input type="text" name="totp" inputmode="numeric"
                pattern="\d{6}" maxlength="6"
                autocomplete="one-time-code" required
                placeholder="000000" {% if locked %}disabled{% endif %}>
       </label>
+                {% endif %}
       <button type="submit" {% if locked %}disabled{% endif %}>Mint URL</button>
     </form>
   </article>

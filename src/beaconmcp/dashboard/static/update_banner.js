@@ -39,7 +39,11 @@
     return n + " " + (n === 1 ? one : many);
   }
 
+  // sso users confirm with a recent sso sign-in, not a totp code
+  var ssoUser = false;
+
   function render(data) {
+    ssoUser = !!data.sso_user;
     state = data;
     var commits = data.commits || [];
     var cfg = data.config || {};
@@ -143,6 +147,16 @@
     var box = document.getElementById("ut-result");
     if (!box) return;
     box.hidden = false;
+    if (ssoUser) {
+      box.innerHTML = '' +
+        '<p class="ut-note">Your SSO sign-in confirms this if it is less than ' +
+        '10 minutes old. Otherwise <a href="/app/sso?reauth=1">sign in again</a> first.</p>' +
+        '<div class="ut-totp-row"><button type="button" class="ut-primary" id="ut-confirm">' +
+          '<span class="btn-label">Update</span></button></div>';
+      var ssoConfirm = document.getElementById("ut-confirm");
+      if (ssoConfirm) ssoConfirm.addEventListener("click", run);
+      return;
+    }
     box.innerHTML = '' +
       '<label class="ut-label" for="ut-totp">Confirm with your 2FA code</label>' +
       '<div class="ut-totp-row">' +
@@ -169,7 +183,7 @@
     var confirm = document.getElementById("ut-confirm");
     var box = document.getElementById("ut-result");
     var code = input ? (input.value || "").replace(/\D/g, "") : "";
-    if (code.length !== 6) {
+    if (!ssoUser && code.length !== 6) {
       if (input) input.focus();
       return;
     }

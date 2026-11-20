@@ -1227,6 +1227,9 @@ def test_check_reports_how_the_last_update_ended(checkout):
 # ---------------------------------------------------------------------------
 
 class FakeClientStore:
+    # only builtin clients here: no Client rows, so no sso user either
+    def get(self, client_id): return None
+
     def __init__(self):
         self.clients = {
             "beaconmcp_test": {
