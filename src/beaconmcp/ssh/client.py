@@ -5,6 +5,8 @@ import os
 import threading
 import time
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -40,8 +42,19 @@ class SSHExecSession:
 
 _ssh_sessions: dict[str, SSHExecSession] = {}
 _ssh_tasks: set[asyncio.Task[None]] = set()
-_connection_cache: dict[str, tuple[asyncssh.SSHClientConnection, float]] = {}
-_CONNECTION_TTL = 300  # 5 minutes
+
+
+@dataclass
+class _CachedConnection:
+    conn: asyncssh.SSHClientConnection
+    created_at: float
+    last_used: float
+    active: int = 0  # callers currently running something on ``conn``
+
+
+_connection_cache: dict[str, _CachedConnection] = {}
+_connection_locks: dict[str, asyncio.Lock] = {}  # one per host name
+_CONNECTION_TTL = 300  # idle seconds before a cached connection is dropped
 _SSH_SESSION_TTL = 3600  # drop completed sessions older than this
 
 
@@ -334,37 +347,64 @@ class SSHClient:
         sharing the same address still get distinct cached connections
         (useful when one address has multiple user accounts).
         """
+        return (await self._acquire(identifier, hold=False)).conn
+
+    @asynccontextmanager
+    async def _use_connection(
+        self, identifier: str,
+    ) -> AsyncIterator[asyncssh.SSHClientConnection]:
+        """Yield the cached connection, pinned while the caller uses it.
+
+        A pinned connection is never expired for idleness, so a long command
+        or SFTP transfer is not cut by a concurrent caller.
+        """
+        entry = await self._acquire(identifier, hold=True)
+        try:
+            yield entry.conn
+        finally:
+            entry.active -= 1
+            entry.last_used = time.time()
+
+    async def _acquire(self, identifier: str, hold: bool) -> _CachedConnection:
         host_spec = self.resolve(identifier)
         cache_key = host_spec.name
+        lock = _connection_locks.setdefault(cache_key, asyncio.Lock())
 
-        if cache_key in _connection_cache:
-            conn, created_at = _connection_cache[cache_key]
-            if time.time() - created_at < _CONNECTION_TTL:
+        async with lock:
+            entry = _connection_cache.get(cache_key)
+            if entry is not None:
                 try:
-                    if not conn.is_closed():
-                        return conn
+                    closed = entry.conn.is_closed()
+                except Exception:
+                    closed = True
+                idle = time.time() - entry.last_used > _CONNECTION_TTL
+                if not closed and (entry.active > 0 or not idle):
+                    entry.last_used = time.time()
+                    if hold:
+                        entry.active += 1
+                    return entry
+                try:
+                    entry.conn.close()
                 except Exception:
                     pass
-            try:
-                conn.close()
-            except Exception:
-                pass
-            del _connection_cache[cache_key]
+                del _connection_cache[cache_key]
 
-        conn = await _connect_to_host(
-            host_spec, host_key_policy(self._config, host_spec),
-        )
-        _connection_cache[cache_key] = (conn, time.time())
-        return conn
+            conn = await _connect_to_host(
+                host_spec, host_key_policy(self._config, host_spec),
+            )
+            now = time.time()
+            entry = _CachedConnection(conn, now, now, 1 if hold else 0)
+            _connection_cache[cache_key] = entry
+            return entry
 
     async def exec_command(self, host: str, command: str, timeout: int = 60) -> dict[str, Any]:
         """Execute a command via SSH and wait for the result."""
         try:
-            conn = await self._get_connection(host)
-            result = await asyncio.wait_for(
-                conn.run(command, check=False),
-                timeout=timeout,
-            )
+            async with self._use_connection(host) as conn:
+                result = await asyncio.wait_for(
+                    conn.run(command, check=False),
+                    timeout=timeout,
+                )
             return {
                 "stdout": result.stdout or "",
                 "stderr": result.stderr or "",
@@ -392,8 +432,10 @@ class SSHClient:
 
         async def _run() -> None:
             try:
-                conn = await self._get_connection(host)
-                result = await asyncio.wait_for(conn.run(command, check=False), timeout=600)
+                async with self._use_connection(host) as conn:
+                    result = await asyncio.wait_for(
+                        conn.run(command, check=False), timeout=600,
+                    )
                 session.stdout = result.stdout or ""
                 session.stderr = result.stderr or ""
                 session.exit_code = result.exit_status
@@ -416,21 +458,18 @@ class SSHClient:
         Used by ``proxmox_upload_file`` for large transfers (asyncssh streams
         in chunks, so RAM usage stays bounded regardless of file size).
         """
-        conn = await self._get_connection(host)
-        async with conn.start_sftp_client() as sftp:
+        async with self._use_connection(host) as conn, conn.start_sftp_client() as sftp:
             await sftp.put(local_path, remote_path)
 
     async def sftp_get(self, host: str, remote_path: str, local_path: str) -> None:
         """Stream ``remote_path`` from ``host`` into ``local_path`` via SFTP."""
-        conn = await self._get_connection(host)
-        async with conn.start_sftp_client() as sftp:
+        async with self._use_connection(host) as conn, conn.start_sftp_client() as sftp:
             await sftp.get(remote_path, local_path)
 
     async def sftp_remove(self, host: str, remote_path: str) -> None:
         """Best-effort SFTP unlink, used to clean up staging files on a node."""
         try:
-            conn = await self._get_connection(host)
-            async with conn.start_sftp_client() as sftp:
+            async with self._use_connection(host) as conn, conn.start_sftp_client() as sftp:
                 await sftp.remove(remote_path)
         except Exception:
             pass
