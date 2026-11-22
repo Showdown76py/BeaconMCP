@@ -7,10 +7,14 @@ before the tool runs. When it doesn't, the tool runs as it always did unless
 
 from __future__ import annotations
 
+import inspect
 import re
 from collections.abc import Callable, Collection
-from typing import Any
+from typing import Annotated, Any
 
+from mcp.server.mcpserver import (
+    AcceptedElicitation, Context, Elicit, ElicitationResult, Resolve,
+)
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, Field
 
@@ -263,16 +267,94 @@ def requires_confirmation(
     return _needs_confirmation(tool, kw, _active_tools if tools is None else tools)
 
 
+# 2026-07-28+ clients are stateless, no server->client request so ctx.elicit
+# can't reach them. the question goes back in an InputRequiredResult instead,
+# via an SDK resolver on a hidden param, and the answer comes in on the retry
+RESOLVE_KW = "beacon_confirm"  # the SDK refuses params starting with _
+_RESOLVER_CTX = "_beacon_rctx"
+_INPUT_REQUIRED_VERSION = "2026-07-28"
+_NO_ANSWER = object()
+
+
+def _uses_input_required(ctx: Any) -> bool:
+    try:
+        version = ctx.protocol_version
+    except (AttributeError, ValueError, LookupError):
+        return False
+    # protocol versions are ISO dates, str compare is fine
+    return isinstance(version, str) and version >= _INPUT_REQUIRED_VERSION
+
+
+def confirm_resolver(
+    tool: str, arg_names: Collection[str], tools: Collection[str],
+) -> Callable[..., Any]:
+    """Build the resolver that asks the confirmation through input_required.
+
+    The SDK passes it the validated tool args by name plus the Context. It only
+    returns an Elicit for 2026-07-28+ clients that can show a form, older ones
+    still go through ctx.elicit in confirm_destructive (and the dashboard too).
+    """
+    async def resolver(**kw: Any) -> Any:
+        ctx = kw.pop(_RESOLVER_CTX)
+        if (
+            not _uses_input_required(ctx)
+            or not _needs_confirmation(tool, kw, tools)
+            or not _supports_form(ctx)
+        ):
+            return _NO_ANSWER
+        return Elicit(_message(tool, kw), _Confirm)
+
+    params = [
+        inspect.Parameter(name, inspect.Parameter.KEYWORD_ONLY)
+        for name in (*arg_names, _RESOLVER_CTX)
+    ]
+    resolver.__signature__ = inspect.Signature(params)  # type: ignore[attr-defined]
+    resolver.__annotations__ = {_RESOLVER_CTX: Context}
+    # module:qualname is the wire key in input_requests, keep one per tool
+    resolver.__name__ = resolver.__qualname__ = f"confirm_{tool}"
+    return resolver
+
+
+def add_confirm_param(
+    wrapper: Callable[..., Any], func: Callable[..., Any], tool: str,
+    tools: Collection[str],
+) -> None:
+    """Give a tool wrapper the hidden param the resolver's answer lands in.
+
+    The SDK only runs resolvers for params in the signature and keeps them out
+    of the input schema. The wrapper pops it and passes it as ``answer``.
+    """
+    sig = inspect.signature(func)
+    params = list(sig.parameters.values())
+    arg_names = [p.name for p in params if p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)]
+    annotation = Annotated[
+        ElicitationResult[_Confirm], Resolve(confirm_resolver(tool, arg_names, tools)),
+    ]
+    hidden = inspect.Parameter(
+        RESOLVE_KW, inspect.Parameter.KEYWORD_ONLY, default=None, annotation=annotation,
+    )
+    # kw-only has to sit before a **kwargs
+    idx = next((i for i, p in enumerate(params) if p.kind is p.VAR_KEYWORD), len(params))
+    params.insert(idx, hidden)
+    wrapper.__signature__ = sig.replace(parameters=params)  # type: ignore[attr-defined]
+    wrapper.__annotations__ = {**getattr(wrapper, "__annotations__", {}), RESOLVE_KW: annotation}
+
+
 async def confirm_destructive(
     ctx: Any, tool: str, kwargs: dict, tools: Collection[str] = DEFAULT_CONFIRM_TOOLS,
-    strict: bool = False,
+    strict: bool = False, answer: Any = None,
 ) -> dict:
     """Ask the user before a destructive tool runs. Returns the kwargs to use.
+
+    ``answer`` is what :func:`confirm_resolver` got back on the input_required
+    path, ``None`` (or the no-answer marker) means ask here with ``ctx.elicit``.
 
     Raises :class:`ConfirmationDeclined` when the user declines or cancels,
     :class:`ConfirmationUnavailable` when the dialog could not be shown, or,
     with ``strict``, when the client cannot show one at all.
     """
+    if isinstance(answer, AcceptedElicitation) and answer.data is _NO_ANSWER:
+        answer = None
     if not _needs_confirmation(tool, kwargs, tools):
         return kwargs
     has_context = True
@@ -292,7 +374,10 @@ async def confirm_destructive(
             )
         return kwargs
     try:
-        result = await ctx.elicit(message=_message(tool, kwargs), schema=_Confirm)
+        if answer is not None:
+            result = answer
+        else:
+            result = await ctx.elicit(message=_message(tool, kwargs), schema=_Confirm)
     except Exception as exc:  # noqa: BLE001 -- transport, timeout, client error
         audit.emit("tool.confirm.unavailable", tool=tool, error=str(exc)[:200])
         raise ConfirmationUnavailable(

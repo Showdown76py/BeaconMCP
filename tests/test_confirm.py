@@ -454,3 +454,157 @@ def test_sensitive_keys_matches_bool_rule() -> None:
     assert _sensitive_keys(None) == []
     assert _sensitive_config({"memory": 1}) is False
     assert _sensitive_config({"args": "-x"}) is True
+
+
+# --- end to end through the SDK, legacy and 2026-07-28 ------------------------
+# 2026-07-28 clients have no server->client request: the question goes back
+# as an InputRequiredResult (resolver on a hidden param) and the client retries
+# with the answer. older clients still get a classic elicitation/create.
+
+from functools import wraps  # noqa: E402
+
+from mcp import Client, types  # noqa: E402
+from mcp.server.mcpserver import Context, MCPServer  # noqa: E402
+
+from beaconmcp import audit  # noqa: E402
+from beaconmcp.confirm import RESOLVE_KW, add_confirm_param  # noqa: E402
+
+MODES = ["legacy", "2026-07-28"]
+
+
+def _server(ran: list, *, tools=DEFAULT_CONFIRM_TOOLS, strict=False) -> MCPServer:
+    """Same wiring as server._metric_tool, minus metrics."""
+    server = MCPServer("t")
+
+    def tool(func):
+        name = func.__name__
+
+        @wraps(func)
+        async def wrapper(**kw):
+            ctx = kw.pop("_beacon_ctx", None)
+            answer = kw.pop(RESOLVE_KW, None)
+            kw = await confirm_destructive(ctx, name, kw, tools, strict, answer=answer)
+            ran.append((name, kw))
+            return await func(**kw)
+
+        wrapper.__annotations__ = {**func.__annotations__, "_beacon_ctx": Context}
+        if name in tools:
+            add_confirm_param(wrapper, func, name, tools)
+        server.tool()(wrapper)
+        return func
+
+    @tool
+    async def bmc_power_off(device_id: str, force: bool = False) -> str:
+        return f"off {device_id}"
+
+    @tool
+    async def proxmox_snapshot_rollback(node: str, vmid: int, snapname: str, dry_run: bool = False) -> str:
+        return "rolled back"
+
+    @tool
+    async def beaconmcp_self_update(confirm: bool = False, restart: bool = False) -> str:
+        return f"confirm={confirm}"
+
+    @tool
+    async def proxmox_vm_start(node: str, vmid: int) -> str:
+        return "started"
+
+    return server
+
+
+def _answer(asked: list, action="accept", value=True):
+    async def cb(context, params):
+        asked.append(params.message)
+        content = {"confirm": value} if action == "accept" else None
+        return types.ElicitResult(action=action, content=content)
+    return cb
+
+
+@pytest.fixture
+def events(monkeypatch) -> list[str]:
+    seen: list[str] = []
+    monkeypatch.setattr(audit, "emit", lambda event, **fields: seen.append(event))
+    return seen
+
+
+@pytest.mark.parametrize("mode", MODES)
+async def test_sdk_accept_runs_the_tool(mode, events) -> None:
+    ran, asked = [], []
+    async with Client(_server(ran), mode=mode, elicitation_callback=_answer(asked)) as client:
+        res = await client.call_tool("bmc_power_off", {"device_id": "srv-02"})
+    assert not res.is_error and res.content[0].text == "off srv-02"
+    assert asked == ["Power off srv-02 via its BMC?"]
+    assert ran == [("bmc_power_off", {"device_id": "srv-02", "force": False})]
+    assert events == ["tool.confirm.ok"]
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize(("action", "value"), [("decline", True), ("cancel", True), ("accept", False)])
+async def test_sdk_refusal_does_not_run(mode, action, value, events) -> None:
+    ran, asked = [], []
+    cb = _answer(asked, action, value)
+    async with Client(_server(ran), mode=mode, elicitation_callback=cb) as client:
+        res = await client.call_tool("bmc_power_off", {"device_id": "srv-02"})
+    assert res.is_error and "Cancelled by the user" in res.content[0].text
+    assert len(asked) == 1 and ran == []
+    assert events == ["tool.confirm.declined"]
+
+
+@pytest.mark.parametrize("mode", MODES)
+async def test_sdk_client_without_elicitation(mode, events) -> None:
+    ran = []
+    async with Client(_server(ran), mode=mode) as client:
+        res = await client.call_tool("bmc_power_off", {"device_id": "x"})
+    assert not res.is_error and len(ran) == 1
+    ran.clear()
+    async with Client(_server(ran, strict=True), mode=mode) as client:
+        res = await client.call_tool("bmc_power_off", {"device_id": "x"})
+    assert res.is_error and "confirm_strict" in res.content[0].text
+    assert ran == [] and events == ["tool.confirm.unavailable"]
+
+
+@pytest.mark.parametrize("mode", MODES)
+async def test_sdk_dry_run_and_unprotected_not_asked(mode) -> None:
+    ran, asked = [], []
+    async with Client(_server(ran), mode=mode, elicitation_callback=_answer(asked)) as client:
+        args = {"node": "pve1", "vmid": 7, "snapname": "s", "dry_run": True}
+        assert not (await client.call_tool("proxmox_snapshot_rollback", args)).is_error
+        assert not (await client.call_tool("proxmox_vm_start", {"node": "pve1", "vmid": 7})).is_error
+    assert asked == [] and len(ran) == 2
+
+
+@pytest.mark.parametrize("mode", MODES)
+async def test_sdk_self_update_gets_confirm(mode) -> None:
+    ran, asked = [], []
+    async with Client(_server(ran), mode=mode, elicitation_callback=_answer(asked)) as client:
+        res = await client.call_tool("beaconmcp_self_update", {"restart": True})
+    assert res.content[0].text == "confirm=True" and len(asked) == 1
+
+
+async def test_sdk_answer_for_other_args_is_not_reused() -> None:
+    # request_state is sealed and bound to the call, so a yes given for
+    # srv-01 can't be replayed on a call that targets srv-02
+    from mcp.shared.exceptions import MCPError
+
+    ran = []
+    async with Client(_server(ran), mode="2026-07-28", elicitation_callback=_answer([])) as client:
+        first = await client.session.call_tool(
+            "bmc_power_off", {"device_id": "srv-01"}, allow_input_required=True,
+        )
+        assert isinstance(first, types.InputRequiredResult)
+        (key,) = first.input_requests
+        yes = types.ElicitResult(action="accept", content={"confirm": True})
+        with pytest.raises(MCPError, match="requestState"):
+            await client.session.call_tool(
+                "bmc_power_off", {"device_id": "srv-02"},
+                input_responses={key: yes}, request_state=first.request_state,
+                allow_input_required=True,
+            )
+    assert ran == []
+
+
+async def test_hidden_param_not_in_input_schema() -> None:
+    async with Client(_server([]), mode="2026-07-28") as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+    assert set(tools["bmc_power_off"].input_schema["properties"]) == {"device_id", "force"}
+    assert RESOLVE_KW not in tools["proxmox_vm_start"].input_schema.get("properties", {})
