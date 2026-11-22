@@ -146,11 +146,26 @@ def register_vm_tools(mcp: MCPServer, client: ProxmoxClient) -> None:
         return {"vmid": vmid, "node": node, "type": vm_type, "action": "create", "upid": result}
 
     @mcp.tool()
-    def proxmox_vm_clone(node: str, vmid: int, newid: int, name: str = "") -> dict[str, Any]:
+    def proxmox_vm_clone(
+        node: str,
+        vmid: int,
+        newid: int,
+        name: str = "",
+        full: bool | None = None,
+        storage: str = "",
+        target: str = "",
+    ) -> dict[str, Any]:
         """Clone an existing VM or container to create a copy.
 
         Use to duplicate a VM/CT. Provide the source VMID, the new VMID for the clone,
         and optionally a name. The clone inherits the source configuration.
+        Optional, sent to Proxmox only when given (works for both QEMU and LXC):
+        - full: True for a full (independent) copy, False for a linked clone. Left
+          unset, Proxmox decides (linked for a template, full otherwise).
+        - storage: target storage for the cloned disks. Only meaningful for a full
+          clone; combined with a linked clone Proxmox rejects or ignores it.
+        - target: node that will hold the clone (defaults to the source node).
+          A cross-node clone needs the source disks on shared storage, or a full clone.
         """
         vm_type = _detect_vm_type(client, node, vmid)
         if not vm_type:
@@ -160,6 +175,12 @@ def register_vm_tools(mcp: MCPServer, client: ProxmoxClient) -> None:
         if name:
             # PVE uses `name` for QEMU VMs and `hostname` for LXC containers.
             kwargs["name" if vm_type == "qemu" else "hostname"] = name
+        if full is not None:
+            kwargs["full"] = 1 if full else 0
+        if storage:
+            kwargs["storage"] = storage
+        if target:
+            kwargs["target"] = target
 
         result = client.post(node, f"nodes/{node}/{vm_type}/{vmid}/clone", **kwargs)
         if isinstance(result, dict) and "error" in result:
