@@ -150,15 +150,29 @@ expires, so treat it like a password. Rules of the link:
   a new link to retry. `HEAD` answers with the headers and does not spend it, any other method
   gets 405. An unknown, spent or expired token is a bare 404.
 - It expires after `expires_in` seconds (default 600, at most 3600) and is forgotten on restart.
-- The staged copy (`dlink-<link_id>` in the staging directory) is deleted once it was sent, when
-  the link expires, and at startup if a restart orphaned it.
+  A transfer that started but never finishes (a client that stops reading and keeps the connection
+  open) is cut off one hour after the expiry, which frees its file and its share of the budget.
+- The staged copy (`dlink-<link_id>`, in the hidden `.dlinks/` sub folder of the staging directory,
+  out of reach of `proxmox_download_file`, `proxmox_delete_transfer` and `proxmox_list_transfers`)
+  is deleted once it was sent and when the link expires. A leftover older than four hours, from a
+  crash or a restart, is removed at startup. Younger files are left alone, because
+  `beaconmcp check-startup` runs the same startup code next to a live server.
 - At most 50 links are pending, and the files they hold count together against
   `server.transfers_max_mb`: past that, minting is refused, before the file is moved.
 - The reply carries `Content-Disposition: attachment` with the basename of `source` (quotes,
   control characters and directories removed), `nosniff` and `no-store`.
 - `proxmox_download_link(link_id=...)` reports `pending`, `downloading`, `success`, `error` or
-  `expired` without exposing the token. Each use is written to the audit log as
-  `transfer.download`.
+  `expired` without exposing the token. Every outcome is written to the audit log as
+  `transfer.download` (`status` `success` or `error` when the URL was fetched, `expired` when it
+  never was). The token never appears in the audit log, nor in uvicorn's access log, where
+  `/transfers/upload/<token>` and `/transfers/download/<token>` are printed as `<redacted>`.
+- Mints are serialized: a second call waits for the first to finish, so the byte budget cannot be
+  overrun by parallel calls.
+- The source must be a regular file (a symbolic link is followed). Devices, FIFOs and directories
+  are refused, and the size is checked again once the file reached the node and the server.
+- **Do not paste the URL into a chat that unfurls links (Discord, Slack, and similar).** Their link
+  preview robot fetches the URL with a `GET` and spends the link before you do. Pass it straight
+  to `curl`, or wrap it in angle brackets in Discord.
 
 ## SSH (2)
 
