@@ -858,6 +858,36 @@ async def test_symlink_to_a_big_file_is_refused_before_any_transfer(env) -> None
     assert _staged(env) == []
 
 
+async def test_vm_symlink_to_a_big_file_is_refused_before_any_transfer(env) -> None:
+    env.ssh.vm_files["/root/big.iso"] = b"x" * (2 * 1024 * 1024)  # cap is 1 MB
+    env.ssh.symlinks["/root/link"] = "/root/big.iso"
+    res = await _mint(env, vmid=VM, source="/root/link")
+    assert res["status"] == "error" and "transfers_max_mb" in res["error"]
+    assert env.ssh.sftp_gets == 0
+    assert any("stat -L" in c for c in env.ssh.commands)
+    assert _staged(env) == []
+
+
+async def test_a_hung_sftp_times_out_cleans_up_and_frees_the_mint_lock(env, monkeypatch: pytest.MonkeyPatch) -> None:
+    real = env.ssh.sftp_get
+
+    async def hang(*a: Any, **k: Any) -> None:
+        await real(*a, **k)  # the partial file exists when the call is cut
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(system, "_PULL_TIMEOUT", 0.2)
+    env.ssh.sftp_get = hang
+    for vmid in (CT, VM):
+        res = await asyncio.wait_for(_mint(env, vmid=vmid), 5)
+        assert res["status"] == "error" and "timed out" in res["error"]
+        assert _staged(env) == []
+        assert env.ssh.node_files == {}
+    assert transfers.get_download_store().pending_bytes() == 0
+    env.ssh.sftp_get = real  # the next mint must not wait on a stuck lock
+    res = await asyncio.wait_for(_mint(env), 5)
+    assert res["status"] == "success"
+
+
 async def test_symlink_to_a_small_regular_file_is_followed(env) -> None:
     env.ssh.symlinks["/root/link"] = SRC
     res = await _mint(env, source="/root/link")

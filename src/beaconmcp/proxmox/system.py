@@ -39,6 +39,9 @@ class ExecSession:
 _exec_sessions: dict[str, ExecSession] = {}
 _EXEC_SESSION_TTL = 3600
 
+#: Ceiling for one guest-to-staging pull (``pct pull`` alone may take 600 s).
+_PULL_TIMEOUT = 1800.0
+
 
 def _prune_exec_sessions() -> None:
     # Runs on executor threads while other threads add sessions: snapshot the
@@ -741,6 +744,32 @@ def register_system_tools(mcp: MCPServer, client: ProxmoxClient, ssh_client: Any
         )
 
     async def _pull_to_staging(
+        node: str, vmid: int, source: str, local_path: Path, verify_checksum: bool,
+        budget: int | None = None,
+    ) -> dict[str, Any]:
+        """Bound the whole pull by ``_PULL_TIMEOUT``.
+
+        ``sftp_get`` has no timeout of its own: a frozen peer would hold the
+        mint lock (and a client slot) for good. On expiry the inner call is
+        cancelled, so its ``finally`` blocks remove the ``.part`` and node copy.
+        """
+        try:
+            return await asyncio.wait_for(
+                _pull_to_staging_unbounded(
+                    node, vmid, source, local_path, verify_checksum, budget,
+                ),
+                _PULL_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            return {
+                "status": "error",
+                "error": (
+                    f"Transfer of {source!r} from VM/CT {vmid} timed out after "
+                    f"{_PULL_TIMEOUT:g} s; partial files were removed."
+                ),
+            }
+
+    async def _pull_to_staging_unbounded(
         node: str, vmid: int, source: str, local_path: Path, verify_checksum: bool,
         budget: int | None = None,
     ) -> dict[str, Any]:
