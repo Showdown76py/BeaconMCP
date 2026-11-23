@@ -1,6 +1,6 @@
 # MCP tools
 
-51 tools across eight modules. The infrastructure modules are only registered when the matching
+52 tools across eight modules. The infrastructure modules are only registered when the matching
 capability is configured, so an SSH-only deployment exposes the 2 SSH tools and nothing else from
 Proxmox or BMC. `security_end_session` and the two maintenance tools are always registered,
 whatever the topology.
@@ -90,7 +90,7 @@ Clients that did not negotiate the extension ignore `_meta.ui` and show the tool
 which is the same snapshot as data. Nothing breaks; you just don't get the frame. BeaconMCP's own
 `/app/chat` negotiates it and renders the panels inline.
 
-## Proxmox — system and files (11)
+## Proxmox — system and files (12)
 
 | Tool | Description |
 |------|-------------|
@@ -103,6 +103,7 @@ which is the same snapshot as data. Nothing breaks; you just don't get the frame
 | `proxmox_download_file` | Stream a file out of a VM (SFTP) or CT (`pct pull` + SFTP) into the staging directory, same cap and checksum. |
 | `proxmox_list_transfers` | List what's currently in the staging directory. |
 | `proxmox_upload_link` | Mint a one-shot HTTP link bound to a VM/CT path: `curl -T <file> <url>` writes the file into the guest (any bytes, up to `server.transfers_max_mb`). Pass `link_id` to read the outcome. See below. |
+| `proxmox_download_link` | Mint a one-shot HTTP link for a file inside a VM/CT: the server pulls it into staging (same cap and checksum as `proxmox_download_file`), then `curl -o <file> <url>` fetches it. Pass `link_id` to read the outcome. See below. |
 | `proxmox_fetch_url` | Have the server download an http(s) URL and write it into a VM/CT, same cap and checksum. URLs resolving to loopback or link-local addresses (the BeaconMCP host itself, cloud metadata) are refused, redirects included; private LAN addresses are allowed. |
 | `proxmox_delete_transfer` | Delete a staged file by basename. |
 
@@ -124,6 +125,40 @@ node, VMID and path chosen when it was minted, works once, expires after `expire
 (default 600, at most 3600) and is forgotten on restart. The base of the URL is
 `features.dashboard.public_url` when set, otherwise the address the MCP request came in on.
 Behind Cloudflare, uploads are limited to 100 MB per request on the free plan. The link needs a running guest: minting one for a stopped VM/CT is refused, and an upload to a guest stopped since then answers 409.
+
+### Bringing a file out of a guest
+
+The reverse trip works the same way. The result of `proxmox_download_file` stays in the server's
+staging directory, so to get a file back to the machine you work on (screenshots, logs, a dump),
+ask for a download link:
+
+```
+proxmox_download_link(node="pve1", vmid=201, source="/root/shots/home.png")
+  -> {"url": "https://beacon.example.com/transfers/download/<token>", "link_id": "...",
+      "filename": "home.png", "size": 48213, "sha256": "...", "expires_at": ...}
+
+curl -sS -o home.png "https://beacon.example.com/transfers/download/<token>"
+```
+
+The server first pulls the file into `server.transfers_dir` (`pct pull` for a CT, SFTP for a VM,
+SHA-256 checked unless `verify_checksum=false`), refusing a source over `server.transfers_max_mb`
+before any data moves, then mints the link. As for uploads, the token in the URL is the credential,
+so the route needs no bearer: anyone holding the URL can download the file until it is used or
+expires, so treat it like a password. Rules of the link:
+
+- It works once. The token is spent by the first `GET`, even if the client hangs up halfway; mint
+  a new link to retry. `HEAD` answers with the headers and does not spend it, any other method
+  gets 405. An unknown, spent or expired token is a bare 404.
+- It expires after `expires_in` seconds (default 600, at most 3600) and is forgotten on restart.
+- The staged copy (`dlink-<link_id>` in the staging directory) is deleted once it was sent, when
+  the link expires, and at startup if a restart orphaned it.
+- At most 50 links are pending, and the files they hold count together against
+  `server.transfers_max_mb`: past that, minting is refused, before the file is moved.
+- The reply carries `Content-Disposition: attachment` with the basename of `source` (quotes,
+  control characters and directories removed), `nosniff` and `no-store`.
+- `proxmox_download_link(link_id=...)` reports `pending`, `downloading`, `success`, `error` or
+  `expired` without exposing the token. Each use is written to the audit log as
+  `transfer.download`.
 
 ## SSH (2)
 
@@ -179,8 +214,8 @@ ones and flag tools that leave the declared infrastructure. They live in one tab
   nothing but declares no `readOnlyHint`: it can read any file in a guest (keys, `/etc/shadow`),
   and some clients skip the approval prompt for read-only tools.
 - `destructiveHint` is true when the tool can delete, overwrite, stop or run arbitrary code, and
-  false for pure additions (snapshot, clone, backup, start). `proxmox_upload_link` counts as
-  destructive: it only mints a link, but whoever holds it can overwrite a file in the guest.
+  false for pure additions (snapshot, clone, backup, start). `proxmox_upload_link` and `proxmox_download_link` count as
+  destructive: they only mint a link, but whoever holds it can overwrite a file in the guest (upload) or read one out of it (download).
 - `idempotentHint` is true only when repeating the same call has no further effect.
 - `openWorldHint` is true for `proxmox_fetch_url` (arbitrary URLs) and the two update tools (they
   contact the remote git repository).
