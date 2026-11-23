@@ -575,6 +575,93 @@ async def test_staged_files_live_out_of_reach_of_the_transit_tools(env) -> None:
     assert (await env.http.get(res["url"])).content == PAYLOAD
 
 
+# --- a cancelled mint leaves nothing behind -------------------------------------
+
+
+class _Gate:
+    """Make an SSH call block until released, to cancel a mint in mid-air."""
+
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def hold(self) -> None:
+        self.entered.set()
+        await self.release.wait()
+
+
+async def _cancel_mint_during(env, op: str, **kw: Any) -> None:
+    gate = _Gate()
+    real = getattr(env.ssh, op)
+
+    async def held(*a: Any, **k: Any) -> Any:
+        if op == "sftp_get":
+            await real(*a, **k)  # the partial file exists when the call is cut
+        await gate.hold()
+        return await real(*a, **k)
+
+    setattr(env.ssh, op, held)
+    task = asyncio.ensure_future(_mint(env, **kw))
+    await asyncio.wait_for(gate.entered.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_cancelled_mint_during_the_sftp_leaves_no_file_on_either_side(env) -> None:
+    await _cancel_mint_during(env, "sftp_get")
+    assert _staged(env) == []
+    assert env.ssh.node_files == {}
+    assert transfers.get_download_store().pending_bytes() == 0
+
+
+async def test_cancelled_vm_mint_leaves_no_part_file(env) -> None:
+    await _cancel_mint_during(env, "sftp_get", vmid=VM)
+    assert _staged(env) == []
+
+
+async def test_cancelled_pct_pull_leaves_nothing_on_the_node(env) -> None:
+    real = env.ssh.exec_command
+
+    async def slow_pull(host: str, command: str, timeout: int = 60) -> dict[str, Any]:
+        res = await real(host, command, timeout)
+        if command.startswith("pct pull"):
+            await asyncio.sleep(3600)
+        return res
+
+    env.ssh.exec_command = slow_pull
+    task = asyncio.ensure_future(_mint(env))
+    for _ in range(100):
+        if env.ssh.node_files:
+            break
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert env.ssh.node_files == {} and _staged(env) == []
+
+
+async def test_a_mint_cancelled_after_the_pull_still_cleans_the_staged_file(env, monkeypatch: pytest.MonkeyPatch) -> None:
+    def cancelled(self, **kw: Any):
+        assert kw["staged_path"].exists()  # the pull is done: a real file to clean
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(transfers.DownloadLinkStore, "issue", cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        await _mint(env)
+    assert _staged(env) == []
+
+
+async def test_a_mint_that_loses_the_race_deletes_its_file(env, monkeypatch: pytest.MonkeyPatch) -> None:
+    def lost(self, **kw: Any):
+        raise RuntimeError("Too many pending download links (50).")
+
+    monkeypatch.setattr(transfers.DownloadLinkStore, "issue", lost)
+    res = await _mint(env)
+    assert res["status"] == "error" and "pending download links" in res["error"]
+    assert _staged(env) == []
+
+
 # --- source checks (symlinks, special files, sizes that lie) -------------------
 
 

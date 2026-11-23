@@ -800,53 +800,54 @@ def register_system_tools(mcp: MCPServer, client: ProxmoxClient, ssh_client: Any
             # Stream into a sibling .part file and rename on success so an
             # interrupted transfer never leaves a half-written file at dest.
             tmp_path = local_path.with_name(local_path.name + ".part")
-            pull_res = await ssh_client.exec_command(
-                node,
-                f"pct pull {vmid} {shlex.quote(source)} {shlex.quote(node_tmp)}",
-                timeout=600,
-            )
-            if pull_res.get("exit_code") != 0:
-                await ssh_client.sftp_remove(node, node_tmp)
-                return {
-                    "status": "error",
-                    "error": f"pct pull failed: {pull_res.get('stderr') or pull_res.get('error') or 'unknown'}",
-                }
-            # The pre-flight size can be stale or wrong: measure what landed on
-            # the node before streaming it here.
-            node_stat = await ssh_client.exec_command(
-                node, f"stat -c %s {shlex.quote(node_tmp)}", timeout=60,
-            )
+            done = False
             try:
-                node_size = int((node_stat.get("stdout") or "").strip())
-            except ValueError:
-                node_size = None
-            if node_stat.get("exit_code") != 0 or node_size is None:
+                pull_res = await ssh_client.exec_command(
+                    node,
+                    f"pct pull {vmid} {shlex.quote(source)} {shlex.quote(node_tmp)}",
+                    timeout=600,
+                )
+                if pull_res.get("exit_code") != 0:
+                    return {
+                        "status": "error",
+                        "error": f"pct pull failed: {pull_res.get('stderr') or pull_res.get('error') or 'unknown'}",
+                    }
+                # The pre-flight size can be stale or wrong: measure what landed on
+                # the node before streaming it here.
+                node_stat = await ssh_client.exec_command(
+                    node, f"stat -c %s {shlex.quote(node_tmp)}", timeout=60,
+                )
+                try:
+                    node_size = int((node_stat.get("stdout") or "").strip())
+                except ValueError:
+                    node_size = None
+                if node_stat.get("exit_code") != 0 or node_size is None:
+                    return {"status": "error", "error": f"Could not stat the pulled copy of {source!r} on node {node!r}."}
+                if node_size > max_bytes:
+                    return {"status": "error", "error": too_big(node_size)}
+                try:
+                    await ssh_client.sftp_get(node, node_tmp, str(tmp_path))
+                except Exception as e:
+                    return {"status": "error", "error": f"SFTP from node {node!r} failed: {e}"}
+                if tmp_path.stat().st_size > max_bytes:
+                    over = tmp_path.stat().st_size
+                    return {"status": "error", "error": too_big(over)}
+                local_sha = await loop.run_in_executor(None, _sha256_file, tmp_path) if verify_checksum else None
+                if verify_checksum and remote_sha and local_sha != remote_sha:
+                    size = tmp_path.stat().st_size
+                    return {
+                        "status": "error",
+                        "error": f"Checksum mismatch after download: remote={remote_sha} local={local_sha}",
+                        "bytes": size,
+                    }
+                tmp_path.replace(local_path)
+                done = True
+            finally:
+                # Whatever the exit (error, cancellation), leave nothing behind:
+                # the node's /tmp copy and the half-written .part file.
                 await ssh_client.sftp_remove(node, node_tmp)
-                return {"status": "error", "error": f"Could not stat the pulled copy of {source!r} on node {node!r}."}
-            if node_size > max_bytes:
-                await ssh_client.sftp_remove(node, node_tmp)
-                return {"status": "error", "error": too_big(node_size)}
-            try:
-                await ssh_client.sftp_get(node, node_tmp, str(tmp_path))
-            except Exception as e:
-                await ssh_client.sftp_remove(node, node_tmp)
-                tmp_path.unlink(missing_ok=True)
-                return {"status": "error", "error": f"SFTP from node {node!r} failed: {e}"}
-            await ssh_client.sftp_remove(node, node_tmp)
-            if tmp_path.stat().st_size > max_bytes:
-                over = tmp_path.stat().st_size
-                tmp_path.unlink(missing_ok=True)
-                return {"status": "error", "error": too_big(over)}
-            local_sha = await loop.run_in_executor(None, _sha256_file, tmp_path) if verify_checksum else None
-            if verify_checksum and remote_sha and local_sha != remote_sha:
-                size = tmp_path.stat().st_size
-                tmp_path.unlink(missing_ok=True)
-                return {
-                    "status": "error",
-                    "error": f"Checksum mismatch after download: remote={remote_sha} local={local_sha}",
-                    "bytes": size,
-                }
-            tmp_path.replace(local_path)
+                if not done:
+                    tmp_path.unlink(missing_ok=True)
             result: dict[str, Any] = {
                 "status": "success", "vmid": vmid, "node": node,
                 "source": source, "staged_path": str(local_path),
@@ -896,25 +897,28 @@ def register_system_tools(mcp: MCPServer, client: ProxmoxClient, ssh_client: Any
         # Stream into a sibling .part file and rename on success so an
         # interrupted transfer never leaves a half-written file at dest.
         tmp_path = local_path.with_name(local_path.name + ".part")
+        done = False
         try:
-            await ssh_client.sftp_get(str(vmid), source, str(tmp_path))
-        except Exception as e:
-            tmp_path.unlink(missing_ok=True)
-            return {"status": "error", "error": f"SFTP from VM {vmid} failed: {e}"}
-        if tmp_path.stat().st_size > max_bytes:
-            over = tmp_path.stat().st_size
-            tmp_path.unlink(missing_ok=True)
-            return {"status": "error", "error": too_big(over)}
-        local_sha = await loop.run_in_executor(None, _sha256_file, tmp_path) if verify_checksum else None
-        if verify_checksum and remote_sha and local_sha != remote_sha:
-            size = tmp_path.stat().st_size
-            tmp_path.unlink(missing_ok=True)
-            return {
-                "status": "error",
-                "error": f"Checksum mismatch after download: remote={remote_sha} local={local_sha}",
-                "bytes": size,
-            }
-        tmp_path.replace(local_path)
+            try:
+                await ssh_client.sftp_get(str(vmid), source, str(tmp_path))
+            except Exception as e:
+                return {"status": "error", "error": f"SFTP from VM {vmid} failed: {e}"}
+            if tmp_path.stat().st_size > max_bytes:
+                over = tmp_path.stat().st_size
+                return {"status": "error", "error": too_big(over)}
+            local_sha = await loop.run_in_executor(None, _sha256_file, tmp_path) if verify_checksum else None
+            if verify_checksum and remote_sha and local_sha != remote_sha:
+                size = tmp_path.stat().st_size
+                return {
+                    "status": "error",
+                    "error": f"Checksum mismatch after download: remote={remote_sha} local={local_sha}",
+                    "bytes": size,
+                }
+            tmp_path.replace(local_path)
+            done = True
+        finally:
+            if not done:
+                tmp_path.unlink(missing_ok=True)
         result: dict[str, Any] = {
             "status": "success", "vmid": vmid, "node": node,
             "source": source, "staged_path": str(local_path),
@@ -1172,24 +1176,32 @@ def register_system_tools(mcp: MCPServer, client: ProxmoxClient, ssh_client: Any
             return {"status": "error", "error": str(e)}
         new_id = transfers.new_link_id()
         staged = _download_dir(client) / transfers.download_staged_name(new_id)
-        pulled = await _pull_to_staging(
-            node, vmid, source, staged, verify_checksum,
-            budget=max_total - store.pending_bytes(),
-        )
-        if pulled.get("status") != "success":
-            return pulled
-        filename = transfers.safe_filename(source)
+        issued = False
         try:
-            link = store.issue(
-                node=node, vmid=vmid, source=source, filename=filename,
-                staged_path=staged, size=int(pulled["bytes"]),
-                sha256=pulled.get("sha256"), max_total_bytes=max_total,
-                link_id=new_id, ttl=expires_in,
+            pulled = await _pull_to_staging(
+                node, vmid, source, staged, verify_checksum,
+                budget=max_total - store.pending_bytes(),
             )
-        except RuntimeError as e:
-            # Lost a race with another mint: the file is not ours to keep.
-            staged.unlink(missing_ok=True)
-            return {"status": "error", "error": str(e)}
+            if pulled.get("status") != "success":
+                return pulled
+            filename = transfers.safe_filename(source)
+            try:
+                link = store.issue(
+                    node=node, vmid=vmid, source=source, filename=filename,
+                    staged_path=staged, size=int(pulled["bytes"]),
+                    sha256=pulled.get("sha256"), max_total_bytes=max_total,
+                    link_id=new_id, ttl=expires_in,
+                )
+            except RuntimeError as e:
+                # Lost a race with another mint: the file is not ours to keep.
+                return {"status": "error", "error": str(e)}
+            issued = True
+        finally:
+            if not issued:
+                # Refused, failed or cancelled (a client that gave up on a slow
+                # pull): no link owns these files, so nothing may outlive the call.
+                staged.unlink(missing_ok=True)
+                staged.with_name(staged.name + ".part").unlink(missing_ok=True)
 
         path = f"{transfers.DOWNLOAD_PATH_PREFIX}{link.token}"
         base = transfers.public_base_url(client._config.features.dashboard.public_url)
