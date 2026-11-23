@@ -333,8 +333,17 @@ def _status_code(result: dict[str, Any]) -> int:
 #: Path prefix of the download route. The auth middleware lets it through.
 DOWNLOAD_PATH_PREFIX = "/transfers/download/"
 
+#: Staged files live in this sub folder of ``server.transfers_dir``. The
+#: transit tools only take plain basenames, so they cannot name anything in it.
+DOWNLOAD_SUBDIR = ".dlinks"
+
 #: Staged files are named ``dlink-<link_id>``; nothing else is ever swept.
 _STAGED_RE = re.compile(r"^dlink-[0-9a-f]{12}(\.part)?$")
+
+#: A leftover is only an orphan once it is older than any live link can be
+#: (a link lives at most MAX_TTL, then a transfer may run as long again),
+#: plus a margin. Safe whichever process runs the sweep.
+ORPHAN_AGE = 2 * MAX_TTL + 2 * 3600
 
 _SEND_CHUNK = 256 * 1024
 _MAX_FILENAME = 200
@@ -384,24 +393,30 @@ def download_staged_name(link_id: str) -> str:
     return f"dlink-{link_id}"
 
 
-def sweep_orphan_downloads(staging_dir: Path) -> int:
-    """Delete staged download files left by a previous process.
+def sweep_orphan_downloads(transfers_dir: Path, now: float | None = None) -> int:
+    """Delete staged download files that no live link can still own.
 
-    Links live in memory, so after a restart no token can reach them any
-    more. Only the exact ``dlink-<12 hex>[.part]`` names are touched.
+    Links live in memory, so after a restart no token reaches the files a
+    previous process staged. The age test (``ORPHAN_AGE``) keeps this safe
+    when another process, e.g. ``beaconmcp check-startup`` next to the running
+    server, sweeps the same directory. Only exact ``dlink-<12 hex>[.part]``
+    names inside ``DOWNLOAD_SUBDIR`` are touched.
     """
+    now = time.time() if now is None else now
     removed = 0
     try:
-        entries = list(Path(staging_dir).iterdir())
+        entries = list((Path(transfers_dir).expanduser() / DOWNLOAD_SUBDIR).iterdir())
     except OSError:
         return 0
     for entry in entries:
-        if _STAGED_RE.match(entry.name) and entry.is_file():
-            try:
+        if not _STAGED_RE.match(entry.name):
+            continue
+        try:
+            if entry.is_file() and now - entry.stat().st_mtime > ORPHAN_AGE:
                 entry.unlink()
                 removed += 1
-            except OSError:
-                pass
+        except OSError:
+            pass
     return removed
 
 

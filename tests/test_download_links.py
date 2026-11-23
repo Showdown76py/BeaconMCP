@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import shlex
 import sys
 import time
@@ -144,7 +145,8 @@ def env(make_env):
 
 
 def _staged(env) -> list[str]:
-    return sorted(p.name for p in env.staging.iterdir()) if env.staging.exists() else []
+    d = env.staging / transfers.DOWNLOAD_SUBDIR
+    return sorted(p.name for p in d.iterdir()) if d.exists() else []
 
 
 async def _mint(env, **kw: Any) -> dict[str, Any]:
@@ -501,22 +503,55 @@ async def test_audit_event_has_no_token(env, monkeypatch: pytest.MonkeyPatch) ->
     assert _token_of(res) not in json.dumps(events, default=str)
 
 
-def test_startup_sweep_removes_orphaned_staged_links(tmp_path: Path) -> None:
-    (tmp_path / "dlink-0123456789ab").write_bytes(b"x")
-    (tmp_path / "dlink-0123456789ab.part").write_bytes(b"x")
-    (tmp_path / "keep.bin").write_bytes(b"x")
-    (tmp_path / "dlink-notes.txt").write_bytes(b"x")  # not our naming: untouched
+def _age(path: Path, seconds: float) -> None:
+    t = time.time() - seconds
+    os.utime(path, (t, t))
+
+
+def test_startup_sweep_removes_only_old_orphans_and_spares_live_files(tmp_path: Path) -> None:
+    # check-startup imports the server module (and so runs this sweep) next to
+    # a live server: a recent file may belong to a pending link and must live.
+    d = tmp_path / transfers.DOWNLOAD_SUBDIR
+    d.mkdir()
+    old = d / "dlink-0123456789ab"
+    old_part = d / "dlink-0123456789ac.part"
+    fresh = d / "dlink-0123456789ad"
+    fresh_part = d / "dlink-0123456789ae.part"
+    odd = d / "dlink-notes.txt"  # not our naming: never touched
+    for f in (old, old_part, fresh, fresh_part, odd):
+        f.write_bytes(b"x")
+    for f in (old, old_part, odd):
+        _age(f, transfers.ORPHAN_AGE + 60)
     assert transfers.sweep_orphan_downloads(tmp_path) == 2
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["dlink-notes.txt", "keep.bin"]
+    assert sorted(p.name for p in d.iterdir()) == sorted([fresh.name, fresh_part.name, odd.name])
     assert transfers.sweep_orphan_downloads(tmp_path / "missing") == 0
 
 
-async def test_registering_the_tools_sweeps_leftovers(tmp_path: Path) -> None:
-    staging = tmp_path / "staging"
-    staging.mkdir()
-    (staging / "dlink-0123456789ab").write_bytes(b"x")
+async def test_registering_the_tools_spares_a_live_staged_file(tmp_path: Path) -> None:
+    d = tmp_path / "staging" / transfers.DOWNLOAD_SUBDIR
+    d.mkdir(parents=True)
+    live, stale = d / "dlink-0123456789ab", d / "dlink-0123456789ac"
+    live.write_bytes(b"x")
+    stale.write_bytes(b"x")
+    _age(stale, transfers.ORPHAN_AGE + 60)
     system.register_system_tools(FakeMCP(), FakeProxmox(tmp_path), FakeSSH())
-    assert list(staging.iterdir()) == []
+    assert live.exists() and not stale.exists()
+
+
+async def test_staged_files_live_out_of_reach_of_the_transit_tools(env) -> None:
+    res = await _mint(env)
+    name = _staged(env)[0]
+    assert (env.staging / transfers.DOWNLOAD_SUBDIR / name).is_file()
+    listed = env.tools["proxmox_list_transfers"]()
+    assert listed["files"] == []  # the sub folder is not a transit file
+    gone = env.tools["proxmox_delete_transfer"](name=name)
+    assert gone["status"] == "error"
+    # A caller cannot overwrite the sub folder or a staged name through dest.
+    clobber = await env.tools["proxmox_download_file"](
+        node=NODE, vmid=CT, source=SRC, dest=transfers.DOWNLOAD_SUBDIR, overwrite=True,
+    )
+    assert clobber["status"] == "error"
+    assert (await env.http.get(res["url"])).content == PAYLOAD
 
 
 async def test_download_file_still_works_after_the_refactor(env) -> None:

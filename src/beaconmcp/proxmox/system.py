@@ -135,6 +135,13 @@ def _staging_dir(client: ProxmoxClient) -> Path:
     return base
 
 
+def _download_dir(client: ProxmoxClient) -> Path:
+    """Where download-link files are staged, out of the transit tools' reach."""
+    path = _staging_dir(client) / transfers.DOWNLOAD_SUBDIR
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _staging_path(client: ProxmoxClient, name: str) -> Path:
     """Resolve ``name`` against the staging dir, refusing path traversal.
 
@@ -143,6 +150,8 @@ def _staging_path(client: ProxmoxClient, name: str) -> Path:
     """
     if not isinstance(name, str) or not name or name in (".", ".."):
         raise ValueError("staging filename must be a non-empty basename")
+    if name == transfers.DOWNLOAD_SUBDIR:
+        raise ValueError("staging filename is reserved")
     if "/" in name or "\\" in name or name.startswith(".."):
         raise ValueError(
             "staging filename must be a plain basename (no slashes, no '..')"
@@ -1123,7 +1132,7 @@ def register_system_tools(mcp: MCPServer, client: ProxmoxClient, ssh_client: Any
         except RuntimeError as e:
             return {"status": "error", "error": str(e)}
         new_id = transfers.new_link_id()
-        staged = _staging_dir(client) / transfers.download_staged_name(new_id)
+        staged = _download_dir(client) / transfers.download_staged_name(new_id)
         pulled = await _pull_to_staging(
             node, vmid, source, staged, verify_checksum,
             budget=max_total - store.pending_bytes(),
