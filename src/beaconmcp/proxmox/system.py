@@ -70,13 +70,14 @@ def _detect_vm_type(client: ProxmoxClient, node: str, vmid: int) -> str | None:
 
 
 async def _running_guest(
-    client: ProxmoxClient, node: str, vmid: int,
+    client: ProxmoxClient, node: str, vmid: int, *, verb: str = "pushed into",
 ) -> tuple[str | None, dict[str, Any] | None]:
-    """Resolve a push target: ``(vm_type, None)`` or ``(None, error result)``.
+    """Resolve a transfer target: ``(vm_type, None)`` or ``(None, error result)``.
 
-    Files can only be pushed into a running guest (``pct push`` refuses a
-    stopped CT, a stopped VM has no SSH), so check it up front rather than
-    after the bytes were transferred.
+    Files can only be moved in or out of a running guest (``pct push`` and
+    ``pct pull`` refuse a stopped CT, a stopped VM has no SSH), so check it up
+    front rather than after the bytes were transferred. ``verb`` completes the
+    message: "pushed into" for uploads, "pulled from" for downloads.
     """
     loop = asyncio.get_running_loop()
     guest = await loop.run_in_executor(None, _detect_guest, client, node, vmid)
@@ -86,7 +87,7 @@ async def _running_guest(
     if status != "running":
         return None, {
             "status": "error",
-            "error": f"VM/CT {vmid} is {status}: start it first, files can only be pushed into a running guest.",
+            "error": f"VM/CT {vmid} is {status}: start it first, files can only be {verb} a running guest.",
             "guest_status": status,
         }
     return vm_type, None
@@ -1165,7 +1166,7 @@ def register_system_tools(mcp: MCPServer, client: ProxmoxClient, ssh_client: Any
             return {"status": "error", "error": "`node` and `vmid` are required to mint a link."}
         if not isinstance(source, str) or not source.startswith("/"):
             return {"status": "error", "error": "`source` must be an absolute path inside the guest."}
-        vm_type, err = await _running_guest(client, node, vmid)
+        vm_type, err = await _running_guest(client, node, vmid, verb="pulled from")
         if err is not None:
             return err
 

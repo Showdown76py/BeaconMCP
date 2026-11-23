@@ -138,6 +138,19 @@ class FakeSSH:
         return {"exit_code": 1, "stderr": f"unexpected command: {command}"}
 
 
+class FakeClock:
+    """The store's injectable clock: tests move time, nothing global is patched."""
+
+    def __init__(self) -> None:
+        self.now = time.time()
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
 def _app(trusted: tuple[str, ...] = ()) -> Starlette:
     return Starlette(routes=[
         Route(
@@ -153,7 +166,8 @@ def make_env(tmp_path: Path):
     created: list[SimpleNamespace] = []
 
     def build(max_mb: int = 1) -> SimpleNamespace:
-        transfers._download_store = transfers.DownloadLinkStore()
+        clock = FakeClock()
+        transfers._download_store = transfers.DownloadLinkStore(clock=clock)
         mcp, proxmox, ssh = FakeMCP(), FakeProxmox(tmp_path, max_mb=max_mb), FakeSSH()
         system.register_system_tools(mcp, proxmox, ssh)
         app = _app()
@@ -161,7 +175,7 @@ def make_env(tmp_path: Path):
         ssh.staging_dir = tmp_path / "staging"
         env = SimpleNamespace(
             tools=mcp.tools, ssh=ssh, http=http, app=app,
-            staging=tmp_path / "staging", proxmox=proxmox,
+            staging=tmp_path / "staging", proxmox=proxmox, clock=clock,
         )
         created.append(env)
         return env
@@ -210,29 +224,88 @@ def test_claim_is_single_use(tmp_path: Path) -> None:
     assert store.claim(link.token) is None
 
 
-def test_expired_link_cannot_be_claimed_and_its_file_goes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    store = transfers.DownloadLinkStore()
+def test_expired_link_cannot_be_claimed_and_its_file_goes(tmp_path: Path) -> None:
+    clock = FakeClock()
+    store = transfers.DownloadLinkStore(clock=clock)
     link = _issue(store, tmp_path, ttl=60)
     assert link.staged_path.exists()
-    later = time.time() + 61
-    monkeypatch.setattr(transfers.time, "time", lambda: later)
+    clock.advance(61)
     assert store.claim(link.token) is None
     assert store.get(link.link_id).status == "expired"
     assert not link.staged_path.exists()
 
 
-def test_sweep_removes_expired_files_without_any_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # The timer armed at mint time calls sweep(): an unused link must not
-    # keep its file past the TTL even if nobody ever touches the store again.
-    store = transfers.DownloadLinkStore()
+def test_sweep_removes_expired_files_without_any_request(tmp_path: Path) -> None:
+    clock = FakeClock()
+    store = transfers.DownloadLinkStore(clock=clock)
     link = _issue(store, tmp_path, ttl=60)
     assert link._timer is not None and link._timer.daemon
     link._timer.cancel()
-    later = time.time() + 61
-    monkeypatch.setattr(transfers.time, "time", lambda: later)
+    clock.advance(61)
     store.sweep()
     assert not link.staged_path.exists()
     assert store.get(link.link_id).status == "expired"
+
+
+def test_the_expiry_timer_is_armed_at_mint_and_runs_the_sweep(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # An unused link must lose its file at the TTL even if nobody ever calls
+    # the store again: the timer armed by issue() is what does it.
+    armed: list[Any] = []
+
+    class FakeTimer:
+        def __init__(self, interval: float, function: Any) -> None:
+            self.interval, self.function, self.daemon, self.started = interval, function, False, False
+            armed.append(self)
+
+        def start(self) -> None:
+            self.started = True
+
+        def cancel(self) -> None:
+            self.started = False
+
+    monkeypatch.setattr(transfers.threading, "Timer", FakeTimer)
+    clock = FakeClock()
+    store = transfers.DownloadLinkStore(clock=clock)
+    link = _issue(store, tmp_path, ttl=120)
+    (timer,) = armed
+    assert timer.started and timer.daemon and timer.interval == 121
+    clock.advance(121)
+    timer.function()  # what the real timer does when it fires
+    assert not link.staged_path.exists()
+    assert store.get(link.link_id).status == "expired"
+
+
+def test_a_stalled_download_expires_and_frees_its_budget(tmp_path: Path) -> None:
+    # A client that keeps the connection open but stops reading must not hold
+    # the file and the byte budget for ever.
+    clock = FakeClock()
+    store = transfers.DownloadLinkStore(clock=clock)
+    link = _issue(store, tmp_path, ttl=60, size=500)
+    assert store.claim(link.token) is link
+    clock.advance(60 + transfers.MAX_TTL - 1)
+    assert store.get(link.link_id).status == "downloading"
+    assert link.staged_path.exists() and store.pending_bytes() == 500
+    clock.advance(2)
+    assert store.get(link.link_id).status == "error"
+    assert not link.staged_path.exists()
+    assert store.pending_bytes() == 0
+
+
+def test_expiry_is_audited_without_the_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(audit, "emit", lambda event, **kw: events.append((event, kw)))
+    clock = FakeClock()
+    store = transfers.DownloadLinkStore(clock=clock)
+    link = _issue(store, tmp_path, ttl=60)
+    store.sweep()
+    assert events == []  # still pending
+    clock.advance(61)
+    store.sweep()
+    store.sweep()  # only once
+    assert [(e, kw["status"], kw["link_id"]) for e, kw in events] == [
+        ("transfer.download", "expired", link.link_id),
+    ]
+    assert link.token not in json.dumps(events, default=str)
 
 
 def test_ttl_is_clamped(tmp_path: Path) -> None:
@@ -276,7 +349,14 @@ def test_safe_filename_strips_hostile_characters() -> None:
     assert name.endswith("y.png")
 
 
-@pytest.mark.parametrize("raw", ["", ".", "..", "/", "...", "\x00\x01"])
+def test_safe_filename_drops_invisible_and_bidi_characters() -> None:
+    # U+202E would make `invoice<RLO>gnp.exe` display as `invoiceexe.png`.
+    name = transfers.safe_filename("invoice\u202egnp.exe\u200b\u2028\u2029")
+    assert name == "invoicegnp.exe"
+    assert transfers.safe_filename("caf\u00e9 \u2603.png") == "caf\u00e9 \u2603.png"  # real text stays
+
+
+@pytest.mark.parametrize("raw", ["", ".", "..", "/", "...", "\x00\x01", "\u202e\u200b"])
 def test_safe_filename_never_empty_or_dots(raw: str) -> None:
     assert transfers.safe_filename(raw) == "download"
 
@@ -370,11 +450,10 @@ async def test_unknown_token_is_404_without_detail(env) -> None:
     assert (await env.http.get(res["url"])).text == unknown
 
 
-async def test_expired_token_is_404_and_the_staged_file_is_gone(env, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_expired_token_is_404_and_the_staged_file_is_gone(env) -> None:
     res = await _mint(env, expires_in=60)
     assert len(_staged(env)) == 1
-    later = time.time() + 61
-    monkeypatch.setattr(transfers.time, "time", lambda: later)
+    env.clock.advance(61)
     resp = await env.http.get(res["url"])
     assert resp.status_code == 404
     assert _staged(env) == []
@@ -461,6 +540,8 @@ async def test_mint_validates_arguments(env) -> None:
     assert (await _mint(env, vmid=999))["status"] == "error"
     stopped = await _mint(env, vmid=STOPPED_CT)
     assert stopped["status"] == "error" and "stopped" in stopped["error"]
+    # A download pulls from the guest: the message must not talk about pushing.
+    assert "pulled from a running guest" in stopped["error"] and "pushed" not in stopped["error"]
     missing = await _mint(env, source="/nope")
     assert missing["status"] == "error"
     assert _staged(env) == []
@@ -583,6 +664,39 @@ async def test_staged_files_live_out_of_reach_of_the_transit_tools(env) -> None:
     )
     assert clobber["status"] == "error"
     assert (await env.http.get(res["url"])).content == PAYLOAD
+
+
+# --- which paths skip the bearer ------------------------------------------------
+
+
+@pytest.mark.parametrize("path", [
+    "/transfers/download/" + "A" * 43,
+    "/transfers/upload/" + "a-_9" * 10 + "xyz",
+])
+def test_link_path_matcher_accepts_exactly_a_token_path(path: str) -> None:
+    assert transfers.is_link_path(path)
+
+
+@pytest.mark.parametrize("path", [
+    "/transfers/download/a/b",
+    "/transfers/download/" + "A" * 43 + "/more",
+    "/transfers/download/" + "A" * 42,
+    "/transfers/download/" + "A" * 44,
+    "/transfers/download/" + "A" * 42 + "%",
+    "/transfers/download/",
+    "/transfers/download",
+    "/transfers/other/" + "A" * 43,
+    "/x/transfers/download/" + "A" * 43,
+])
+def test_link_path_matcher_rejects_everything_wider(path: str) -> None:
+    assert not transfers.is_link_path(path)
+
+
+def test_both_minted_tokens_have_the_shape_the_matcher_expects(tmp_path: Path) -> None:
+    link = _issue(transfers.DownloadLinkStore(), tmp_path)
+    up = transfers.UploadLinkStore().issue(node=NODE, vmid=CT, dest="/x", max_bytes=1, staging_dir=tmp_path)
+    assert transfers.is_link_path(transfers.DOWNLOAD_PATH_PREFIX + link.token)
+    assert transfers.is_link_path(transfers.UPLOAD_PATH_PREFIX + up.token)
 
 
 # --- access log never carries a live token -----------------------------------------

@@ -27,6 +27,7 @@ import re
 import secrets
 import threading
 import time
+import unicodedata
 import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -334,6 +335,16 @@ def _status_code(result: dict[str, Any]) -> int:
 #: Path prefix of the download route. The auth middleware lets it through.
 DOWNLOAD_PATH_PREFIX = "/transfers/download/"
 
+#: Exactly the paths the auth middleware may let through without a bearer:
+#: one verb, one token of the shape ``secrets.token_urlsafe(32)`` makes. A
+#: looser prefix test would silently expose any future route under it.
+_LINK_PATH_RE = re.compile(r"/transfers/(upload|download)/[A-Za-z0-9_-]{43}")
+
+
+def is_link_path(path: str) -> bool:
+    """True for ``/transfers/(upload|download)/<43-char token>``, nothing wider."""
+    return _LINK_PATH_RE.fullmatch(path) is not None
+
 #: Staged files live in this sub folder of ``server.transfers_dir``. The
 #: transit tools only take plain basenames, so they cannot name anything in it.
 DOWNLOAD_SUBDIR = ".dlinks"
@@ -386,7 +397,7 @@ class DownloadLink:
         return out
 
 
-_LINK_PATH_RE = re.compile(r"/transfers/(upload|download)/[^\s?\"]+")
+_ACCESS_PATH_RE = re.compile(r"/transfers/(upload|download)/[^\s?\"]+")
 
 
 class RedactLinkTokens(logging.Filter):
@@ -399,7 +410,7 @@ class RedactLinkTokens(logging.Filter):
     @staticmethod
     def _clean(value: Any) -> Any:
         if isinstance(value, str):
-            return _LINK_PATH_RE.sub(r"/transfers/\1/<redacted>", value)
+            return _ACCESS_PATH_RE.sub(r"/transfers/\1/<redacted>", value)
         return value
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -453,17 +464,23 @@ def sweep_orphan_downloads(transfers_dir: Path, now: float | None = None) -> int
     return removed
 
 
+_HIDDEN_CATEGORIES = frozenset({"Cf", "Zl", "Zp"})
+
+
 def safe_filename(raw: Any) -> str:
     """A display name that cannot break out of a header or point at a path.
 
-    Directory parts are dropped, control characters removed, quotes and
-    backslashes replaced. Never empty, never only dots.
+    Directory parts are dropped, control and invisible format characters
+    removed, quotes and backslashes replaced. Never empty, never only dots.
     """
     name = re.split(r"[\\/]", str(raw))[-1]
     name = "".join(
         "_" if c in '"\\' else c
         for c in name
         if ord(c) >= 32 and ord(c) != 127
+        # Format characters (bidi overrides like U+202E, zero-width) and line
+        # or paragraph separators can make `invoice\u202egnp.exe` read as a .png.
+        and unicodedata.category(c) not in _HIDDEN_CATEGORIES
     )
     name = name.strip().strip(".").strip()[:_MAX_FILENAME]
     return name or "download"
@@ -481,7 +498,10 @@ def content_disposition(filename: str) -> str:
 class DownloadLinkStore:
     """In-memory, thread-safe registry of download links and their staged files."""
 
-    def __init__(self) -> None:
+    def __init__(self, clock: Callable[[], float] = time.time) -> None:
+        # The clock is injectable so tests move time without patching the
+        # global ``time`` module.
+        self._clock = clock
         self._lock = threading.Lock()
         self._by_token: dict[str, DownloadLink] = {}
         self._by_id: dict[str, DownloadLink] = {}
@@ -494,6 +514,21 @@ class DownloadLinkStore:
                 link.status = "expired"
                 link.finished_at = now
                 self._by_token.pop(link.token, None)
+                self._drop_file(link)
+                # An unused link never reaches the route: say so in the audit.
+                audit.emit(
+                    "transfer.download",
+                    link_id=link.link_id, node=link.node, vmid=link.vmid,
+                    source=link.source, status="expired", bytes=0, ip=None,
+                )
+            elif link.status == "downloading" and now >= link.expires_at + MAX_TTL:
+                # A client that stopped reading but keeps the connection open
+                # must not hold the file and the byte budget for ever. (On
+                # Unix the transfer already running keeps its open inode.)
+                link.status = "error"
+                link.result = _error("Download did not finish in time.")
+                link.result["link_id"] = link.link_id
+                link.finished_at = now
                 self._drop_file(link)
             if (
                 link.finished_at is not None
@@ -531,14 +566,14 @@ class DownloadLinkStore:
     def pending_bytes(self) -> int:
         """Bytes currently staged for links that are pending or being sent."""
         with self._lock:
-            self._prune(time.time())
+            self._prune(self._clock())
             return sum(link.size for link in self._held())
 
     def check_capacity(self) -> None:
         """Raise ``RuntimeError`` when no more links may be minted. Cheap:
         called before the file is moved, ``issue`` checks again after."""
         with self._lock:
-            self._prune(time.time())
+            self._prune(self._clock())
             self._check_count()
 
     def issue(
@@ -560,7 +595,7 @@ class DownloadLinkStore:
         On ``RuntimeError`` the caller still owns (and must delete) the file.
         """
         ttl = max(MIN_TTL, min(int(ttl), MAX_TTL))
-        now = time.time()
+        now = self._clock()
         with self._lock:
             self._prune(now)
             self._check_count()
@@ -583,6 +618,7 @@ class DownloadLinkStore:
                 size=size,
                 sha256=sha256,
                 expires_at=now + ttl,
+                created_at=now,
             )
             # No request may ever come: the timer drops the staged file at
             # expiry all the same.
@@ -597,7 +633,7 @@ class DownloadLinkStore:
     def peek(self, token: str) -> DownloadLink | None:
         """The pending link behind ``token`` without spending it (HEAD)."""
         with self._lock:
-            self._prune(time.time())
+            self._prune(self._clock())
             link = self._by_token.get(token)
             if link is None or link.status != "pending":
                 return None
@@ -606,7 +642,7 @@ class DownloadLinkStore:
     def claim(self, token: str) -> DownloadLink | None:
         """Spend ``token``: return its link and mark it in use, at most once."""
         with self._lock:
-            self._prune(time.time())
+            self._prune(self._clock())
             link = self._by_token.pop(token, None)
             if link is None or link.status != "pending":
                 return None
@@ -620,17 +656,17 @@ class DownloadLinkStore:
         with self._lock:
             link.status = "success" if result.get("status") == "success" else "error"
             link.result = result
-            link.finished_at = time.time()
+            link.finished_at = self._clock()
             self._drop_file(link)
 
     def sweep(self) -> None:
         """Expire links and delete their files (also run by the link's timer)."""
         with self._lock:
-            self._prune(time.time())
+            self._prune(self._clock())
 
     def get(self, link_id: str) -> DownloadLink | None:
         with self._lock:
-            self._prune(time.time())
+            self._prune(self._clock())
             return self._by_id.get(link_id)
 
 

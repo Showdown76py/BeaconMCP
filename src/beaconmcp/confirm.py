@@ -110,6 +110,13 @@ def _message(tool: str, kw: dict) -> str:
         return f"Run on {kw.get('host')}: {_command(kw.get('command'))}"
     if tool == "proxmox_run":
         return f"Run in guest {kw.get('vmid')} on {kw.get('node')}: {_command(kw.get('command'))}"
+    if tool == "proxmox_upload_link":
+        return f"Mint a one-shot upload link into {vm}: {kw.get('dest')}? Anyone holding the URL can write that file."
+    if tool == "proxmox_download_link":
+        return (
+            f"Mint a one-shot download link for {kw.get('source')} from {vm}? "
+            "Anyone holding the URL can read that file."
+        )
     return f"Run {tool}?"
 
 
@@ -229,6 +236,9 @@ _CONDITIONS: dict[str, Callable[[dict], bool]] = {
     "proxmox_vm_config": lambda kw: _sensitive_config(kw.get("updates")),
     "ssh_run": _runs_command,
     "proxmox_run": _runs_command,
+    # link_id alone only reads a link's state: nothing to approve.
+    "proxmox_upload_link": lambda kw: not kw.get("link_id"),
+    "proxmox_download_link": lambda kw: not kw.get("link_id"),
 }
 
 

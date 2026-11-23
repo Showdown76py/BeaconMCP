@@ -1861,9 +1861,9 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         # credential, minted by an authenticated proxmox_upload_link or
         # proxmox_download_link call. The handler rejects unknown, expired and
         # already used tokens.
-        if path.startswith(transfers.UPLOAD_PATH_PREFIX) or path.startswith(
-            transfers.DOWNLOAD_PATH_PREFIX
-        ):
+        # Only a well-formed token path: anything else under /transfers/ (a
+        # sub path, a future route) keeps needing the bearer.
+        if transfers.is_link_path(path):
             return await call_next(request)
 
         # sso round trip for /oauth/authorize: no bearer yet. guarded by the

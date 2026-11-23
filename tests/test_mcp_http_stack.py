@@ -226,15 +226,19 @@ async def test_unknown_host_is_rejected_with_421(stack) -> None:
     assert resp.status_code == 421
 
 
+# A well-formed token (43 url-safe characters) that no link owns.
+_UNKNOWN_TOKEN = "Z" * 43
+
+
 async def test_upload_link_route_skips_bearer_auth(stack) -> None:
     # The token in the path is the credential: no bearer, and an unknown
     # token is the handler's 404, not the middleware's 401.
     app = stack["app"]
     async with app.router.lifespan_context(app), _client(app) as c:
-        resp = await c.put("/transfers/upload/not-a-real-token", content=b"x")
+        resp = await c.put(f"/transfers/upload/{_UNKNOWN_TOKEN}", content=b"x")
         metrics = await c.get("/metrics")
     assert resp.status_code == 404
-    assert "not-a-real-token" not in metrics.text
+    assert _UNKNOWN_TOKEN not in metrics.text
 
 
 async def test_upload_link_body_streams_through_middleware(stack, tmp_path) -> None:
@@ -266,10 +270,10 @@ async def test_download_link_route_skips_bearer_auth(stack) -> None:
     # token is the handler's bare 404, not the middleware's 401.
     app = stack["app"]
     async with app.router.lifespan_context(app), _client(app) as c:
-        resp = await c.get("/transfers/download/not-a-real-token")
+        resp = await c.get(f"/transfers/download/{_UNKNOWN_TOKEN}")
         metrics = await c.get("/metrics")
     assert resp.status_code == 404
-    assert "not-a-real-token" not in metrics.text
+    assert _UNKNOWN_TOKEN not in metrics.text
 
 
 async def test_other_transfer_paths_still_need_the_bearer(stack) -> None:
@@ -278,6 +282,23 @@ async def test_other_transfer_paths_still_need_the_bearer(stack) -> None:
         for path in ("/transfers/download", "/transfers/downloads/x", "/transfers/other/x"):
             resp = await c.get(path)
             assert resp.status_code == 401, path
+
+
+async def test_the_bearer_exemption_is_only_the_token_path(stack) -> None:
+    # Anything that is not exactly `/transfers/<verb>/<43-char token>` is no
+    # link: a sub path or a malformed token must not skip the bearer.
+    app = stack["app"]
+    async with app.router.lifespan_context(app), _client(app) as c:
+        for path in (
+            "/transfers/download/a/b",
+            f"/transfers/download/{_UNKNOWN_TOKEN}/x",
+            "/transfers/download/short",
+            "/transfers/upload/a/b",
+            "/transfers/upload/short",
+        ):
+            for method in ("GET", "PUT"):
+                resp = await c.request(method, path)
+                assert resp.status_code == 401, (method, path)
 
 
 async def test_download_link_streams_through_middleware(stack, tmp_path) -> None:
@@ -294,7 +315,7 @@ async def test_download_link_streams_through_middleware(stack, tmp_path) -> None
     async with app.router.lifespan_context(app), _client(app) as c:
         resp = await c.get(transfers.DOWNLOAD_PATH_PREFIX + link.token)
         again = await c.get(transfers.DOWNLOAD_PATH_PREFIX + link.token)
-        post = await c.post(transfers.DOWNLOAD_PATH_PREFIX + "x", content=b"x")
+        post = await c.post(transfers.DOWNLOAD_PATH_PREFIX + _UNKNOWN_TOKEN, content=b"x")
     assert resp.status_code == 200, resp.text
     assert resp.content == payload
     assert resp.headers["content-disposition"] == 'attachment; filename="f.bin"'

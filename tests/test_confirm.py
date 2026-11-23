@@ -454,3 +454,34 @@ def test_sensitive_keys_matches_bool_rule() -> None:
     assert _sensitive_keys(None) == []
     assert _sensitive_config({"memory": 1}) is False
     assert _sensitive_config({"args": "-x"}) is True
+
+
+@pytest.mark.parametrize("tool", ["proxmox_upload_link", "proxmox_download_link"])
+async def test_transfer_links_ask_on_mint_but_not_when_polling_a_link(tool: str) -> None:
+    # An operator can add the mint tools to server.confirm_tools: following a
+    # link by link_id only reads its state, so it must not raise a dialog.
+    ctx = Ctx(FORM)
+    await confirm_destructive(ctx, tool, {"link_id": "abc123"}, tools=[tool])
+    assert ctx.messages == []
+    await confirm_destructive(
+        ctx, tool, {"node": "pve1", "vmid": 201, "dest": "/root/f", "source": "/root/f"}, tools=[tool],
+    )
+    assert len(ctx.messages) == 1
+
+
+async def test_download_link_dialog_names_the_file_and_the_guest() -> None:
+    ctx = Ctx(FORM)
+    await confirm_destructive(
+        ctx, "proxmox_download_link",
+        {"node": "pve1", "vmid": 201, "source": "/root/shot.png"}, tools=["proxmox_download_link"],
+    )
+    assert "/root/shot.png" in ctx.messages[0] and "VM 201 on pve1" in ctx.messages[0]
+
+
+async def test_upload_link_dialog_names_the_destination_and_the_guest() -> None:
+    ctx = Ctx(FORM)
+    await confirm_destructive(
+        ctx, "proxmox_upload_link",
+        {"node": "pve1", "vmid": 201, "dest": "/etc/cron.d/x"}, tools=["proxmox_upload_link"],
+    )
+    assert "/etc/cron.d/x" in ctx.messages[0] and "VM 201 on pve1" in ctx.messages[0]
