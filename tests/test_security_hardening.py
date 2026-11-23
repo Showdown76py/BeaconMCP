@@ -115,6 +115,7 @@ def test_legitimate_paths_are_not_rejected() -> None:
         ("proxmox_write_file", {"node": "pve1", "vmid": 100, "path": "/x", "content": "y"}),
         ("proxmox_upload_file", {"source": "a", "dest": "/b"}),
         ("proxmox_upload_link", {"node": "pve1", "vmid": 100, "dest": "/b"}),
+        ("proxmox_download_link", {"node": "pve1", "vmid": 100, "source": "/b"}),
         ("proxmox_fetch_url", {"node": "pve1", "vmid": 100, "url": "https://x", "dest": "/b"}),
         ("proxmox_run", {"node": "pve1", "vmid": 100, "command": "id"}),
         ("ssh_run", {"host": "pve1", "command": "id"}),
@@ -150,6 +151,7 @@ def test_dangerous_tools_require_confirmation(name: str, args: dict) -> None:
         ("ssh_run", {"exec_id": "abc123"}),
         # Reading an upload link's state mints and writes nothing.
         ("proxmox_upload_link", {"link_id": "abc123"}),
+        ("proxmox_download_link", {"link_id": "abc123"}),
         # dry_run tools only describe what they would do.
         ("proxmox_snapshot_delete", {"node": "pve1", "vmid": 1, "snapname": "s", "dry_run": True}),
     ],

@@ -599,6 +599,7 @@ _METRICS_PREFIXES = (
     "/app/",
     "/static/",
     "/transfers/upload/",
+    "/transfers/download/",
     "/oauth/logo/",
     "/mcp/c/",
     "/.well-known/oauth-protected-resource/mcp/c/",
@@ -1856,10 +1857,13 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
         ):
             return await call_next(request)
 
-        # One-shot upload links: the token in the path is the credential,
-        # minted by an authenticated proxmox_upload_link call. The handler
-        # rejects unknown, expired and already used tokens.
-        if path.startswith(transfers.UPLOAD_PATH_PREFIX):
+        # One-shot upload and download links: the token in the path is the
+        # credential, minted by an authenticated proxmox_upload_link or
+        # proxmox_download_link call. The handler rejects unknown, expired and
+        # already used tokens.
+        # Only a well-formed token path: anything else under /transfers/ (a
+        # sub path, a future route) keeps needing the bearer.
+        if transfers.is_link_path(path):
             return await call_next(request)
 
         # sso round trip for /oauth/authorize: no bearer yet. guarded by the
@@ -2187,6 +2191,11 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
                 transfers.make_upload_endpoint(tuple(config.server.trusted_proxies)),
                 methods=["PUT", "POST"],
             ),
+            Route(
+                transfers.DOWNLOAD_PATH_PREFIX + "{token}",
+                transfers.make_download_endpoint(tuple(config.server.trusted_proxies)),
+                methods=transfers.DOWNLOAD_METHODS,
+            ),
             *logo_resolver.routes(),
             *dcr_routes,
             *dashboard_routes,
@@ -2242,6 +2251,9 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
     # the app runs, which would hide the real peer from all three helpers --
     # their trusted-proxy branch could never open -- so nothing is left for
     # uvicorn to interpret on our behalf.
+    # The access log prints request paths, and a HEAD or a 405 on a transfer
+    # link leaves its token valid: keep tokens out of the journal.
+    transfers.install_access_log_redaction()
     uvicorn.run(
         app,
         host=host,

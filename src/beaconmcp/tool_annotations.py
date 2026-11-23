@@ -98,6 +98,8 @@ TOOL_ANNOTATIONS: dict[str, ToolAnnotations] = {
     "proxmox_download_file": _write(destructive=True, idempotent=True),
     # Only mints a link, but its holder can overwrite a file in the guest.
     "proxmox_upload_link": _write(destructive=True, idempotent=False),
+    # Mints a URL, and stages a copy of a guest file for whoever holds it.
+    "proxmox_download_link": _write(destructive=True, idempotent=False),
     "proxmox_fetch_url": _write(destructive=True, idempotent=True, open_world=True),
     "proxmox_delete_transfer": _write(destructive=True, idempotent=True),
     # Hardware

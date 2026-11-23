@@ -1,4 +1,4 @@
-"""One-shot upload links: push a file into a VM/CT over plain HTTP.
+"""One-shot transfer links: upload into, or download out of, a VM/CT over plain HTTP.
 
 MCP tool arguments are JSON, so the only way to hand a binary file to a
 tool is to base64 it into the call, which caps out long before a real file
@@ -13,23 +13,31 @@ middleware (like the slug-scoped DCR endpoints). It is 256 bits of
 randomness, single-use (consumed as soon as a request presents it), bound
 to one target chosen when the link was minted, and expires after a few
 minutes. Links live in memory only: a restart voids every pending link.
+
+``proxmox_download_link`` is the mirror image, see the "One-shot download
+links" section below.
 """
 
 from __future__ import annotations
 
 import ipaddress
+import logging
+import os
+import re
 import secrets
 import threading
 import time
+import unicodedata
 import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
+import anyio
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from . import audit
 from .ratelimit import client_ip
@@ -312,3 +320,473 @@ def _status_code(result: dict[str, Any]) -> int:
     if "guest_status" in result:
         return 409  # target stopped since the link was minted
     return 500
+
+
+# ---------------------------------------------------------------------------
+# One-shot download links (proxmox_download_link)
+# ---------------------------------------------------------------------------
+#
+# The mirror image of the upload link: the file is first pulled out of the
+# guest into ``server.transfers_dir`` (same code path as
+# ``proxmox_download_file``), then handed to whoever holds a single-use
+# ``GET /transfers/download/<token>`` URL. The staged copy is deleted once
+# it was sent, when the link expires, or on the next start.
+
+#: Path prefix of the download route. The auth middleware lets it through.
+DOWNLOAD_PATH_PREFIX = "/transfers/download/"
+
+#: Exactly the paths the auth middleware may let through without a bearer:
+#: one verb, one token of the shape ``secrets.token_urlsafe(32)`` makes. A
+#: looser prefix test would silently expose any future route under it.
+_LINK_PATH_RE = re.compile(r"/transfers/(upload|download)/[A-Za-z0-9_-]{43}")
+
+
+def is_link_path(path: str) -> bool:
+    """True for ``/transfers/(upload|download)/<43-char token>``, nothing wider."""
+    return _LINK_PATH_RE.fullmatch(path) is not None
+
+#: Staged files live in this sub folder of ``server.transfers_dir``. The
+#: transit tools only take plain basenames, so they cannot name anything in it.
+DOWNLOAD_SUBDIR = ".dlinks"
+
+#: Staged files are named ``dlink-<link_id>``; nothing else is ever swept.
+_STAGED_RE = re.compile(r"^dlink-[0-9a-f]{12}(\.part)?$")
+
+#: A leftover is only an orphan once it is older than any live link can be
+#: (a link lives at most MAX_TTL, then a transfer may run as long again),
+#: plus a margin. Safe whichever process runs the sweep.
+ORPHAN_AGE = 2 * MAX_TTL + 2 * 3600
+
+_SEND_CHUNK = 256 * 1024
+_MAX_FILENAME = 200
+
+
+@dataclass
+class DownloadLink:
+    link_id: str
+    token: str = field(repr=False)
+    node: str
+    vmid: int
+    source: str
+    filename: str
+    staged_path: Path
+    size: int
+    sha256: str | None
+    expires_at: float
+    created_at: float = field(default_factory=time.time)
+    status: str = "pending"  # pending -> downloading -> success | error | expired
+    result: dict[str, Any] | None = None
+    finished_at: float | None = None
+    _timer: threading.Timer | None = field(default=None, repr=False)
+
+    def public(self) -> dict[str, Any]:
+        """Status view returned to tools. Never includes the token."""
+        out: dict[str, Any] = {
+            "link_id": self.link_id,
+            "status": self.status,
+            "node": self.node,
+            "vmid": self.vmid,
+            "source": self.source,
+            "filename": self.filename,
+            "size": self.size,
+            "sha256": self.sha256,
+            "expires_at": int(self.expires_at),
+        }
+        if self.result is not None:
+            out["result"] = self.result
+        return out
+
+
+_ACCESS_PATH_RE = re.compile(r"/transfers/(upload|download)/[^\s?\"]+")
+
+
+class RedactLinkTokens(logging.Filter):
+    """Rewrite ``/transfers/<verb>/<token>`` to ``.../<redacted>`` in log records.
+
+    uvicorn's access log prints the request path. A HEAD or a 405 leaves the
+    token valid, so it must not reach journald.
+    """
+
+    @staticmethod
+    def _clean(value: Any) -> Any:
+        if isinstance(value, str):
+            return _ACCESS_PATH_RE.sub(r"/transfers/\1/<redacted>", value)
+        return value
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = self._clean(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(self._clean(a) for a in record.args)
+        elif isinstance(record.args, dict):
+            record.args = {k: self._clean(v) for k, v in record.args.items()}
+        return True
+
+
+def install_access_log_redaction() -> None:
+    """Put :class:`RedactLinkTokens` on uvicorn's access logger (idempotent)."""
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, RedactLinkTokens) for f in access.filters):
+        access.addFilter(RedactLinkTokens())
+
+
+def new_link_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+def download_staged_name(link_id: str) -> str:
+    return f"dlink-{link_id}"
+
+
+def sweep_orphan_downloads(transfers_dir: Path, now: float | None = None) -> int:
+    """Delete staged download files that no live link can still own.
+
+    Links live in memory, so after a restart no token reaches the files a
+    previous process staged. The age test (``ORPHAN_AGE``) keeps this safe
+    when another process, e.g. ``beaconmcp check-startup`` next to the running
+    server, sweeps the same directory. Only exact ``dlink-<12 hex>[.part]``
+    names inside ``DOWNLOAD_SUBDIR`` are touched.
+    """
+    now = time.time() if now is None else now
+    removed = 0
+    try:
+        entries = list((Path(transfers_dir).expanduser() / DOWNLOAD_SUBDIR).iterdir())
+    except OSError:
+        return 0
+    for entry in entries:
+        if not _STAGED_RE.match(entry.name):
+            continue
+        try:
+            if entry.is_file() and now - entry.stat().st_mtime > ORPHAN_AGE:
+                entry.unlink()
+                removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+_HIDDEN_CATEGORIES = frozenset({"Cf", "Zl", "Zp"})
+
+
+def safe_filename(raw: Any) -> str:
+    """A display name that cannot break out of a header or point at a path.
+
+    Directory parts are dropped, control and invisible format characters
+    removed, quotes and backslashes replaced. Never empty, never only dots.
+    """
+    name = re.split(r"[\\/]", str(raw))[-1]
+    name = "".join(
+        "_" if c in '"\\' else c
+        for c in name
+        if ord(c) >= 32 and ord(c) != 127
+        # Format characters (bidi overrides like U+202E, zero-width) and line
+        # or paragraph separators can make `invoice\u202egnp.exe` read as a .png.
+        and unicodedata.category(c) not in _HIDDEN_CATEGORIES
+    )
+    name = name.strip().strip(".").strip()[:_MAX_FILENAME]
+    return name or "download"
+
+
+def content_disposition(filename: str) -> str:
+    """``attachment`` header: an ASCII fallback, plus RFC 5987 for the rest."""
+    ascii_name = re.sub(r"[^A-Za-z0-9._ -]", "_", filename)
+    header = f'attachment; filename="{ascii_name}"'
+    if ascii_name != filename:
+        header += f"; filename*=UTF-8''{quote(filename, safe='')}"
+    return header
+
+
+class DownloadLinkStore:
+    """In-memory, thread-safe registry of download links and their staged files."""
+
+    def __init__(self, clock: Callable[[], float] = time.time) -> None:
+        # The clock is injectable so tests move time without patching the
+        # global ``time`` module.
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._by_token: dict[str, DownloadLink] = {}
+        self._by_id: dict[str, DownloadLink] = {}
+
+    # -- internals (lock held) ------------------------------------------------
+
+    def _prune(self, now: float) -> None:
+        for link_id, link in list(self._by_id.items()):
+            if link.status == "pending" and now >= link.expires_at:
+                link.status = "expired"
+                link.finished_at = now
+                self._by_token.pop(link.token, None)
+                self._drop_file(link)
+                # An unused link never reaches the route: say so in the audit.
+                audit.emit(
+                    "transfer.download",
+                    link_id=link.link_id, node=link.node, vmid=link.vmid,
+                    source=link.source, status="expired", bytes=0, ip=None,
+                )
+            elif link.status == "downloading" and now >= link.expires_at + MAX_TTL:
+                # A client that stopped reading but keeps the connection open
+                # must not hold the file and the byte budget for ever. (On
+                # Unix the transfer already running keeps its open inode.)
+                link.status = "error"
+                link.result = _error("Download did not finish in time.")
+                link.result["link_id"] = link.link_id
+                link.finished_at = now
+                self._drop_file(link)
+            if (
+                link.finished_at is not None
+                and now - link.finished_at > _RESULT_TTL
+            ):
+                del self._by_id[link_id]
+                self._by_token.pop(link.token, None)
+
+    @staticmethod
+    def _drop_file(link: DownloadLink) -> None:
+        if link._timer is not None:
+            link._timer.cancel()
+            link._timer = None
+        try:
+            link.staged_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _held(self) -> list[DownloadLink]:
+        return [
+            link for link in self._by_id.values()
+            if link.status in ("pending", "downloading")
+        ]
+
+    def _check_count(self) -> None:
+        pending = sum(1 for link in self._held() if link.status == "pending")
+        if pending >= MAX_PENDING_LINKS:
+            raise RuntimeError(
+                f"Too many pending download links ({pending}). Use or let "
+                "some expire before minting more."
+            )
+
+    # -- public API -----------------------------------------------------------
+
+    def pending_bytes(self) -> int:
+        """Bytes currently staged for links that are pending or being sent."""
+        with self._lock:
+            self._prune(self._clock())
+            return sum(link.size for link in self._held())
+
+    def check_capacity(self) -> None:
+        """Raise ``RuntimeError`` when no more links may be minted. Cheap:
+        called before the file is moved, ``issue`` checks again after."""
+        with self._lock:
+            self._prune(self._clock())
+            self._check_count()
+
+    def issue(
+        self,
+        *,
+        node: str,
+        vmid: int,
+        source: str,
+        filename: str,
+        staged_path: Path,
+        size: int,
+        sha256: str | None,
+        max_total_bytes: int,
+        link_id: str | None = None,
+        ttl: int = DEFAULT_TTL,
+    ) -> DownloadLink:
+        """Register a link for a file already staged at ``staged_path``.
+
+        On ``RuntimeError`` the caller still owns (and must delete) the file.
+        """
+        ttl = max(MIN_TTL, min(int(ttl), MAX_TTL))
+        now = self._clock()
+        with self._lock:
+            self._prune(now)
+            self._check_count()
+            held = sum(link.size for link in self._held())
+            if held + size > max_total_bytes:
+                raise RuntimeError(
+                    f"Pending download links already hold {held} staged bytes; "
+                    f"{size} more would exceed the {max_total_bytes} byte cap "
+                    "(server.transfers_max_mb counts every staged file). Use "
+                    "or let some expire before minting more."
+                )
+            link = DownloadLink(
+                link_id=link_id or new_link_id(),
+                token=secrets.token_urlsafe(32),
+                node=node,
+                vmid=vmid,
+                source=source,
+                filename=filename,
+                staged_path=staged_path,
+                size=size,
+                sha256=sha256,
+                expires_at=now + ttl,
+                created_at=now,
+            )
+            # No request may ever come: the timer drops the staged file at
+            # expiry all the same.
+            timer = threading.Timer(ttl + 1, self.sweep)
+            timer.daemon = True
+            timer.start()
+            link._timer = timer
+            self._by_token[link.token] = link
+            self._by_id[link.link_id] = link
+            return link
+
+    def peek(self, token: str) -> DownloadLink | None:
+        """The pending link behind ``token`` without spending it (HEAD)."""
+        with self._lock:
+            self._prune(self._clock())
+            link = self._by_token.get(token)
+            if link is None or link.status != "pending":
+                return None
+            return link
+
+    def claim(self, token: str) -> DownloadLink | None:
+        """Spend ``token``: return its link and mark it in use, at most once."""
+        with self._lock:
+            self._prune(self._clock())
+            link = self._by_token.pop(token, None)
+            if link is None or link.status != "pending":
+                return None
+            link.status = "downloading"
+            if link._timer is not None:
+                link._timer.cancel()
+                link._timer = None
+            return link
+
+    def finish(self, link: DownloadLink, result: dict[str, Any]) -> None:
+        with self._lock:
+            link.status = "success" if result.get("status") == "success" else "error"
+            link.result = result
+            link.finished_at = self._clock()
+            self._drop_file(link)
+
+    def sweep(self) -> None:
+        """Expire links and delete their files (also run by the link's timer)."""
+        with self._lock:
+            self._prune(self._clock())
+
+    def get(self, link_id: str) -> DownloadLink | None:
+        with self._lock:
+            self._prune(self._clock())
+            return self._by_id.get(link_id)
+
+
+#: Every verb is routed to the endpoint so that a wrong one gets a 405 there,
+#: not the 404 of the catch-all mount behind it.
+DOWNLOAD_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+
+_download_store = DownloadLinkStore()
+
+
+def get_download_store() -> DownloadLinkStore:
+    return _download_store
+
+
+def _download_headers(link: DownloadLink, length: int) -> dict[str, str]:
+    return {
+        "content-type": "application/octet-stream",
+        "content-disposition": content_disposition(link.filename),
+        "content-length": str(length),
+        "x-content-type-options": "nosniff",
+        "cache-control": "no-store",
+    }
+
+
+class _SettlingResponse(StreamingResponse):
+    """Streams a file and settles its link once the response is over.
+
+    ``settle`` runs whether the body went out, the client hung up or the
+    request was cancelled, so the link never stays "downloading" and the
+    staged file never outlives the transfer.
+    """
+
+    def __init__(self, *args: Any, settle: Callable[[], None], **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._settle = settle
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._settle()
+
+
+def make_download_endpoint(trusted_proxies: tuple[str, ...] = ()):
+    """Build the ``GET|HEAD /transfers/download/{token}`` Starlette endpoint."""
+
+    def not_found() -> Response:
+        # One answer for unknown, spent and expired tokens: no detail.
+        return Response(
+            "Not found\n", status_code=404, media_type="text/plain",
+            headers={"cache-control": "no-store", "x-content-type-options": "nosniff"},
+        )
+
+    async def download_endpoint(request: Request) -> Response:
+        if request.method not in ("GET", "HEAD"):
+            # Never touches the token: only a GET (or HEAD) concerns it.
+            return Response(
+                status_code=405,
+                headers={"allow": "GET, HEAD", "cache-control": "no-store"},
+            )
+        token = request.path_params.get("token", "")
+        if request.method == "HEAD":
+            # Headers only; the token stays valid.
+            peeked = _download_store.peek(token) if token else None
+            if peeked is None:
+                return not_found()
+            return Response(status_code=200, headers=_download_headers(peeked, peeked.size))
+
+        link = _download_store.claim(token) if token else None
+        if link is None:
+            return not_found()
+
+        ip = client_ip(request, trusted_proxies)
+        state = {"sent": 0, "complete": False}
+        fh = None
+        try:
+            fh = open(link.staged_path, "rb")  # noqa: SIM115 -- closed by settle()
+            length = os.fstat(fh.fileno()).st_size
+        except OSError:
+            length = -1
+
+        def settle() -> None:
+            if fh is not None:
+                fh.close()
+            if length >= 0 and state["complete"] and state["sent"] == length:
+                result: dict[str, Any] = {"status": "success"}
+            elif length < 0:
+                result = _error("Staged file is gone.")
+            else:
+                result = _error("Download interrupted before the whole file was sent.")
+            result["bytes"] = state["sent"]
+            result["link_id"] = link.link_id
+            _download_store.finish(link, result)
+            audit.emit(
+                "transfer.download",
+                link_id=link.link_id,
+                node=link.node,
+                vmid=link.vmid,
+                source=link.source,
+                status=result.get("status"),
+                bytes=result.get("bytes"),
+                ip=ip,
+            )
+
+        if fh is None:
+            settle()
+            return not_found()
+
+        async def body():
+            while True:
+                chunk = await anyio.to_thread.run_sync(fh.read, _SEND_CHUNK)
+                if not chunk:
+                    break
+                state["sent"] += len(chunk)
+                yield chunk
+            state["complete"] = True
+
+        return _SettlingResponse(
+            body(), status_code=200, headers=_download_headers(link, length),
+            settle=settle,
+        )
+
+    return download_endpoint

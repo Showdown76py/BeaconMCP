@@ -95,7 +95,8 @@ def test_known_classifications() -> None:
     # Arbitrary execution and overwrites are destructive. upload_link only mints
     # a link, but whoever holds it can overwrite a file in the guest.
     for name in ("ssh_run", "proxmox_run", "proxmox_write_file", "proxmox_upload_file",
-                 "proxmox_upload_link", "proxmox_vm_create", "vm_bulk_action",
+                 "proxmox_upload_link", "proxmox_download_link", "proxmox_vm_create",
+                 "vm_bulk_action",
                  "proxmox_vm_stop"):
         assert T[name].read_only_hint is False and T[name].destructive_hint is True, name
     # Modes: reads without `updates` but writes with it, so not read-only.

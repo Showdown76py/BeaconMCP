@@ -226,15 +226,19 @@ async def test_unknown_host_is_rejected_with_421(stack) -> None:
     assert resp.status_code == 421
 
 
+# A well-formed token (43 url-safe characters) that no link owns.
+_UNKNOWN_TOKEN = "Z" * 43
+
+
 async def test_upload_link_route_skips_bearer_auth(stack) -> None:
     # The token in the path is the credential: no bearer, and an unknown
     # token is the handler's 404, not the middleware's 401.
     app = stack["app"]
     async with app.router.lifespan_context(app), _client(app) as c:
-        resp = await c.put("/transfers/upload/not-a-real-token", content=b"x")
+        resp = await c.put(f"/transfers/upload/{_UNKNOWN_TOKEN}", content=b"x")
         metrics = await c.get("/metrics")
     assert resp.status_code == 404
-    assert "not-a-real-token" not in metrics.text
+    assert _UNKNOWN_TOKEN not in metrics.text
 
 
 async def test_upload_link_body_streams_through_middleware(stack, tmp_path) -> None:
@@ -259,6 +263,65 @@ async def test_upload_link_body_streams_through_middleware(stack, tmp_path) -> N
         transfers.register_pusher(None)
     assert resp.status_code == 200, resp.text
     assert received["/root/f"] == payload
+
+
+async def test_download_link_route_skips_bearer_auth(stack) -> None:
+    # Same capability model as the upload route: no bearer, and an unknown
+    # token is the handler's bare 404, not the middleware's 401.
+    app = stack["app"]
+    async with app.router.lifespan_context(app), _client(app) as c:
+        resp = await c.get(f"/transfers/download/{_UNKNOWN_TOKEN}")
+        metrics = await c.get("/metrics")
+    assert resp.status_code == 404
+    assert _UNKNOWN_TOKEN not in metrics.text
+
+
+async def test_other_transfer_paths_still_need_the_bearer(stack) -> None:
+    app = stack["app"]
+    async with app.router.lifespan_context(app), _client(app) as c:
+        for path in ("/transfers/download", "/transfers/downloads/x", "/transfers/other/x"):
+            resp = await c.get(path)
+            assert resp.status_code == 401, path
+
+
+async def test_the_bearer_exemption_is_only_the_token_path(stack) -> None:
+    # Anything that is not exactly `/transfers/<verb>/<43-char token>` is no
+    # link: a sub path or a malformed token must not skip the bearer.
+    app = stack["app"]
+    async with app.router.lifespan_context(app), _client(app) as c:
+        for path in (
+            "/transfers/download/a/b",
+            f"/transfers/download/{_UNKNOWN_TOKEN}/x",
+            "/transfers/download/short",
+            "/transfers/upload/a/b",
+            "/transfers/upload/short",
+        ):
+            for method in ("GET", "PUT"):
+                resp = await c.request(method, path)
+                assert resp.status_code == 401, (method, path)
+
+
+async def test_download_link_streams_through_middleware(stack, tmp_path) -> None:
+    from beaconmcp import transfers
+
+    staged = tmp_path / "dlink-0123456789ab"
+    payload = b"\x00\x01binary\xff" * 5000
+    staged.write_bytes(payload)
+    link = transfers.get_download_store().issue(
+        node="pve1", vmid=100, source="/root/f.bin", filename="f.bin",
+        staged_path=staged, size=len(payload), sha256=None, max_total_bytes=1 << 20,
+    )
+    app = stack["app"]
+    async with app.router.lifespan_context(app), _client(app) as c:
+        resp = await c.get(transfers.DOWNLOAD_PATH_PREFIX + link.token)
+        again = await c.get(transfers.DOWNLOAD_PATH_PREFIX + link.token)
+        post = await c.post(transfers.DOWNLOAD_PATH_PREFIX + _UNKNOWN_TOKEN, content=b"x")
+    assert resp.status_code == 200, resp.text
+    assert resp.content == payload
+    assert resp.headers["content-disposition"] == 'attachment; filename="f.bin"'
+    assert again.status_code == 404
+    assert post.status_code == 405
+    assert not staged.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -346,3 +409,17 @@ async def test_forwarded_proto_trust_when_proxies_declared(
             public = await c.get(metadata, headers=headers)
     assert local.json()["issuer"] == f"https://{HOST}"
     assert public.json()["issuer"] == f"http://{HOST}"
+
+
+def test_serving_hides_link_tokens_from_the_access_log(stack, caplog: pytest.LogCaptureFixture) -> None:
+    # `_run_http` is what installs the redaction on uvicorn's access logger.
+    import logging
+
+    token = "B" * 43
+    with caplog.at_level(logging.INFO, logger="uvicorn.access"):
+        logging.getLogger("uvicorn.access").info(
+            '%s - "%s %s HTTP/%s" %d', "203.0.113.9:4444", "HEAD",
+            f"/transfers/download/{token}", "1.1", 200,
+        )
+    assert token not in caplog.text
+    assert "/transfers/download/<redacted>" in caplog.text
