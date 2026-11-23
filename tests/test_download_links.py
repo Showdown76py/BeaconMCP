@@ -77,6 +77,9 @@ class FakeSSH:
         self.symlinks: dict[str, str] = {}  # guest path -> target path
         self.kinds: dict[str, str] = {}  # guest path -> `stat %F` (default: regular file)
         self.lie_size: dict[str, int] = {}  # what a pre-flight stat claims
+        self.staging_dir: Path | None = None
+        self.peak_staged = 0  # most bytes ever on disk in the staging folder
+        self.sftp_delay = 0.0
 
     def resolve(self, host: str) -> str:
         if host != str(VM):
@@ -87,6 +90,11 @@ class FakeSSH:
         self.sftp_gets += 1
         data = self.vm_files[remote_path] if host == str(VM) else self.node_files[remote_path]
         Path(local_path).write_bytes(data)
+        if self.staging_dir is not None:
+            on_disk = sum(f.stat().st_size for f in self.staging_dir.rglob("*") if f.is_file())
+            self.peak_staged = max(self.peak_staged, on_disk)
+        if self.sftp_delay:
+            await asyncio.sleep(self.sftp_delay)  # let a parallel mint run
 
     async def sftp_remove(self, host: str, remote_path: str) -> None:
         self.node_files.pop(remote_path, None)
@@ -149,6 +157,7 @@ def make_env(tmp_path: Path):
         system.register_system_tools(mcp, proxmox, ssh)
         app = _app()
         http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://beacon.example")
+        ssh.staging_dir = tmp_path / "staging"
         env = SimpleNamespace(
             tools=mcp.tools, ssh=ssh, http=http, app=app,
             staging=tmp_path / "staging", proxmox=proxmox,
@@ -573,6 +582,27 @@ async def test_staged_files_live_out_of_reach_of_the_transit_tools(env) -> None:
     )
     assert clobber["status"] == "error"
     assert (await env.http.get(res["url"])).content == PAYLOAD
+
+
+# --- parallel mints share one byte budget ----------------------------------------
+
+
+async def test_parallel_mints_never_stage_more_than_the_cap(env) -> None:
+    env.ssh.guest_files[SRC] = b"y" * 600_000  # cap is 1 MiB: only one fits
+    env.ssh.sftp_delay = 0.05
+    results = await asyncio.gather(*[_mint(env) for _ in range(5)])
+    assert [r["status"] for r in results].count("success") == 1
+    assert env.ssh.peak_staged <= 1024 * 1024
+    assert len(_staged(env)) == 1
+
+
+async def test_parallel_mints_within_the_budget_all_succeed(make_env) -> None:
+    env = make_env(max_mb=4)
+    env.ssh.sftp_delay = 0.02
+    results = await asyncio.gather(*[_mint(env) for _ in range(5)])
+    assert all(r["status"] == "success" for r in results)
+    assert len({r["link_id"] for r in results}) == 5
+    assert len(_staged(env)) == 5
 
 
 # --- a cancelled mint leaves nothing behind -------------------------------------

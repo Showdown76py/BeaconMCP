@@ -571,6 +571,8 @@ def register_system_tools(mcp: MCPServer, client: ProxmoxClient, ssh_client: Any
             client, ssh_client, node, vmid, local_path, dest, verify_checksum,
         )
 
+    mint_lock = asyncio.Lock()
+
     # The upload-link HTTP route lives outside MCP; hand it the push path.
     transfers.register_pusher(_push_for_link if ssh_client else None)
 
@@ -1167,41 +1169,45 @@ def register_system_tools(mcp: MCPServer, client: ProxmoxClient, ssh_client: Any
         if err is not None:
             return err
 
-        # Pending links hold their staged files: refuse before moving data
-        # when there is no slot or no byte budget left.
-        max_total = client._config.server.transfers_max_mb * 1024 * 1024
-        try:
-            store.check_capacity()
-        except RuntimeError as e:
-            return {"status": "error", "error": str(e)}
-        new_id = transfers.new_link_id()
-        staged = _download_dir(client) / transfers.download_staged_name(new_id)
-        issued = False
-        try:
-            pulled = await _pull_to_staging(
-                node, vmid, source, staged, verify_checksum,
-                budget=max_total - store.pending_bytes(),
-            )
-            if pulled.get("status") != "success":
-                return pulled
-            filename = transfers.safe_filename(source)
+        # One mint at a time: the byte budget is only known once the previous
+        # file is staged and issued. Without this, parallel mints would each
+        # see the same free budget and fill the disk before any was refused.
+        async with mint_lock:
+            # Pending links hold their staged files: refuse before moving data
+            # when there is no slot or no byte budget left.
+            max_total = client._config.server.transfers_max_mb * 1024 * 1024
             try:
-                link = store.issue(
-                    node=node, vmid=vmid, source=source, filename=filename,
-                    staged_path=staged, size=int(pulled["bytes"]),
-                    sha256=pulled.get("sha256"), max_total_bytes=max_total,
-                    link_id=new_id, ttl=expires_in,
-                )
+                store.check_capacity()
             except RuntimeError as e:
-                # Lost a race with another mint: the file is not ours to keep.
                 return {"status": "error", "error": str(e)}
-            issued = True
-        finally:
-            if not issued:
-                # Refused, failed or cancelled (a client that gave up on a slow
-                # pull): no link owns these files, so nothing may outlive the call.
-                staged.unlink(missing_ok=True)
-                staged.with_name(staged.name + ".part").unlink(missing_ok=True)
+            new_id = transfers.new_link_id()
+            staged = _download_dir(client) / transfers.download_staged_name(new_id)
+            issued = False
+            try:
+                pulled = await _pull_to_staging(
+                    node, vmid, source, staged, verify_checksum,
+                    budget=max_total - store.pending_bytes(),
+                )
+                if pulled.get("status") != "success":
+                    return pulled
+                filename = transfers.safe_filename(source)
+                try:
+                    link = store.issue(
+                        node=node, vmid=vmid, source=source, filename=filename,
+                        staged_path=staged, size=int(pulled["bytes"]),
+                        sha256=pulled.get("sha256"), max_total_bytes=max_total,
+                        link_id=new_id, ttl=expires_in,
+                    )
+                except RuntimeError as e:
+                    # Refused at the last check: the file is not ours to keep.
+                    return {"status": "error", "error": str(e)}
+                issued = True
+            finally:
+                if not issued:
+                    # Refused, failed or cancelled (a client that gave up on a slow
+                    # pull): no link owns these files, so nothing may outlive the call.
+                    staged.unlink(missing_ok=True)
+                    staged.with_name(staged.name + ".part").unlink(missing_ok=True)
 
         path = f"{transfers.DOWNLOAD_PATH_PREFIX}{link.token}"
         base = transfers.public_base_url(client._config.features.dashboard.public_url)
