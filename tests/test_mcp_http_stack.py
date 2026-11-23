@@ -261,6 +261,48 @@ async def test_upload_link_body_streams_through_middleware(stack, tmp_path) -> N
     assert received["/root/f"] == payload
 
 
+async def test_download_link_route_skips_bearer_auth(stack) -> None:
+    # Same capability model as the upload route: no bearer, and an unknown
+    # token is the handler's bare 404, not the middleware's 401.
+    app = stack["app"]
+    async with app.router.lifespan_context(app), _client(app) as c:
+        resp = await c.get("/transfers/download/not-a-real-token")
+        metrics = await c.get("/metrics")
+    assert resp.status_code == 404
+    assert "not-a-real-token" not in metrics.text
+
+
+async def test_other_transfer_paths_still_need_the_bearer(stack) -> None:
+    app = stack["app"]
+    async with app.router.lifespan_context(app), _client(app) as c:
+        for path in ("/transfers/download", "/transfers/downloads/x", "/transfers/other/x"):
+            resp = await c.get(path)
+            assert resp.status_code == 401, path
+
+
+async def test_download_link_streams_through_middleware(stack, tmp_path) -> None:
+    from beaconmcp import transfers
+
+    staged = tmp_path / "dlink-0123456789ab"
+    payload = b"\x00\x01binary\xff" * 5000
+    staged.write_bytes(payload)
+    link = transfers.get_download_store().issue(
+        node="pve1", vmid=100, source="/root/f.bin", filename="f.bin",
+        staged_path=staged, size=len(payload), sha256=None, max_total_bytes=1 << 20,
+    )
+    app = stack["app"]
+    async with app.router.lifespan_context(app), _client(app) as c:
+        resp = await c.get(transfers.DOWNLOAD_PATH_PREFIX + link.token)
+        again = await c.get(transfers.DOWNLOAD_PATH_PREFIX + link.token)
+        post = await c.post(transfers.DOWNLOAD_PATH_PREFIX + "x", content=b"x")
+    assert resp.status_code == 200, resp.text
+    assert resp.content == payload
+    assert resp.headers["content-disposition"] == 'attachment; filename="f.bin"'
+    assert again.status_code == 404
+    assert post.status_code == 405
+    assert not staged.exists()
+
+
 # ---------------------------------------------------------------------------
 # Host allowlist on every route (not only the SDK's /mcp guard)
 # ---------------------------------------------------------------------------

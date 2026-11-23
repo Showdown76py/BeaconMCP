@@ -172,8 +172,10 @@ _NEEDS_CONFIRMATION: frozenset[str] = frozenset({
     "proxmox_upload_file",
     "proxmox_download_file",
     "proxmox_delete_transfer",
-    # Mints a URL that writes into a guest; fetches arbitrary URLs into one.
+    # Mints a URL that writes into a guest (or hands a guest file out);
+    # fetches arbitrary URLs into one.
     "proxmox_upload_link",
+    "proxmox_download_link",
     "proxmox_fetch_url",
     # --- destructive / irreversible -----------------------------------
     "vm_bulk_action",
@@ -306,7 +308,7 @@ def _chat_rule_requires_confirmation(name: str, args: Any) -> bool:
                 return False
         # With link_id the tool only reports a link's state and ignores
         # every other argument, so nothing is minted or written.
-        if name == "proxmox_upload_link" and args.get("link_id"):
+        if name in {"proxmox_upload_link", "proxmox_download_link"} and args.get("link_id"):
             return False
         if name in _DRY_RUN_AWARE and args.get("dry_run") is True:
             return False

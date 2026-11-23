@@ -55,6 +55,7 @@ def test_exact_routes_keep_their_label(path: str) -> None:
     ("/oauth/logo/si/github", "/oauth/logo"),
     ("/oauth/logo/cached/abc.png", "/oauth/logo"),
     ("/transfers/upload/TOKEN", "/transfers/upload"),
+    ("/transfers/download/TOKEN", "/transfers/download"),
     ("/app/api/conversations/42", "/app/api/conversations"),
     ("/app/login", "/app"),
     ("/static/x.css", "/static"),
@@ -82,3 +83,9 @@ def test_upload_prefix_matches_transfers_constant() -> None:
     from beaconmcp import transfers
 
     assert _metrics_path_label(transfers.UPLOAD_PATH_PREFIX + "tok") == "/transfers/upload"
+
+
+def test_download_prefix_matches_transfers_constant() -> None:
+    from beaconmcp import transfers
+
+    assert _metrics_path_label(transfers.DOWNLOAD_PATH_PREFIX + "tok") == "/transfers/download"
