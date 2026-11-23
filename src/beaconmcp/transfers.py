@@ -21,6 +21,7 @@ links" section below.
 from __future__ import annotations
 
 import ipaddress
+import logging
 import os
 import re
 import secrets
@@ -383,6 +384,38 @@ class DownloadLink:
         if self.result is not None:
             out["result"] = self.result
         return out
+
+
+_LINK_PATH_RE = re.compile(r"/transfers/(upload|download)/[^\s?\"]+")
+
+
+class RedactLinkTokens(logging.Filter):
+    """Rewrite ``/transfers/<verb>/<token>`` to ``.../<redacted>`` in log records.
+
+    uvicorn's access log prints the request path. A HEAD or a 405 leaves the
+    token valid, so it must not reach journald.
+    """
+
+    @staticmethod
+    def _clean(value: Any) -> Any:
+        if isinstance(value, str):
+            return _LINK_PATH_RE.sub(r"/transfers/\1/<redacted>", value)
+        return value
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = self._clean(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(self._clean(a) for a in record.args)
+        elif isinstance(record.args, dict):
+            record.args = {k: self._clean(v) for k, v in record.args.items()}
+        return True
+
+
+def install_access_log_redaction() -> None:
+    """Put :class:`RedactLinkTokens` on uvicorn's access logger (idempotent)."""
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, RedactLinkTokens) for f in access.filters):
+        access.addFilter(RedactLinkTokens())
 
 
 def new_link_id() -> str:

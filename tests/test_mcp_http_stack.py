@@ -388,3 +388,17 @@ async def test_forwarded_proto_trust_when_proxies_declared(
             public = await c.get(metadata, headers=headers)
     assert local.json()["issuer"] == f"https://{HOST}"
     assert public.json()["issuer"] == f"http://{HOST}"
+
+
+def test_serving_hides_link_tokens_from_the_access_log(stack, caplog: pytest.LogCaptureFixture) -> None:
+    # `_run_http` is what installs the redaction on uvicorn's access logger.
+    import logging
+
+    token = "B" * 43
+    with caplog.at_level(logging.INFO, logger="uvicorn.access"):
+        logging.getLogger("uvicorn.access").info(
+            '%s - "%s %s HTTP/%s" %d', "203.0.113.9:4444", "HEAD",
+            f"/transfers/download/{token}", "1.1", 200,
+        )
+    assert token not in caplog.text
+    assert "/transfers/download/<redacted>" in caplog.text

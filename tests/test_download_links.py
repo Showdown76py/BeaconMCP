@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import json
 import os
 import shlex
@@ -582,6 +583,44 @@ async def test_staged_files_live_out_of_reach_of_the_transit_tools(env) -> None:
     )
     assert clobber["status"] == "error"
     assert (await env.http.get(res["url"])).content == PAYLOAD
+
+
+# --- access log never carries a live token -----------------------------------------
+
+
+@pytest.fixture
+def access_log_filter():
+    transfers.install_access_log_redaction()
+    yield
+    lg = logging.getLogger("uvicorn.access")
+    for f in list(lg.filters):
+        if isinstance(f, transfers.RedactLinkTokens):
+            lg.removeFilter(f)
+
+
+def _access(logger: logging.Logger, method: str, path: str, status: int) -> None:
+    # The very call shape uvicorn uses for its access line.
+    logger.info('%s - "%s %s HTTP/%s" %d', "203.0.113.9:4444", method, path, "1.1", status)
+
+
+def test_access_log_hides_link_tokens(access_log_filter, caplog: pytest.LogCaptureFixture) -> None:
+    token = "A" * 43
+    with caplog.at_level(logging.INFO, logger="uvicorn.access"):
+        lg = logging.getLogger("uvicorn.access")
+        _access(lg, "HEAD", f"/transfers/download/{token}", 200)
+        _access(lg, "GET", f"/transfers/upload/{token}?x=1", 405)
+        _access(lg, "GET", "/health", 200)
+    text = caplog.text
+    assert token not in text
+    assert "HEAD /transfers/download/<redacted> HTTP/1.1" in text
+    assert "/transfers/upload/<redacted>" in text
+    assert "GET /health HTTP/1.1" in text  # other lines are untouched
+
+
+def test_access_log_filter_installs_once(access_log_filter) -> None:
+    transfers.install_access_log_redaction()
+    lg = logging.getLogger("uvicorn.access")
+    assert sum(isinstance(f, transfers.RedactLinkTokens) for f in lg.filters) == 1
 
 
 # --- parallel mints share one byte budget ----------------------------------------

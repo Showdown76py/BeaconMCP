@@ -2251,6 +2251,9 @@ def _run_http(mcp, host: str, port: int, *, serve: bool = True):
     # the app runs, which would hide the real peer from all three helpers --
     # their trusted-proxy branch could never open -- so nothing is left for
     # uvicorn to interpret on our behalf.
+    # The access log prints request paths, and a HEAD or a 405 on a transfer
+    # link leaves its token valid: keep tokens out of the journal.
+    transfers.install_access_log_redaction()
     uvicorn.run(
         app,
         host=host,
