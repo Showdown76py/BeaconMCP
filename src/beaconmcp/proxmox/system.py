@@ -701,59 +701,14 @@ def register_system_tools(mcp: MCPServer, client: ProxmoxClient, ssh_client: Any
             client, ssh_client, node, vmid, local_path, dest, verify_checksum,
         )
 
-    @mcp.tool()
-    async def proxmox_download_file(
-        node: str,
-        vmid: int,
-        source: str,
-        dest: str,
-        verify_checksum: bool = True,
-        overwrite: bool = False,
+    async def _pull_to_staging(
+        node: str, vmid: int, source: str, local_path: Path, verify_checksum: bool,
     ) -> dict[str, Any]:
-        """Download a large file from a VM/CT into the BeaconMCP staging dir.
+        """Pull ``source`` out of a guest into ``local_path`` (the staging dir).
 
-        ``source`` is an absolute path inside the guest. ``dest`` is a plain
-        basename written under ``server.transfers_dir`` (default
-        ``~/.cache/beaconmcp/transfers``). Capped by
-        ``server.transfers_max_mb`` (default 500 MB) — oversized sources
-        are rejected before any data is moved.
-
-        Set ``overwrite=True`` to replace an existing file in the staging
-        directory. Without it, the tool refuses to clobber existing files.
-        Data is streamed to a sibling ``<dest>.part`` file and atomically
-        renamed on success, so an interrupted transfer never leaves a
-        half-written file at ``dest``.
-
-        When ``verify_checksum=True`` but the guest lacks ``sha256sum``,
-        the success response carries ``checksum_verified=False`` and a
-        ``warning`` field rather than silently treating the transfer as
-        verified.
-
-        - **LXC**: ``pct pull`` to ``/tmp/`` on the Proxmox node, then
-          SFTP-streams it back to the staging dir, and cleans up.
-        - **VM**: SFTP-streams directly from the VM. Requires the VM to be
-          SSH-reachable (see ``proxmox_upload_file`` for details).
+        Shared by ``proxmox_download_file`` and ``proxmox_download_link`` so
+        both go through the same size cap, ``.part`` rename and checksum code.
         """
-        if not ssh_client:
-            return {
-                "status": "error",
-                "error": "Large-file transfer requires SSH. Add an ssh.hosts[] entry for the Proxmox node (or the VM).",
-            }
-        try:
-            local_path = _staging_path(client, dest)
-        except ValueError as e:
-            return {"status": "error", "error": str(e)}
-        if local_path.exists() and not overwrite:
-            return {
-                "status": "error",
-                "error": (
-                    f"Staging file {dest!r} already exists. "
-                    "Pass overwrite=True to replace it."
-                ),
-            }
-        if not isinstance(source, str) or not source.startswith("/"):
-            return {"status": "error", "error": "`source` must be an absolute path inside the guest."}
-
         loop = asyncio.get_running_loop()
         vm_type = await loop.run_in_executor(None, _detect_vm_type, client, node, vmid)
         if not vm_type:
@@ -910,6 +865,61 @@ def register_system_tools(mcp: MCPServer, client: ProxmoxClient, ssh_client: Any
                 "sha256sum unavailable in guest; transfer was not checksum-verified."
             )
         return result
+
+    @mcp.tool()
+    async def proxmox_download_file(
+        node: str,
+        vmid: int,
+        source: str,
+        dest: str,
+        verify_checksum: bool = True,
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """Download a large file from a VM/CT into the BeaconMCP staging dir.
+
+        ``source`` is an absolute path inside the guest. ``dest`` is a plain
+        basename written under ``server.transfers_dir`` (default
+        ``~/.cache/beaconmcp/transfers``). Capped by
+        ``server.transfers_max_mb`` (default 500 MB) — oversized sources
+        are rejected before any data is moved.
+
+        Set ``overwrite=True`` to replace an existing file in the staging
+        directory. Without it, the tool refuses to clobber existing files.
+        Data is streamed to a sibling ``<dest>.part`` file and atomically
+        renamed on success, so an interrupted transfer never leaves a
+        half-written file at ``dest``.
+
+        When ``verify_checksum=True`` but the guest lacks ``sha256sum``,
+        the success response carries ``checksum_verified=False`` and a
+        ``warning`` field rather than silently treating the transfer as
+        verified.
+
+        - **LXC**: ``pct pull`` to ``/tmp/`` on the Proxmox node, then
+          SFTP-streams it back to the staging dir, and cleans up.
+        - **VM**: SFTP-streams directly from the VM. Requires the VM to be
+          SSH-reachable (see ``proxmox_upload_file`` for details).
+        """
+        if not ssh_client:
+            return {
+                "status": "error",
+                "error": "Large-file transfer requires SSH. Add an ssh.hosts[] entry for the Proxmox node (or the VM).",
+            }
+        try:
+            local_path = _staging_path(client, dest)
+        except ValueError as e:
+            return {"status": "error", "error": str(e)}
+        if local_path.exists() and not overwrite:
+            return {
+                "status": "error",
+                "error": (
+                    f"Staging file {dest!r} already exists. "
+                    "Pass overwrite=True to replace it."
+                ),
+            }
+        if not isinstance(source, str) or not source.startswith("/"):
+            return {"status": "error", "error": "`source` must be an absolute path inside the guest."}
+
+        return await _pull_to_staging(node, vmid, source, local_path, verify_checksum)
 
     @mcp.tool()
     def proxmox_list_transfers() -> dict[str, Any]:
