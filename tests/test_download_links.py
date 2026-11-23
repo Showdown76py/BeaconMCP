@@ -73,6 +73,10 @@ class FakeSSH:
         self.node_files: dict[str, bytes] = {}
         self.pulls = 0  # data movements: pct pull + SFTP out of a VM
         self.sftp_gets = 0
+        self.commands: list[str] = []
+        self.symlinks: dict[str, str] = {}  # guest path -> target path
+        self.kinds: dict[str, str] = {}  # guest path -> `stat %F` (default: regular file)
+        self.lie_size: dict[str, int] = {}  # what a pre-flight stat claims
 
     def resolve(self, host: str) -> str:
         if host != str(VM):
@@ -87,24 +91,41 @@ class FakeSSH:
     async def sftp_remove(self, host: str, remote_path: str) -> None:
         self.node_files.pop(remote_path, None)
 
+    def _stat(self, files: dict[str, bytes], argv: list[str]) -> dict[str, Any]:
+        # Like GNU stat: without -L a symlink reports itself, with -L its target.
+        follow = "-L" in argv
+        path = argv[-1]
+        if path in self.symlinks and not follow:
+            return {"exit_code": 0, "stdout": f"{len(self.symlinks[path])} symbolic link\n"}
+        path = self.symlinks.get(path, path) if follow else path
+        if path not in files:
+            return {"exit_code": 1, "stderr": "No such file"}
+        size = self.lie_size.get(path, len(files[path]))
+        if "%s %F" not in argv:  # plain `stat -c %s`
+            return {"exit_code": 0, "stdout": f"{size}\n"}
+        return {"exit_code": 0, "stdout": f"{size} {self.kinds.get(path, 'regular file')}\n"}
+
     async def exec_command(self, host: str, command: str, timeout: int = 60) -> dict[str, Any]:
         argv = shlex.split(command)
+        self.commands.append(command)
         if argv[:2] == ["pct", "pull"]:
             self.pulls += 1
-            self.node_files[argv[4]] = self.guest_files[argv[3]]
+            src = self.symlinks.get(argv[3], argv[3])
+            self.node_files[argv[4]] = self.guest_files[src]
             return {"exit_code": 0, "stdout": "", "stderr": ""}
+        if argv[0] == "stat" and host == NODE:  # a file the node itself holds
+            return self._stat(self.node_files, argv)
         if argv[:2] == ["pct", "exec"]:
             files, rest = self.guest_files, argv[4:]
         elif host == str(VM):
             files, rest = self.vm_files, argv
         else:
             return {"exit_code": 1, "stderr": f"unexpected command: {command}"}
-        if rest[:3] == ["stat", "-c", "%s"]:
-            if rest[3] not in files:
-                return {"exit_code": 1, "stderr": "No such file"}
-            return {"exit_code": 0, "stdout": f"{len(files[rest[3]])}\n"}
+        if rest[0] == "stat":
+            return self._stat(files, rest)
         if rest[0] == "sha256sum":
-            return {"exit_code": 0, "stdout": f"{hashlib.sha256(files[rest[1]]).hexdigest()}  {rest[1]}\n"}
+            data = files[self.symlinks.get(rest[1], rest[1])]
+            return {"exit_code": 0, "stdout": f"{hashlib.sha256(data).hexdigest()}  {rest[1]}\n"}
         return {"exit_code": 1, "stderr": f"unexpected command: {command}"}
 
 
@@ -552,6 +573,97 @@ async def test_staged_files_live_out_of_reach_of_the_transit_tools(env) -> None:
     )
     assert clobber["status"] == "error"
     assert (await env.http.get(res["url"])).content == PAYLOAD
+
+
+# --- source checks (symlinks, special files, sizes that lie) -------------------
+
+
+async def test_symlink_to_a_big_file_is_refused_before_any_transfer(env) -> None:
+    env.ssh.guest_files["/root/big.iso"] = b"x" * (2 * 1024 * 1024)  # cap is 1 MB
+    env.ssh.symlinks["/root/link"] = "/root/big.iso"
+    res = await _mint(env, source="/root/link")
+    assert res["status"] == "error" and "transfers_max_mb" in res["error"]
+    assert env.ssh.pulls == 0
+    assert any("stat -L" in c for c in env.ssh.commands)
+    assert _staged(env) == []
+
+
+async def test_symlink_to_a_small_regular_file_is_followed(env) -> None:
+    env.ssh.symlinks["/root/link"] = SRC
+    res = await _mint(env, source="/root/link")
+    assert res["status"] == "success" and res["size"] == len(PAYLOAD)
+
+
+@pytest.mark.parametrize("kind", ["character special file", "fifo", "directory", "socket"])
+async def test_special_files_are_refused(env, kind: str) -> None:
+    env.ssh.guest_files["/dev/odd"] = b""
+    env.ssh.kinds["/dev/odd"] = kind
+    for vmid in (CT, VM):
+        env.ssh.vm_files["/dev/odd"] = b""
+        res = await _mint(env, vmid=vmid, source="/dev/odd")
+        assert res["status"] == "error" and "regular file" in res["error"]
+    assert env.ssh.pulls == 0 and env.ssh.sftp_gets == 0
+    assert _staged(env) == []
+
+
+async def test_an_empty_regular_file_is_fine(env) -> None:
+    env.ssh.guest_files["/root/empty"] = b""
+    env.ssh.kinds["/root/empty"] = "regular empty file"
+    res = await _mint(env, source="/root/empty")
+    assert res["status"] == "success" and res["size"] == 0
+
+
+async def test_node_copy_is_measured_after_the_pull(env) -> None:
+    # The pre-flight stat said "small", the pull produced a big file.
+    env.ssh.guest_files[SRC] = b"x" * (2 * 1024 * 1024)
+    env.ssh.lie_size[SRC] = 10
+    res = await _mint(env)
+    assert res["status"] == "error" and "transfers_max_mb" in res["error"]
+    assert env.ssh.sftp_gets == 0  # never streamed to the server
+    assert env.ssh.node_files == {}  # the node's /tmp copy is gone
+    assert _staged(env) == []
+
+
+async def test_a_vm_file_that_grew_is_refused_after_the_transfer(env) -> None:
+    env.ssh.vm_files[SRC] = b"x" * (2 * 1024 * 1024)
+    env.ssh.lie_size[SRC] = 10
+    res = await _mint(env, vmid=VM)
+    assert res["status"] == "error" and "transfers_max_mb" in res["error"]
+    assert _staged(env) == []
+
+
+async def test_download_file_checks_the_size_after_the_transfer_too(env) -> None:
+    env.ssh.vm_files[SRC] = b"x" * (2 * 1024 * 1024)
+    env.ssh.lie_size[SRC] = 10
+    res = await env.tools["proxmox_download_file"](node=NODE, vmid=VM, source=SRC, dest="big.bin")
+    assert res["status"] == "error" and "transfers_max_mb" in res["error"]
+    assert not (env.staging / "big.bin").exists()
+    assert not (env.staging / "big.bin.part").exists()
+
+
+async def test_download_file_refuses_a_too_big_source_and_special_files(env) -> None:
+    env.ssh.guest_files[SRC] = b"x" * (2 * 1024 * 1024)
+    big = await env.tools["proxmox_download_file"](node=NODE, vmid=CT, source=SRC, dest="big.bin")
+    assert big["status"] == "error" and env.ssh.pulls == 0
+    env.ssh.guest_files["/dev/odd"] = b""
+    env.ssh.kinds["/dev/odd"] = "character special file"
+    odd = await env.tools["proxmox_download_file"](node=NODE, vmid=CT, source="/dev/odd", dest="odd.bin")
+    assert odd["status"] == "error" and "regular file" in odd["error"]
+
+
+async def test_download_file_cleans_the_part_file_after_a_checksum_error(env) -> None:
+    real = env.ssh.exec_command
+
+    async def lying_sha(host: str, command: str, timeout: int = 60) -> dict[str, Any]:
+        if "sha256sum" in command:
+            return {"exit_code": 0, "stdout": "0" * 64 + "  x\n"}
+        return await real(host, command, timeout)
+
+    env.ssh.exec_command = lying_sha
+    res = await env.tools["proxmox_download_file"](node=NODE, vmid=CT, source=SRC, dest="shot-copy.png")
+    assert res["status"] == "error" and "Checksum mismatch" in res["error"]
+    assert sorted(p.name for p in env.staging.iterdir() if p.is_file()) == []
+    assert env.ssh.node_files == {}
 
 
 async def test_download_file_still_works_after_the_refactor(env) -> None:

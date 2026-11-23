@@ -135,6 +135,24 @@ def _staging_dir(client: ProxmoxClient) -> Path:
     return base
 
 
+#: ``stat -L`` follows a symlink: the size is the target's, which is what
+#: ``pct pull`` and SFTP copy. ``%F`` lets us refuse devices, FIFOs, dirs.
+_STAT_FORMAT = "%s %F"
+_REGULAR_FILE_KINDS = ("regular file", "regular empty file")
+
+
+def _check_source_stat(stdout: str | None, source: str) -> tuple[int, str | None]:
+    """Parse ``stat -L -c '%s %F'`` output: ``(size, error)``."""
+    size_s, _, kind = (stdout or "").strip().partition(" ")
+    try:
+        size = int(size_s)
+    except ValueError:
+        return 0, f"Could not read the size of {source!r}: unexpected stat output."
+    if kind.strip() not in _REGULAR_FILE_KINDS:
+        return size, f"{source!r} is a {kind.strip() or 'unknown file type'}, not a regular file."
+    return size, None
+
+
 def _download_dir(client: ProxmoxClient) -> Path:
     """Where download-link files are staged, out of the transit tools' reach."""
     path = _staging_dir(client) / transfers.DOWNLOAD_SUBDIR
@@ -756,7 +774,7 @@ def register_system_tools(mcp: MCPServer, client: ProxmoxClient, ssh_client: Any
             # Pre-flight: refuse oversized files before any data movement.
             size_res = await ssh_client.exec_command(
                 node,
-                f"pct exec {vmid} -- stat -c %s {shlex.quote(source)}",
+                f"pct exec {vmid} -- stat -L -c {shlex.quote(_STAT_FORMAT)} {shlex.quote(source)}",
                 timeout=60,
             )
             if size_res.get("exit_code") != 0:
@@ -764,10 +782,9 @@ def register_system_tools(mcp: MCPServer, client: ProxmoxClient, ssh_client: Any
                     "status": "error",
                     "error": f"Could not stat {source!r} in CT {vmid}: {size_res.get('stderr') or size_res.get('error')}",
                 }
-            try:
-                src_size = int((size_res.get("stdout") or "0").strip())
-            except ValueError:
-                src_size = 0
+            src_size, stat_err = _check_source_stat(size_res.get("stdout"), source)
+            if stat_err:
+                return {"status": "error", "error": stat_err}
             if src_size > max_bytes:
                 return {"status": "error", "error": too_big(src_size)}
             remote_sha = None
@@ -794,6 +811,21 @@ def register_system_tools(mcp: MCPServer, client: ProxmoxClient, ssh_client: Any
                     "status": "error",
                     "error": f"pct pull failed: {pull_res.get('stderr') or pull_res.get('error') or 'unknown'}",
                 }
+            # The pre-flight size can be stale or wrong: measure what landed on
+            # the node before streaming it here.
+            node_stat = await ssh_client.exec_command(
+                node, f"stat -c %s {shlex.quote(node_tmp)}", timeout=60,
+            )
+            try:
+                node_size = int((node_stat.get("stdout") or "").strip())
+            except ValueError:
+                node_size = None
+            if node_stat.get("exit_code") != 0 or node_size is None:
+                await ssh_client.sftp_remove(node, node_tmp)
+                return {"status": "error", "error": f"Could not stat the pulled copy of {source!r} on node {node!r}."}
+            if node_size > max_bytes:
+                await ssh_client.sftp_remove(node, node_tmp)
+                return {"status": "error", "error": too_big(node_size)}
             try:
                 await ssh_client.sftp_get(node, node_tmp, str(tmp_path))
             except Exception as e:
@@ -801,6 +833,10 @@ def register_system_tools(mcp: MCPServer, client: ProxmoxClient, ssh_client: Any
                 tmp_path.unlink(missing_ok=True)
                 return {"status": "error", "error": f"SFTP from node {node!r} failed: {e}"}
             await ssh_client.sftp_remove(node, node_tmp)
+            if tmp_path.stat().st_size > max_bytes:
+                over = tmp_path.stat().st_size
+                tmp_path.unlink(missing_ok=True)
+                return {"status": "error", "error": too_big(over)}
             local_sha = await loop.run_in_executor(None, _sha256_file, tmp_path) if verify_checksum else None
             if verify_checksum and remote_sha and local_sha != remote_sha:
                 size = tmp_path.stat().st_size
@@ -838,17 +874,16 @@ def register_system_tools(mcp: MCPServer, client: ProxmoxClient, ssh_client: Any
                 ),
             }
         size_res = await ssh_client.exec_command(
-            str(vmid), f"stat -c %s {shlex.quote(source)}", timeout=60,
+            str(vmid), f"stat -L -c {shlex.quote(_STAT_FORMAT)} {shlex.quote(source)}", timeout=60,
         )
         if size_res.get("exit_code") != 0:
             return {
                 "status": "error",
                 "error": f"Could not stat {source!r} in VM {vmid}: {size_res.get('stderr') or size_res.get('error')}",
             }
-        try:
-            src_size = int((size_res.get("stdout") or "0").strip())
-        except ValueError:
-            src_size = 0
+        src_size, stat_err = _check_source_stat(size_res.get("stdout"), source)
+        if stat_err:
+            return {"status": "error", "error": stat_err}
         if src_size > max_bytes:
             return {"status": "error", "error": too_big(src_size)}
         remote_sha = None
@@ -866,6 +901,10 @@ def register_system_tools(mcp: MCPServer, client: ProxmoxClient, ssh_client: Any
         except Exception as e:
             tmp_path.unlink(missing_ok=True)
             return {"status": "error", "error": f"SFTP from VM {vmid} failed: {e}"}
+        if tmp_path.stat().st_size > max_bytes:
+            over = tmp_path.stat().st_size
+            tmp_path.unlink(missing_ok=True)
+            return {"status": "error", "error": too_big(over)}
         local_sha = await loop.run_in_executor(None, _sha256_file, tmp_path) if verify_checksum else None
         if verify_checksum and remote_sha and local_sha != remote_sha:
             size = tmp_path.stat().st_size
