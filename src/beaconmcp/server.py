@@ -181,10 +181,12 @@ def _metric_tool(*args, **kwargs):
             start = time.monotonic()
             status = "ok"
             ctx = f_kwargs.pop(_CTX_KW, None)
+            answer = f_kwargs.pop(confirm.RESOLVE_KW, None)
             try:
                 try:
                     f_kwargs = await confirm.confirm_destructive(
                         ctx, tool_name, f_kwargs, _confirm_tools, _confirm_strict,
+                        answer=answer,
                     )
                 except confirm.ConfirmationDeclined:
                     status = "declined"
@@ -218,6 +220,8 @@ def _metric_tool(*args, **kwargs):
                 )
 
         wrapper.__annotations__ = {**getattr(func, "__annotations__", {}), _CTX_KW: Context}
+        if tool_name in _confirm_tools:
+            confirm.add_confirm_param(wrapper, func, tool_name, _confirm_tools)
         # Client hints from the central table, unless the caller passed its own.
         tool_kwargs = dict(kwargs)
         if "annotations" not in tool_kwargs and tool_name in TOOL_ANNOTATIONS:

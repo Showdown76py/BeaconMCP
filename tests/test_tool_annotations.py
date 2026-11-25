@@ -109,3 +109,11 @@ def test_known_classifications() -> None:
     # Only tools that reach beyond the declared infrastructure are open-world.
     open_world = {n for n, a in T.items() if a.open_world_hint}
     assert open_world == {"proxmox_fetch_url", "beaconmcp_check_update", "beaconmcp_self_update"}
+
+
+async def test_confirm_param_stays_hidden(stack) -> None:
+    # the resolver param of gated tools must never reach the input schema
+    tools = await _listed_tools(stack)
+    leaked = sorted(n for n, t in tools.items() if "beacon_confirm" in t["inputSchema"].get("properties", {}))
+    assert not leaked, leaked
+    assert set(tools["bmc_power_off"]["inputSchema"]["properties"]) >= {"device_id"}
